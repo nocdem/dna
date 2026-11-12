@@ -2382,7 +2382,7 @@ every queued frame encrypted, in queue order, when encrypted (`inter_dial_establ
 `nodus_inter_dial_conn_open`; since S5b fix round F2, see below). The module's log lines keep
 their text and go through `QGP_LOG_*` (tag `NODUS_DIAL`; in the standalone build the shim
 prints them to stderr with a `[WRN/NODUS_DIAL] ` style prefix,
-`src/nodus_log_shim.c:21-36`). `nodus_inter_session_t` holds the module state as `dial`
+`qgp_log_ring_add` in `src/nodus_log_shim.c`, which writes each line whole). `nodus_inter_session_t` holds the module state as `dial`
 (`nodus_server.h:177`) instead of the five fields it had.
 
 **Closed in S5b:** batch forward (BF) had its own dialer copy inside the DHT at S5a

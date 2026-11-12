@@ -21,6 +21,9 @@
  *       is whole (format and payload intact), 800 lines in total, none lost, none
  *       interleaved.
  *   L5  after nodus_log_file_close() a line writes nothing more.
+ *   L6  the stderr (journald) line is written whole: three threads x 400 WARN
+ *       lines with fd 2 redirected to a mkstemp file; every line is exactly
+ *       "[WRN/T<k>] payload-T<k>-<nnnn>-end", complete and in order per thread.
  * BUILD FLAGS: default (the standalone nodus build, whose logger is the shim).
  * ENVIRONMENT: none. LEAVES BEHIND: nothing (one mkdtemp directory under /tmp,
  *   its files removed at the end).
@@ -214,6 +217,62 @@ static void l4_threads(void) {
     free(s);
 }
 
+/* L6 the stderr (journald) line is written whole. Three threads write 400 WARN
+ * lines each while fd 2 points at a temporary file; every line of the capture
+ * must be exactly "[WRN/T<k>] payload-T<k>-<nnnn>-end", each thread's lines
+ * complete and in order. The file sink is closed (L4 closed it), so only the
+ * stderr sink writes. Before the fix the stderr line is three separate stdio
+ * calls (prefix, text, newline), which another thread's call can split.
+ * FALSELY PASSES (without the fix) when the threads happen not to interleave in
+ * one run: a detector, not a proof. With the fix it always passes. */
+#define L6_THREADS 3
+#define L6_LINES   400
+
+static void *l6_writer(void *arg) {
+    const char *tag = arg;
+    for (int i = 0; i < L6_LINES; i++) QGP_LOG_WARN(tag, "payload-%s-%04d-end", tag, i);
+    return NULL;
+}
+
+static void l6_stderr_whole(void) {
+    printf("L6 stderr lines are whole\n");
+    char path[] = "/tmp/nodus-log-shim-l6-XXXXXX";      /* a unique name: parallel runs never share it */
+    int fd = mkstemp(path);
+    if (fd < 0) { printf("FATAL mkstemp\n"); exit(2); }
+    fflush(stderr);
+    int saved = dup(2);
+    if (saved < 0 || dup2(fd, 2) < 0) { printf("FATAL dup\n"); exit(2); }
+    static char tags[L6_THREADS][3] = { "T0", "T1", "T2" };
+    pthread_t th[L6_THREADS];
+    for (int k = 0; k < L6_THREADS; k++) pthread_create(&th[k], NULL, l6_writer, tags[k]);
+    for (int k = 0; k < L6_THREADS; k++) pthread_join(th[k], NULL);
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    FILE *f = fdopen(fd, "r");
+    if (!f) { printf("FATAL fdopen\n"); exit(2); }
+    rewind(f);
+    char line[256];
+    int total = 0, whole = 1, next[L6_THREADS] = {0, 0, 0};
+    while (fgets(line, sizeof(line), f)) {
+        total++;
+        size_t n = strlen(line);
+        if (n == 0 || line[n - 1] != '\n') { whole = 0; continue; }
+        line[n - 1] = '\0';
+        int k = -1;
+        if (!strncmp(line, "[WRN/T", 6) && line[6] >= '0' && line[6] < '0' + L6_THREADS) k = line[6] - '0';
+        if (k < 0) { whole = 0; continue; }
+        char exp[64];
+        snprintf(exp, sizeof(exp), "[WRN/T%d] payload-T%d-%04d-end", k, k, next[k]++);
+        if (strcmp(line, exp) != 0) whole = 0;
+    }
+    fclose(f);
+    unlink(path);
+    CHECK(total == L6_THREADS * L6_LINES, "1200 stderr lines, none lost");
+    CHECK(whole && next[0] == L6_LINES && next[1] == L6_LINES && next[2] == L6_LINES,
+          "every stderr line is whole and each thread's lines are complete and in order");
+}
+
 static void cleanup(void) {
     DIR *d = opendir(g_dir);
     for (struct dirent *e = d ? readdir(d) : NULL; e; e = readdir(d)) {
@@ -244,6 +303,7 @@ int main(void) {
     s = slurp("nodus-amm.log", &len);
     CHECK(len == before, "after close a line writes nothing more");
     free(s);
+    l6_stderr_whole();
     cleanup();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

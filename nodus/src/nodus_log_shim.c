@@ -46,12 +46,17 @@ void qgp_log_ring_add(qgp_log_level_t level, const char *tag, const char *fmt, .
         case QGP_LOG_LEVEL_ERROR: level_str = "ERR"; break;
     }
 
+    /* one line = three stdio calls; the stream lock is held across them so that
+     * another thread's line (the bot's provider threads log concurrently) is
+     * never interleaved with this one (flockfile(3)). */
+    flockfile(stderr);
     fprintf(stderr, "[%s/%s] ", level_str, tag);
     va_list args;
     va_start(args, fmt);
     vfprintf(stderr, fmt, args);
     va_end(args);
     fprintf(stderr, "\n");
+    funlockfile(stderr);
 }
 
 /* ── the opt-in log file ─────────────────────────────────────────────── */

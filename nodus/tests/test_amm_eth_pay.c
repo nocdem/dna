@@ -99,6 +99,8 @@
  *   node.
  */
 #include <dirent.h>
+#include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,6 +109,7 @@
 
 #include "amm_eth_pay.h"
 #include "amm_eth_tx.h"
+#include "amm_test_gate.h"
 #include "crypto/hash/keccak256.h"
 #include "evm/evm_internal.h"
 #include "evm/trie/evm_trie_rlp.h"
@@ -123,7 +126,27 @@ static int g_checks = 0;
 
 /* ── the stub providers ─────────────────────────────────────────────── */
 
+/* the methods a group of the payer's helpers calls on every usable provider
+ * (the gate and hold points of E18-E20) */
+enum { PM_CHAIN, PM_TIP, PM_RCPT, PM_BAL, PM_ERC20, PM_EST, PM_N };
+
 typedef struct {
+    /* E18-E20 (plan 7.1.3): the stub's own index (the gate's provider index), an
+     * optional gate per method, calls per method, and the optional hold: this
+     * stub's hold_method calls wait until hold_ctr reaches hold_need per call
+     * (the other providers' "unit done" counter, bumped by their unit_method
+     * calls); hold_returned counts held calls that have returned. The gate and
+     * counter objects are the test's; this struct only points at them. Each is
+     * touched only by the thread that calls the stub (one provider's calls are
+     * sequential) and by the test thread between steps. */
+    int idx;
+    amm_gate_t *gate[PM_N];
+    int mcalls[PM_N];
+    int hold_method, hold_need, hold_k;
+    amm_ctr_t *hold_ctr;
+    int unit_method;
+    amm_ctr_t *unit_ctr;
+    atomic_int hold_returned;
     uint64_t chain; int chain_rc;
     uint64_t tip; int tip_rc;
     uint64_t cnt_pending, cnt_latest; int cnt_rc;
@@ -146,10 +169,10 @@ static void set_be(uint8_t o[32], uint64_t v) {
     for (int i = 0; i < 8; i++) o[31 - i] = (uint8_t)(v >> (8 * i));
 }
 
-static int s_chain(void *c, uint64_t *o, uint64_t d) { stub_t *s = c; (void)d; if (s->chain_rc) return s->chain_rc; *o = s->chain; return AMM_ETH_OK; }
-static int s_tip(void *c, uint64_t *o, uint64_t d) { stub_t *s = c; (void)d; if (s->tip_rc) return s->tip_rc; *o = s->tip; return AMM_ETH_OK; }
+static int s_chain_impl(void *c, uint64_t *o, uint64_t d) { stub_t *s = c; (void)d; if (s->chain_rc) return s->chain_rc; *o = s->chain; return AMM_ETH_OK; }
+static int s_tip_impl(void *c, uint64_t *o, uint64_t d) { stub_t *s = c; (void)d; if (s->tip_rc) return s->tip_rc; *o = s->tip; return AMM_ETH_OK; }
 static void add_logs(stub_t *s, const uint8_t h[32], amm_eth_receipt_t *o);
-static int s_receipt(void *c, const uint8_t h[32], amm_eth_receipt_t *o, uint64_t d) {
+static int s_receipt_impl(void *c, const uint8_t h[32], amm_eth_receipt_t *o, uint64_t d) {
     stub_t *s = c; (void)d;
     s->rc_calls++;
     if (s->rc_mode == 2) return AMM_ETH_ERR;
@@ -158,13 +181,13 @@ static int s_receipt(void *c, const uint8_t h[32], amm_eth_receipt_t *o, uint64_
     if (o->status == 1) add_logs(s, h, o);
     return AMM_ETH_OK;
 }
-static int s_balance(void *c, const uint8_t a[20], uint8_t o[32], uint64_t d) {
+static int s_balance_impl(void *c, const uint8_t a[20], uint8_t o[32], uint64_t d) {
     stub_t *s = c; (void)d; (void)a;
     if (s->eth_rc) return s->eth_rc;
     memcpy(o, s->eth, 32);
     return AMM_ETH_OK;
 }
-static int s_erc20(void *c, const uint8_t t[20], const uint8_t w[20], uint8_t o[32], uint64_t d) {
+static int s_erc20_impl(void *c, const uint8_t t[20], const uint8_t w[20], uint8_t o[32], uint64_t d) {
     stub_t *s = c; (void)d; (void)t; (void)w;
     if (s->usdt_rc) return s->usdt_rc;
     memcpy(o, s->usdt, 32);
@@ -181,14 +204,60 @@ static int nz_amount(const uint8_t *in, size_t n) {
     if (n >= 68) for (int i = 36; i < 68; i++) k += in[i] != 0;
     return k;
 }
-static int s_estimate(void *c, const uint8_t f[20], const uint8_t t[20], const uint8_t *in,
-                      size_t n, uint64_t *o, uint64_t d) {
+static int s_estimate_impl(void *c, const uint8_t f[20], const uint8_t t[20], const uint8_t *in,
+                           size_t n, uint64_t *o, uint64_t d) {
     stub_t *s = c; (void)d; (void)f; (void)t;
     s->est_calls++;
     if (s->est_rc) return s->est_rc;                 /* "execution reverted" */
     *o = s->gas_base + (s->gas_by_amount
         ? (s->gas_per_nz ? s->gas_per_nz : 16u) * (uint64_t)nz_amount(in, n) : 0);
     return AMM_ETH_OK;
+}
+
+/* The seam functions the providers expose: each runs the plain stub body
+ * above between the optional gate (tests/amm_test_gate.h), the optional hold
+ * (E19, E19b) and the per-method call counter. With no gate and no hold the
+ * wrappers do nothing but count: no existing assertion changes. */
+static const char *const PM_NAME[PM_N] = { "chain_id", "block_number", "get_receipt", "get_balance",
+                                           "erc20_balance", "estimate_gas" };
+
+/* wait (bounded) until the counter says the other providers' units are done */
+static void st_hold(stub_t *s, int pm) {
+    if (s->hold_method != pm || !s->hold_ctr) return;
+    s->hold_k++;
+    (void)amm_ctr_wait_ge(s->hold_ctr, s->hold_need * s->hold_k);
+}
+
+/* after the call: set this provider's "unit done" flag, count a held return */
+static void st_after(stub_t *s, int pm) {
+    if (s->unit_method == pm && s->unit_ctr) amm_ctr_inc(s->unit_ctr);
+    if (s->hold_method == pm && s->hold_ctr) atomic_fetch_add(&s->hold_returned, 1);
+}
+
+#define ST_WRAP(PM, CALL)                                                    \
+    stub_t *s = c;                                                           \
+    int t = amm_gate_enter(s->gate[PM], s->idx);                             \
+    st_hold(s, PM);                                                          \
+    s->mcalls[PM]++;                                                         \
+    int rc = (CALL);                                                         \
+    st_after(s, PM);                                                         \
+    amm_gate_leave(s->gate[PM], s->idx, t);                                  \
+    return rc;
+
+static int s_chain(void *c, uint64_t *o, uint64_t d) { ST_WRAP(PM_CHAIN, s_chain_impl(c, o, d)) }
+static int s_tip(void *c, uint64_t *o, uint64_t d) { ST_WRAP(PM_TIP, s_tip_impl(c, o, d)) }
+static int s_receipt(void *c, const uint8_t h[32], amm_eth_receipt_t *o, uint64_t d) {
+    ST_WRAP(PM_RCPT, s_receipt_impl(c, h, o, d))
+}
+static int s_balance(void *c, const uint8_t a[20], uint8_t o[32], uint64_t d) {
+    ST_WRAP(PM_BAL, s_balance_impl(c, a, o, d))
+}
+static int s_erc20(void *c, const uint8_t t_[20], const uint8_t w[20], uint8_t o[32], uint64_t d) {
+    ST_WRAP(PM_ERC20, s_erc20_impl(c, t_, w, o, d))
+}
+static int s_estimate(void *c, const uint8_t f[20], const uint8_t t_[20], const uint8_t *in,
+                      size_t n, uint64_t *o, uint64_t d) {
+    ST_WRAP(PM_EST, s_estimate_impl(c, f, t_, in, n, o, d))
 }
 static int s_gasprice(void *c, uint64_t *o, uint64_t d) { stub_t *s = c; (void)d; if (s->gp_rc) return s->gp_rc; *o = s->gas_price; return AMM_ETH_OK; }
 static int s_prio(void *c, uint64_t *o, uint64_t d) { stub_t *s = c; (void)d; if (s->prio_rc) return s->prio_rc; *o = s->prio; return AMM_ETH_OK; }
@@ -327,7 +396,10 @@ static void fresh(void) {
     snprintf(p, sizeof(p), "%s-wal", g_path); unlink(p);
     snprintf(p, sizeof(p), "%s-shm", g_path); unlink(p);
     if (amm_journal_open(g_path, &g_j) != 0) { printf("FATAL open\n"); exit(2); }
-    for (int i = 0; i < NP; i++) defaults(&g_st[i]);
+    for (int i = 0; i < NP; i++) {
+        defaults(&g_st[i]);
+        g_st[i].idx = i; g_st[i].hold_method = -1; g_st[i].unit_method = -1;
+    }
     memset(&g_price, 0, sizeof(g_price));
     g_price.mode = 0; g_price.fixed = 100;
     g_on_send = NULL;
@@ -836,6 +908,7 @@ static void e7_fee(void) {
     fresh();
     amm_eth_pay_t *p = new_pay();
     CHECK(p && new_swap(1, 'c', '1', 900, &s) && amm_eth_pay_sign(p, s.seq, 1000, 0, &o) == AMM_EP_OK, "net 900 == minimum 900: pays");
+    amm_eth_pay_free(p);                           /* before fresh() closes the journal it holds */
     fresh();
     p = new_pay();
     CHECK(p && new_swap(1, 'c', '1', 901, &s) && amm_eth_pay_sign(p, s.seq, 1000, 0, &o) == AMM_EP_BELOW_MIN &&
@@ -1353,6 +1426,276 @@ static void e17_estimate_quorum(void) {
     }
 }
 
+/* ═══ E18-E20: the providers of a group are asked at the same time (plan
+ *     docs/plans/approved/2026-11-12-bot-round-latency.md 6.2.3, 7.0, 7.1.3) ═══
+ *
+ * PROVES
+ *   E18 arrival order changes nothing. Two scenarios (E10/E1 shape: sign with a
+ *       two-round gas fixed point, broadcast, receipts at depth; E15 shape: the
+ *       joint depth vote, not settled then settled) run once with no gate and
+ *       once for each of chain_id, estimate_gas, erc20_balance, get_balance and
+ *       get_receipt with a counting gate in REVERSE mode (tests/amm_test_gate.h:
+ *       k = 3, the three providers' calls of a group are in flight at once and
+ *       return in descending provider index). Equal in every pair: the returned
+ *       codes and step results (fee, net, msg, flags), the stored attempt (raw
+ *       bytes, hash, nonce, gas, fee, net, fee fields, state) and the swap state.
+ *       timed_out == 0 in every gated run and the gate saw one generation per
+ *       group. SCOPING (7.0): a method is gated in a scenario only when the
+ *       ungated run shows every provider called it equally often; the test
+ *       asserts that every method was gated in at least one scenario.
+ *   E19 a provider that answers last with an error: in max_estimate (provider
+ *       2's estimate waits until providers 0 and 1 returned theirs, then fails)
+ *       and in read_receipt (provider 2's get_receipt waits, then fails): the
+ *       verdicts, the stored attempt and the settlement equal those of the run
+ *       where provider 2 fails at once.
+ *   E19b the unit is the bound: with a receipt at every provider, provider 2's
+ *       get_receipt returns at once and its block_number waits until providers
+ *       0 and 1 have finished their units; the step returns only after that
+ *       second request (provider 2's flag is set when the step returns) and the
+ *       depth vote equals the ungated run's (serial code passes this too; it
+ *       rules out a join that waits for each unit's first request only).
+ *   E20 the joint depth vote under reverse arrival: E15's scenario with the gate
+ *       on get_receipt: not settled while only one provider holds both the
+ *       receipt and the depth, settled when two do (property 8).
+ * FLAGS: none. ENVIRONMENT: none. LEAVES BEHIND: nothing.
+ * HOW THEY CAN FALSELY PASS: a pair excluded by the scoping rule is not gated
+ *   (the at-least-one assertion shows a method no scenario gated); E19/E19b pass
+ *   on a serial implementation by construction; the price stub and the journal
+ *   hook are not reached from a provider thread in these scenarios except the
+ *   receipt stub's journal read (add_logs), which relies on no transaction region
+ *   being open (plan 4.3 assumption 2); Part A does not touch the broadcast, so
+ *   the send hook still runs on the calling thread. */
+static amm_gate_t g_pg;
+static amm_ctr_t  g_pc;
+static int        g_pg_ready;
+
+static void pg_ready(void) {
+    if (g_pg_ready) return;
+    amm_gate_init(&g_pg);
+    amm_ctr_init(&g_pc);
+    g_pg_ready = 1;
+}
+
+static void sig_add(char *sig, size_t cap, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+static void sig_add(char *sig, size_t cap, const char *fmt, ...) {
+    size_t n = strlen(sig);
+    if (n >= cap - 1) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(sig + n, cap - n, fmt, ap);
+    va_end(ap);
+}
+
+static void sig_hex(char *sig, size_t cap, const uint8_t *b, size_t n) {
+    for (size_t i = 0; i < n; i++) sig_add(sig, cap, "%02x", b[i]);
+}
+
+static void sig_step(char *sig, size_t cap, const char *tag, int rc, const amm_ep_step_t *o) {
+    sig_add(sig, cap, "%s rc%d w%d s%d b%d c%d fee%llu net%llu msg[%s]\n", tag, rc, o->worked, o->signed_, o->submitted,
+            o->confirmed, (unsigned long long)o->fee, (unsigned long long)o->net, o->msg);
+}
+
+static void sig_attempt(char *sig, size_t cap, int64_t seq) {
+    amm_eattempt_t a;
+    if (amm_journal_eth_attempt_latest(g_j, seq, &a) != 0) { sig_add(sig, cap, "A none\n"); return; }
+    sig_add(sig, cap, "A %s n%d chain%llu nonce%llu gross%llu net%llu fee%llu gas%llu mf%llu mp%llu tip%llu hash=",
+            a.state, a.n, (unsigned long long)a.chain_id, (unsigned long long)a.nonce, (unsigned long long)a.gross,
+            (unsigned long long)a.net, (unsigned long long)a.fee, (unsigned long long)a.gas_limit,
+            (unsigned long long)a.max_fee_per_gas, (unsigned long long)a.max_priority_fee_per_gas,
+            (unsigned long long)a.last_submit_tip);
+    sig_hex(sig, cap, a.hash, 32);
+    sig_add(sig, cap, " raw=");
+    sig_hex(sig, cap, a.raw, a.raw_len);
+    sig_add(sig, cap, "\n");
+    amm_eattempt_free(&a);
+}
+
+static void sig_swap(char *sig, size_t cap, int64_t seq) {
+    amm_swap_t sw;
+    sig_add(sig, cap, "W %s\n", amm_journal_swap_by_seq(g_j, seq, &sw) == 0 ? sw.state : "?");
+}
+
+typedef struct {
+    char sig[16384];
+    int  mcalls[PM_N][NP];
+    int  timed_out, gens;
+    int  c1, c2, paid1, paid2;          /* E15 shape: confirmed flags and settled states of its two last steps */
+    int  returned, calls2;              /* E19: held calls of provider 2 returned / made */
+} e18_out_t;
+
+static e18_out_t g_e18_ref, g_e18_gat;
+
+static void e18_counts(e18_out_t *out, int pm_held) {
+    for (int i = 0; i < NP; i++)
+        for (int m = 0; m < PM_N; m++) out->mcalls[m][i] = g_st[i].mcalls[m];
+    out->returned = atomic_load(&g_st[2].hold_returned);
+    /* the held calls MADE while the hold was armed (each entered st_hold), not
+     * the run-wide mcalls: calls of the same method made before the hold was
+     * armed (the sign and broadcast steps read tips and receipts too) are not
+     * held calls and are never counted in hold_returned */
+    out->calls2 = pm_held >= 0 ? g_st[2].hold_k : 0;
+}
+
+/* One run of scenario `scen` (0: E10 / E1 shape, 1: E15 shape); pm < 0: no gate,
+ * else every provider's pm method goes through the reverse gate (k = 3). */
+static void e18_run(int scen, int pm, e18_out_t *out) {
+    memset(out, 0, sizeof(*out));
+    fresh();
+    amm_eth_pay_t *p = new_pay_n(3, 2, 3, 0);
+    amm_swap_t s;
+    amm_ep_step_t o;
+    g_price.mode = 1; g_price.mul = 1;                         /* fee = gas */
+    for (int i = 0; i < NP; i++) { g_st[i].gas_base = 21000; g_st[i].gas_by_amount = 1; }
+    if (!p || !new_swap(1, 'c', '1', 0, &s)) { printf("FATAL e18 setup\n"); exit(2); }
+    if (pm >= 0) {
+        amm_gate_arm(&g_pg, 3, 1);
+        for (int i = 0; i < NP; i++) g_st[i].gate[pm] = &g_pg;
+    }
+    int rc = amm_eth_pay_sign(p, s.seq, 1000000, 0, &o);
+    sig_step(out->sig, sizeof(out->sig), "sign", rc, &o);
+    sig_attempt(out->sig, sizeof(out->sig), s.seq);
+    rc = amm_eth_pay_step(p, s.seq, 0, &o);                    /* the broadcast */
+    sig_step(out->sig, sizeof(out->sig), "send", rc, &o);
+    sig_attempt(out->sig, sizeof(out->sig), s.seq);
+    if (scen == 0) {
+        for (int i = 0; i < NP; i++) { g_st[i].rc_mode = 1; g_st[i].rc.status = 1; g_st[i].rc.block_number = 900; }
+        rc = amm_eth_pay_step(p, s.seq, 0, &o);                /* receipts at depth 100 */
+        sig_step(out->sig, sizeof(out->sig), "settle", rc, &o);
+    } else {
+        for (int i = 0; i < 2; i++) { g_st[i].rc_mode = 1; g_st[i].rc.status = 1; g_st[i].rc.block_number = 100; }
+        g_st[2].rc_mode = 0;                                   /* C has no receipt */
+        g_st[0].tip = 102; g_st[1].tip = 103; g_st[2].tip = 103;
+        rc = amm_eth_pay_step(p, s.seq, 0, &o);                /* only B supports both: not settled */
+        sig_step(out->sig, sizeof(out->sig), "joint1", rc, &o);
+        out->c1 = o.confirmed;
+        out->paid1 = swap_state_is(s.seq, "paid");
+        g_st[0].tip = 103;
+        rc = amm_eth_pay_step(p, s.seq, 0, &o);                /* A and B support both: settled */
+        sig_step(out->sig, sizeof(out->sig), "joint2", rc, &o);
+        out->c2 = o.confirmed;
+        out->paid2 = swap_state_is(s.seq, "paid");
+    }
+    sig_attempt(out->sig, sizeof(out->sig), s.seq);
+    sig_swap(out->sig, sizeof(out->sig), s.seq);
+    if (pm >= 0) {
+        amm_gate_disarm(&g_pg);
+        out->timed_out = amm_gate_timed_out(&g_pg);
+        out->gens = amm_gate_gens(&g_pg);
+    }
+    e18_counts(out, -1);
+    amm_eth_pay_free(p);
+}
+
+static void e18_arrival_order(void) {
+    printf("E18 the providers of a group in flight at once, returning in reverse order: nothing changes\n");
+    pg_ready();
+    static const int methods[] = { PM_CHAIN, PM_EST, PM_ERC20, PM_BAL, PM_RCPT };
+    int gated_runs[PM_N] = { 0 };
+    for (int scen = 0; scen < 2; scen++) {
+        e18_run(scen, -1, &g_e18_ref);
+        for (size_t k = 0; k < sizeof(methods) / sizeof(methods[0]); k++) {
+            int pm = methods[k];
+            const int *mc = g_e18_ref.mcalls[pm];
+            if (mc[0] == 0 || mc[0] != mc[1] || mc[0] != mc[2]) continue;       /* the scoping rule of 7.0 */
+            e18_run(scen, pm, &g_e18_gat);
+            gated_runs[pm]++;
+            char m[160];
+            snprintf(m, sizeof(m), "scenario %d, %s gated: all three providers in flight at once (no timeout)", scen, PM_NAME[pm]);
+            CHECK(g_e18_gat.timed_out == 0, m);
+            snprintf(m, sizeof(m), "scenario %d, %s gated: one gate generation per group (%d)", scen, PM_NAME[pm], mc[0]);
+            CHECK(g_e18_gat.gens == mc[0], m);
+            snprintf(m, sizeof(m), "scenario %d, %s gated: codes, step results, stored attempt and swap state equal the ungated run",
+                     scen, PM_NAME[pm]);
+            CHECK(strcmp(g_e18_gat.sig, g_e18_ref.sig) == 0, m);
+        }
+    }
+    for (size_t k = 0; k < sizeof(methods) / sizeof(methods[0]); k++) {
+        char m[96];
+        snprintf(m, sizeof(m), "%s was gated in at least one scenario", PM_NAME[methods[k]]);
+        CHECK(gated_runs[methods[k]] > 0, m);
+    }
+}
+
+/* E19 / E19b. variant 0: provider 2's estimate fails (E3 shape); 1: provider 2's
+ * receipt is an error (E11 shape); 2: a receipt at every provider (E19b).
+ * hold = 0: the reference (provider 2 answers at once); 1: it answers last. */
+static void e19_run(int variant, int hold, e18_out_t *out) {
+    memset(out, 0, sizeof(*out));
+    fresh();
+    amm_eth_pay_t *p = new_pay_n(3, 2, 3, 0);
+    amm_swap_t s;
+    amm_ep_step_t o;
+    if (!p || !new_swap(1, 'c', '1', 0, &s)) { printf("FATAL e19 setup\n"); exit(2); }
+    amm_ctr_reset(&g_pc);
+    int pm_held = variant == 0 ? PM_EST : variant == 1 ? PM_RCPT : PM_TIP;
+    int rc;
+    if (variant == 0) {
+        g_st[2].est_rc = AMM_ETH_ERR;                          /* the last provider fails */
+        if (hold) {
+            g_st[2].hold_method = pm_held; g_st[2].hold_need = 2; g_st[2].hold_ctr = &g_pc;
+            for (int i = 0; i < 2; i++) { g_st[i].unit_method = pm_held; g_st[i].unit_ctr = &g_pc; }
+        }
+        rc = amm_eth_pay_sign(p, s.seq, 1000000, 0, &o);
+        sig_step(out->sig, sizeof(out->sig), "sign", rc, &o);
+        sig_attempt(out->sig, sizeof(out->sig), s.seq);
+    } else {
+        rc = amm_eth_pay_sign(p, s.seq, 1000000, 0, &o);
+        sig_step(out->sig, sizeof(out->sig), "sign", rc, &o);
+        rc = amm_eth_pay_step(p, s.seq, 0, &o);                /* the broadcast */
+        sig_step(out->sig, sizeof(out->sig), "send", rc, &o);
+        for (int i = 0; i < 3; i++) { g_st[i].rc_mode = 1; g_st[i].rc.status = 1; g_st[i].rc.block_number = 900; }
+        if (variant == 1) g_st[2].rc_mode = 2;                 /* provider 2's receipt read fails */
+        if (hold) {
+            g_st[2].hold_method = pm_held; g_st[2].hold_need = 2; g_st[2].hold_ctr = &g_pc;
+            for (int i = 0; i < 2; i++) { g_st[i].unit_method = pm_held; g_st[i].unit_ctr = &g_pc; }
+        }
+        rc = amm_eth_pay_step(p, s.seq, 0, &o);                /* receipts at depth 100 */
+        sig_step(out->sig, sizeof(out->sig), "settle", rc, &o);
+        out->c2 = o.confirmed;
+        sig_attempt(out->sig, sizeof(out->sig), s.seq);
+        sig_swap(out->sig, sizeof(out->sig), s.seq);
+    }
+    e18_counts(out, hold ? pm_held : -1);
+    amm_eth_pay_free(p);
+}
+
+static void e19_late_provider(void) {
+    printf("E19 a provider that answers last with an error: the group waits for it, nothing changes\n");
+    pg_ready();
+    for (int variant = 0; variant < 2; variant++) {
+        const char *what = variant == 0 ? "max_estimate (estimate_gas)" : "read_receipt (get_receipt)";
+        e19_run(variant, 0, &g_e18_ref);
+        e19_run(variant, 1, &g_e18_gat);
+        char m[160];
+        snprintf(m, sizeof(m), "%s: provider 2 waited for providers 0 and 1 (no timeout)", what);
+        CHECK(amm_ctr_timed_out(&g_pc) == 0 && g_e18_gat.calls2 > 0, m);
+        snprintf(m, sizeof(m), "%s: the verdicts, the stored attempt and the settlement equal the immediate-error run", what);
+        CHECK(strcmp(g_e18_gat.sig, g_e18_ref.sig) == 0, m);
+        snprintf(m, sizeof(m), "%s: every held call of provider 2 had returned when the step returned", what);
+        CHECK(g_e18_gat.returned == g_e18_gat.calls2, m);
+    }
+    printf("E19b the unit is the bound: provider 2's second request is waited for\n");
+    e19_run(2, 0, &g_e18_ref);
+    e19_run(2, 1, &g_e18_gat);
+    CHECK(g_e18_ref.c2 == 1, "setup: a receipt at every provider at depth 100: settled (the ungated run)");
+    CHECK(amm_ctr_timed_out(&g_pc) == 0 && g_e18_gat.calls2 > 0,
+          "provider 2's block_number waited for providers 0 and 1 to finish their units (no timeout)");
+    CHECK(strcmp(g_e18_gat.sig, g_e18_ref.sig) == 0 && g_e18_gat.c2 == 1,
+          "the step's result, the attempt and the depth vote equal the ungated run (settled)");
+    CHECK(g_e18_gat.returned == g_e18_gat.calls2,
+          "the step returned only after provider 2's second request returned (its flag is set)");
+}
+
+static void e20_joint_depth_reverse(void) {
+    printf("E20 the joint depth vote under reverse arrival\n");
+    pg_ready();
+    e18_run(1, PM_RCPT, &g_e18_gat);
+    CHECK(g_e18_gat.timed_out == 0, "get_receipt gated (reverse, k = 3): all three providers in flight at once");
+    CHECK(g_e18_gat.c1 == 0 && !g_e18_gat.paid1,
+          "receipts from A and B, tips A = 102, B = C = 103: only B supports both: NOT settled");
+    CHECK(g_e18_gat.c2 == 1 && g_e18_gat.paid2, "A at 103 too: two providers hold the receipt AND the depth: settled");
+}
+
 int main(void) {
     printf("test_amm_eth_pay\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_ethpay_testXXXXXX");
@@ -1377,6 +1720,9 @@ int main(void) {
     e15_joint_depth();
     e16_gas_bump();
     e17_estimate_quorum();
+    e18_arrival_order();
+    e19_late_provider();
+    e20_joint_depth_reverse();
 
     if (g_j) amm_journal_close(g_j);
     cleanup_dir();

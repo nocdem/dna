@@ -22,6 +22,12 @@
  * DEADLINES: `deadline_ms` is an ABSOLUTE CLOCK_MONOTONIC time in
  * milliseconds, 0 = none (tools/faucet/faucet_node.h). The watcher passes
  * its caller's value through and reads no clock.
+ *
+ * CONCURRENCY: the watcher and the payer call the functions of DIFFERENT
+ * provider tables at the same time, each from its own thread (amm_eth_fanout.h:
+ * one thread per usable provider, joined before the answers are examined); the
+ * functions of ONE table are called by one thread at a time; a call may come
+ * from any thread.
  */
 #ifndef AMM_ETH_H
 #define AMM_ETH_H

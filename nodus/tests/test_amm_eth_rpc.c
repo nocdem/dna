@@ -2,9 +2,9 @@
  * test_amm_eth_rpc.c -- the nodus-amm Ethereum JSON-RPC provider
  * (amm_eth_rpc.c): the request texts, the strict bounded JSON parser and the
  * mapping of every answer onto the amm_eth.h seam, with CANNED answers
- * injected under the HTTP post (amm_rpc_post_fn). No network is used: the
- * libcurl transport is exercised only on the cases that fail before any
- * socket is opened.
+ * injected under the HTTP post (amm_rpc_post_fn). No external network is
+ * used: the libcurl transport is exercised on loopback only (R14-R15, see
+ * WHAT IT REQUIRES).
  *
  * WHAT IT PROVES (plan docs/plans/2026-11-08-swap-bot-plan.nodus1.md rev. 4,
  * section 4 boundary rule, section 2 "Pinned for this revision", section 9,
@@ -73,9 +73,49 @@
  *       with a space, an over-long one, no post function, a bound outside
  *       range are refused; the seam table is complete; the libcurl transport
  *       refuses an http:// URL and an expired deadline without a connection,
- *       and a zero timeout cap cannot be built.
- * WHAT IT REQUIRES: a default build with libcurl (pkg-config libcurl); no
- *   network, no files. LEAVES BEHIND: nothing.
+ *       and a zero timeout cap cannot be built; a transport needs a label (a
+ *       NULL, empty or over-long one is refused) and counts nothing before its
+ *       first POST (performs and drops 0);
+ *   R14 the kept transport on the real library (plan docs/plans/approved/
+ *       2026-11-12-bot-round-latency.md, 6.1 items 1-4, 7.1.4):
+ *       R14a a refused connection (127.0.0.1 port 9): two failed POSTs count
+ *       performs 2, failures 2, drops 2 (a failed transfer re-creates the
+ *       handle), report no connection descriptor, and write two failure lines
+ *       with the re-creation suffix and no URL; two transports keep separate
+ *       counts;
+ *       R14b real TCP connections whose TLS handshake fails (a loopback listener
+ *       on a kernel-chosen port that accepts and closes): each POST reports
+ *       new_conns 1 and no descriptor (the counter is read per transfer, on the
+ *       handle that made it, before the re-creation); the cumulative count is 2;
+ *       R14c the re-creation on request (drop_pool): performs 3, failures 3,
+ *       drops 4, the INFO line "every connection dropped" once, three failure
+ *       lines whose suffixes count 1, 3 and 4 re-creations;
+ *   R15 threads: three transports, one thread each, and two threads sharing one
+ *       transport, 20 POSTs each, to port 9: the counters are exact (20 / 20 / 20
+ *       and 40), nothing crashes (the ThreadSanitizer and AddressSanitizer
+ *       builds of this test show a race or a leak);
+ *   R16-R28 the chain-id rule (plan 6.1 item 7), through the provider table and
+ *       a scripted stub post (per call: connections made, descriptor, answer):
+ *       R16 a verified connection needs no check; R17 a new connection holds the
+ *       answer, one eth_chainId on the same handle, the answer counts; R18 a wrong
+ *       chain id never counts and the provider's next POST re-creates the handle
+ *       (drop_pool 1); R19 a check that itself reconnects discards the answer;
+ *       R20 a check that fails or answers nothing usable discards it; R21
+ *       eth_chainId itself is never checked and a wrong id forces the
+ *       re-creation; R22 the check carries the caller's deadline and a passed
+ *       deadline refuses it; R23 a held null is a counted vote only after the
+ *       check, and chain id 0 in the configuration is refused; R24 a check on
+ *       another connection discards the answer; R25 a connection that was not
+ *       kept never counts; R26 a descriptor number given to a new connection is
+ *       not a verified one; R27 the keep rule after a failed POST, a body that
+ *       is not JSON and an id that does not parse; R28 a right id over a
+ *       connection that was not kept verifies nothing.
+ * WHAT IT REQUIRES: a default build with libcurl (pkg-config libcurl); loopback
+ *   only: connections to 127.0.0.1 port 9 (assumed closed; nothing is bound
+ *   there) and to a kernel-chosen loopback port the test binds itself (no fixed
+ *   port, so `ctest -j$(nproc)` needs no exception); no external network. Log
+ *   files in mkdtemp directories under /tmp. LEAVES BEHIND: nothing (the
+ *   directories and the listening sockets are removed).
  * TLS IS NOT TESTED HERE: CURLOPT_SSL_VERIFYPEER = 1 and CURLOPT_SSL_VERIFYHOST
  *   = 2 are set in amm_rpc_curl_post and verified by READING THE SOURCE (the
  *   verifier did so too); libcurl cannot read an option back and no TLS server
@@ -86,11 +126,26 @@
  *   (CURLOPT_SSL_VERIFYPEER / VERIFYHOST) cannot be read back from libcurl and
  *   no TLS server is contacted: they are checked by reading the source, not
  *   here. The deadline arithmetic of the transport is exercised only at its
- *   already-expired edge.
+ *   already-expired edge. No TLS server is contacted, so re-use of a LIVE
+ *   connection (new_conns 0 on a second POST, the same descriptor twice) is not
+ *   exercised here: R16-R28 prove the rule's logic over scripted new_conns and
+ *   sock, not libcurl's pooling, and R14b/R14c show that the counters carry real
+ *   libcurl values; the positive identity path and the closing of a live
+ *   connection by the re-creation are proven live (plan checkpoint C8). R14a
+ *   cannot tell "refused" from "TLS failed" (new_conns is not asserted there);
+ *   R14a/R14b/R15 assume nothing listens on 127.0.0.1 port 9 (the discard port
+ *   is not served by default); a host that serves it still fails the TLS
+ *   handshake, so the counts hold either way.
  */
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include "amm_eth_rpc.h"
@@ -132,18 +187,70 @@ static void result(const char *r) {
     answer(b);
 }
 
+/* The per-call script of the chain-id cases (R16-R28): call number c (0-based,
+ * counted from script_reset) records its drop_pool, its body and its deadline,
+ * reports xf->new_conns = g_new_conns[c] and xf->sock = g_sock[c] on EVERY
+ * return (the early failure return included), and answers g_ans[c] when one is
+ * scripted (else the single g_resp, as before) and fails with g_rcs[c] when one
+ * is scripted (else with g_post_rc, as before). The defaults leave every
+ * existing case unchanged: no new connection, descriptor STUB_SOCK. */
+#define SCR_MAX   16
+#define STUB_SOCK 5
+#define RC_INHERIT 12345
+static int      g_drop[SCR_MAX];
+static uint64_t g_dl[SCR_MAX];
+static char     g_bodies[SCR_MAX][512];
+static long     g_new_conns[SCR_MAX];
+static int64_t  g_sock[SCR_MAX];
+static char     g_ans[SCR_MAX][256];
+static int      g_has_ans[SCR_MAX];
+static int      g_rcs[SCR_MAX];
+
+static void script_reset(void) {
+    g_calls = 0;
+    g_body[0] = '\0';
+    for (int i = 0; i < SCR_MAX; i++) {
+        g_drop[i] = 0; g_dl[i] = 0; g_bodies[i][0] = '\0';
+        g_new_conns[i] = 0; g_sock[i] = STUB_SOCK;
+        g_ans[i][0] = '\0'; g_has_ans[i] = 0; g_rcs[i] = RC_INHERIT;
+    }
+}
+
+/* script call `c`: it made `nc` connections and left descriptor `sock` */
+static void scr_conn(int c, long nc, int64_t sock) { g_new_conns[c] = nc; g_sock[c] = sock; }
+/* script call `c`'s answer: a result member, or a whole body */
+static void scr_result(int c, const char *r) {
+    snprintf(g_ans[c], sizeof(g_ans[c]), "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":%s}", r);
+    g_has_ans[c] = 1;
+}
+static void scr_raw(int c, const char *body) {
+    snprintf(g_ans[c], sizeof(g_ans[c]), "%s", body);
+    g_has_ans[c] = 1;
+}
+
 static int stub_post(void *ctx, const char *url, const uint8_t *body, size_t body_len,
-                     uint8_t *resp, size_t resp_cap, size_t *resp_len, uint64_t dl) {
-    (void)ctx; (void)dl;
-    g_calls++;
+                     uint8_t *resp, size_t resp_cap, size_t *resp_len, uint64_t dl,
+                     int drop_pool, amm_rpc_xfer_t *xf) {
+    (void)ctx;
+    int c = g_calls++;
+    int cc = c < SCR_MAX ? c : SCR_MAX - 1;
+    if (xf) { xf->new_conns = g_new_conns[cc]; xf->sock = g_sock[cc]; }
+    g_drop[cc] = drop_pool;
+    g_dl[cc] = dl;
     snprintf(g_url, sizeof(g_url), "%s", url);
     size_t n = body_len < sizeof(g_body) - 1 ? body_len : sizeof(g_body) - 1;
     memcpy(g_body, body, n);
     g_body[n] = '\0';
-    if (g_post_rc != AMM_ETH_OK) return g_post_rc;
-    if (g_resp_len > resp_cap) return AMM_ETH_ERR;          /* what a real transport does */
-    memcpy(resp, g_resp, g_resp_len);
-    *resp_len = g_lie_len ? g_lie_len : g_resp_len;
+    size_t nb = body_len < sizeof(g_bodies[cc]) - 1 ? body_len : sizeof(g_bodies[cc]) - 1;
+    memcpy(g_bodies[cc], body, nb);
+    g_bodies[cc][nb] = '\0';
+    int rc = g_rcs[cc] != RC_INHERIT ? g_rcs[cc] : g_post_rc;
+    if (rc != AMM_ETH_OK) return rc;
+    const char *ans = g_has_ans[cc] ? g_ans[cc] : g_resp;
+    size_t alen = g_has_ans[cc] ? strlen(g_ans[cc]) : g_resp_len;
+    if (alen > resp_cap) return AMM_ETH_ERR;                /* what a real transport does */
+    memcpy(resp, ans, alen);
+    *resp_len = g_lie_len ? g_lie_len : alen;
     return AMM_ETH_OK;
 }
 
@@ -153,12 +260,22 @@ static amm_eth_provider_t g_p;
 static void mk(size_t max_response) {
     if (g_r) amm_eth_rpc_free(g_r);
     amm_eth_rpc_cfg_t c = { .url = "https://eth.example.test/v1/SECRET-KEY", .name = "stub-1",
-                            .post = stub_post, .post_ctx = NULL, .max_response = max_response };
+                            .post = stub_post, .post_ctx = NULL, .max_response = max_response,
+                            .chain_id = 1 };
     g_r = amm_eth_rpc_new(&c);
     if (!g_r) { printf("FATAL rpc_new\n"); exit(2); }
     amm_eth_rpc_provider(g_r, &g_p);
     g_post_rc = AMM_ETH_OK;
     g_lie_len = 0;
+    /* verify the connection: one eth_chainId answered "0x1" over the stub's
+     * default descriptor, so every later call of an existing case (default
+     * new_conns 0, descriptor STUB_SOCK) is over the verified connection and
+     * needs no check (plan 6.1 item 7 (f) step 4). Then the script is cleared. */
+    script_reset();
+    result("\"0x1\"");
+    uint64_t id = 0;
+    if (g_p.chain_id(g_p.ctx, &id, 0) != AMM_ETH_OK || id != 1) { printf("FATAL mk verify\n"); exit(2); }
+    script_reset();
 }
 
 static int u64call(int (*f)(void *, uint64_t *, uint64_t), uint64_t *out) { return f(g_p.ctx, out, 0); }
@@ -944,7 +1061,8 @@ static void r10_scalars(void) {
 
 static void r11_config_transport(void) {
     printf("R11 configuration, the seam table, the libcurl transport\n");
-    amm_eth_rpc_cfg_t c = { .url = "https://x.example.test/", .name = "n", .post = stub_post, .max_response = 4096 };
+    amm_eth_rpc_cfg_t c = { .url = "https://x.example.test/", .name = "n", .post = stub_post, .max_response = 4096,
+                            .chain_id = 1 };
     amm_eth_rpc_t *r = amm_eth_rpc_new(&c);
     CHECK(r != NULL, "a good configuration builds");
     amm_eth_provider_t p;
@@ -970,18 +1088,32 @@ static void r11_config_transport(void) {
     CHECK(amm_eth_rpc_new(NULL) == NULL, "no configuration");
 
     CHECK(amm_rpc_curl_global_init() == 0, "curl_global_init");
-    CHECK(amm_rpc_curl_new(0) == NULL, "a zero timeout cap (no default) cannot be built");
-    amm_rpc_curl_t *cu = amm_rpc_curl_new(1000);
-    CHECK(cu != NULL, "a transport with a timeout cap builds");
+    char lbl32[AMM_RPC_NAME_MAX + 1];
+    memset(lbl32, 'a', AMM_RPC_NAME_MAX); lbl32[AMM_RPC_NAME_MAX] = '\0';
+    CHECK(amm_rpc_curl_new(0, "t") == NULL, "a zero timeout cap (no default) cannot be built");
+    CHECK(amm_rpc_curl_new(1000, NULL) == NULL, "a transport with no label cannot be built");
+    CHECK(amm_rpc_curl_new(1000, "") == NULL, "a transport with an empty label cannot be built");
+    CHECK(amm_rpc_curl_new(1000, lbl32) == NULL, "a label of AMM_RPC_NAME_MAX bytes or more cannot be built");
+    amm_rpc_curl_t *cu = amm_rpc_curl_new(1000, "t");
+    CHECK(cu != NULL, "a transport with a timeout cap and a label builds");
     uint8_t resp[64], body[2] = {'{', '}'};
     size_t rl = 7;
-    CHECK(amm_rpc_curl_post(cu, "http://127.0.0.1:9/", body, 2, resp, sizeof(resp), &rl, 0) == AMM_ETH_ERR,
+    amm_rpc_xfer_t xf;
+    CHECK(amm_rpc_curl_post(cu, "http://127.0.0.1:9/", body, 2, resp, sizeof(resp), &rl, 0, 0, &xf) == AMM_ETH_ERR,
           "a plain http:// URL is refused before any connection");
-    CHECK(amm_rpc_curl_post(cu, "https://127.0.0.1:9/", body, 2, resp, sizeof(resp), &rl, 1) == AMM_ETH_ERR,
+    CHECK(amm_rpc_curl_post(cu, "https://127.0.0.1:9/", body, 2, resp, sizeof(resp), &rl, 1, 0, &xf) == AMM_ETH_ERR,
           "an https URL with an already expired deadline is refused before any connection");
-    CHECK(amm_rpc_curl_post(NULL, "https://127.0.0.1:9/", body, 2, resp, sizeof(resp), &rl, 0) == AMM_ETH_ERR &&
-          amm_rpc_curl_post(cu, NULL, body, 2, resp, sizeof(resp), &rl, 0) == AMM_ETH_ERR &&
-          amm_rpc_curl_post(cu, "ftp://x/", body, 2, resp, sizeof(resp), &rl, 0) == AMM_ETH_ERR, "bad arguments");
+    CHECK(xf.new_conns == 0 && xf.sock == AMM_RPC_SOCK_NONE,
+          "  a post whose perform never started reports no connection and no descriptor");
+    CHECK(amm_rpc_curl_post(NULL, "https://127.0.0.1:9/", body, 2, resp, sizeof(resp), &rl, 0, 0, &xf) == AMM_ETH_ERR &&
+          amm_rpc_curl_post(cu, NULL, body, 2, resp, sizeof(resp), &rl, 0, 0, &xf) == AMM_ETH_ERR &&
+          amm_rpc_curl_post(cu, "ftp://x/", body, 2, resp, sizeof(resp), &rl, 0, 0, &xf) == AMM_ETH_ERR &&
+          amm_rpc_curl_post(cu, "https://127.0.0.1:9/", body, 2, resp, sizeof(resp), &rl, 0, 0, NULL) == AMM_ETH_ERR,
+          "bad arguments (a NULL transfer report included)");
+    uint64_t performs = 99, nconns = 99, failures = 99, drops = 99;
+    amm_rpc_curl_counts(cu, &performs, &nconns, &failures, &drops);
+    CHECK(performs == 0 && drops == 0,
+          "after the refusals no perform was started and nothing was re-created (performs 0, drops 0)");
     amm_rpc_curl_free(cu);
 }
 
@@ -1071,7 +1203,8 @@ static int has_control(const char *s) {
 static void r12_error_text(void) {
     printf("R12 the log line of an error answer\n");
     amm_eth_rpc_cfg_t c = { .url = "https://eth.example.test/v1/SECRET-KEY", .name = "p",
-                            .post = stub_post, .post_ctx = NULL, .max_response = 65536 };
+                            .post = stub_post, .post_ctx = NULL, .max_response = 65536,
+                            .chain_id = 1 };
     amm_eth_rpc_t *r = amm_eth_rpc_new(&c);
     if (!r) { printf("FATAL rpc_new\n"); exit(2); }
     amm_eth_provider_t p;
@@ -1201,7 +1334,8 @@ static void r12_error_text(void) {
 
     /* a URL whose key sits in a query with no path: the part from '?' is the tail */
     amm_eth_rpc_cfg_t c2 = { .url = "https://q.example.test?apikey=KEY123", .name = "q",
-                             .post = stub_post, .post_ctx = NULL, .max_response = 65536 };
+                             .post = stub_post, .post_ctx = NULL, .max_response = 65536,
+                             .chain_id = 1 };
     amm_eth_rpc_t *r2 = amm_eth_rpc_new(&c2);
     if (!r2) { printf("FATAL rpc_new 2\n"); exit(2); }
     amm_eth_provider_t p2;
@@ -1256,7 +1390,8 @@ static void r13_log_file(void) {
     CHECK(nodus_log_file_open(dir, 1 << 20, 1) == 0, "the log file opens");
 
     amm_eth_rpc_cfg_t c = { .url = "https://eth.example.test/v1/SECRET-KEY-9f3a", .name = "stub-1",
-                            .post = stub_post, .post_ctx = NULL, .max_response = 65536 };
+                            .post = stub_post, .post_ctx = NULL, .max_response = 65536,
+                            .chain_id = 1 };
     amm_eth_rpc_t *r = amm_eth_rpc_new(&c);
     if (!r) { printf("FATAL rpc_new\n"); exit(2); }
     amm_eth_provider_t p;
@@ -1295,6 +1430,463 @@ static void r13_log_file(void) {
     rmdir(dir);
 }
 
+/* ═══ the kept transport on the real library (R14, R15) and the chain-id rule
+ *     (R16-R28): plan docs/plans/approved/2026-11-12-bot-round-latency.md 6.1,
+ *     7.1.4 ═══════════════════════════════════════════════════════════════ */
+
+/* the log file of one case: opened in a mkdtemp directory, read whole, removed */
+static char g_ldir[64];
+static char g_lbuf[32768];
+
+static void lg_begin(void) {
+    snprintf(g_ldir, sizeof(g_ldir), "/tmp/test_amm_rpc_chain_XXXXXX");
+    if (!mkdtemp(g_ldir)) { printf("FATAL mkdtemp\n"); exit(2); }
+    if (nodus_log_file_open(g_ldir, 1 << 20, 1) != 0) { printf("FATAL log file\n"); exit(2); }
+}
+
+/* close the file, read it into g_lbuf, remove it and the directory */
+static void lg_end(void) {
+    nodus_log_file_close();
+    char path[128];
+    snprintf(path, sizeof(path), "%s/nodus-amm.log", g_ldir);
+    FILE *f = fopen(path, "r");
+    size_t n = f ? fread(g_lbuf, 1, sizeof(g_lbuf) - 1, f) : 0;
+    if (f) fclose(f);
+    g_lbuf[n] = '\0';
+    unlink(path);
+    rmdir(g_ldir);
+}
+
+static int lg_count(const char *needle) {
+    int n = 0;
+    for (const char *p = g_lbuf; (p = strstr(p, needle)) != NULL; p += strlen(needle)) n++;
+    return n;
+}
+
+static int bn_call(uint64_t *u) { return g_p.block_number(g_p.ctx, u, 0); }
+
+static const char CHAIN_REQ[] = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}";
+static const char BN_REQ[]    = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\",\"params\":[]}";
+
+/* a loopback listener on a kernel-chosen port that accepts every connection and
+ * closes it at once (no TLS), until told to stop; it counts what it accepted */
+typedef struct {
+    int         fd;
+    int         port;
+    atomic_int  stop;
+    atomic_int  accepted;
+    pthread_t   th;
+} listener_t;
+
+static void *listener_main(void *arg) {
+    listener_t *l = arg;
+    while (!atomic_load(&l->stop)) {
+        struct pollfd p = { .fd = l->fd, .events = POLLIN };
+        if (poll(&p, 1, 100) > 0 && (p.revents & POLLIN)) {
+            int c = accept(l->fd, NULL, NULL);
+            if (c >= 0) { atomic_fetch_add(&l->accepted, 1); close(c); }
+        }
+    }
+    return NULL;
+}
+
+static void listener_start(listener_t *l) {
+    memset(l, 0, sizeof(*l));
+    l->fd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.sin_port = 0;                                         /* a kernel-chosen port */
+    socklen_t al = sizeof(a);
+    if (l->fd < 0 || bind(l->fd, (struct sockaddr *)&a, sizeof(a)) != 0 || listen(l->fd, 8) != 0 ||
+        getsockname(l->fd, (struct sockaddr *)&a, &al) != 0) { printf("FATAL listener\n"); exit(2); }
+    l->port = ntohs(a.sin_port);
+    if (pthread_create(&l->th, NULL, listener_main, l) != 0) { printf("FATAL listener thread\n"); exit(2); }
+}
+
+static void listener_stop(listener_t *l) {
+    atomic_store(&l->stop, 1);
+    pthread_join(l->th, NULL);
+    close(l->fd);
+}
+
+static int curl_post_to(amm_rpc_curl_t *cu, const char *url, int drop_pool, amm_rpc_xfer_t *xf) {
+    uint8_t resp[64], body[2] = {'{', '}'};
+    size_t rl = 0;
+    return amm_rpc_curl_post(cu, url, body, 2, resp, sizeof(resp), &rl, 0, drop_pool, xf);
+}
+
+static void r14a_refused(void) {
+    printf("R14a the kept transport: a refused connection\n");
+    CHECK(amm_rpc_curl_global_init() == 0, "curl_global_init");
+    lg_begin();
+    amm_rpc_curl_t *cu = amm_rpc_curl_new(1000, "t");
+    amm_rpc_curl_t *cu2 = amm_rpc_curl_new(1000, "u");
+    amm_rpc_xfer_t x1, x2;
+    int r1 = curl_post_to(cu, "https://127.0.0.1:9/", 0, &x1);
+    int r2 = curl_post_to(cu, "https://127.0.0.1:9/", 0, &x2);
+    lg_end();
+    uint64_t pf = 0, nc = 0, fl = 0, dr = 0;
+    amm_rpc_curl_counts(cu, &pf, &nc, &fl, &dr);
+    CHECK(r1 == AMM_ETH_ERR && r2 == AMM_ETH_ERR, "both posts fail");
+    CHECK(pf == 2 && fl == 2 && dr == 2, "performs 2, failures 2, drops 2 (each failed transfer re-created the handle)");
+    CHECK(x1.sock == AMM_RPC_SOCK_NONE && x2.sock == AMM_RPC_SOCK_NONE,
+          "each post reports no descriptor, whether the port refused or accepted");
+    CHECK(rpc_line_has(g_lbuf, "t: post: transfer failed: ", "; the handle re-created after the failure (1 re-creations since start)", NULL) &&
+          rpc_line_has(g_lbuf, "t: post: transfer failed: ", "; the handle re-created after the failure (2 re-creations since start)", NULL),
+          "two failure lines name the transport and end with the re-creation suffix, n = 1 then 2");
+    CHECK(strstr(g_lbuf, "127.0.0.1") == NULL, "no URL in the log");
+    uint64_t pf2 = 99, dr2 = 99;
+    amm_rpc_curl_counts(cu2, &pf2, &nc, &fl, &dr2);
+    CHECK(pf2 == 0 && dr2 == 0, "a second transport keeps its own counts (untouched)");
+    amm_rpc_curl_free(cu);
+    amm_rpc_curl_free(cu2);
+}
+
+static void r14b_real_connections(void) {
+    printf("R14b the kept transport: real connections whose TLS handshake fails\n");
+    listener_t l;
+    listener_start(&l);
+    char url[64];
+    snprintf(url, sizeof(url), "https://127.0.0.1:%d/", l.port);
+    amm_rpc_curl_t *cu = amm_rpc_curl_new(2000, "t");
+    amm_rpc_xfer_t x1, x2;
+    int r1 = curl_post_to(cu, url, 0, &x1);
+    int r2 = curl_post_to(cu, url, 0, &x2);
+    uint64_t pf = 0, nc = 0, fl = 0, dr = 0;
+    amm_rpc_curl_counts(cu, &pf, &nc, &fl, &dr);
+    amm_rpc_curl_free(cu);
+    int acc = atomic_load(&l.accepted);
+    listener_stop(&l);
+    CHECK(r1 == AMM_ETH_ERR && r2 == AMM_ETH_ERR, "both posts fail (the TLS handshake fails)");
+    CHECK(pf == 2 && fl == 2 && dr == 2, "performs 2, failures 2, drops 2");
+    CHECK(x1.new_conns == 1 && x2.new_conns == 1,
+          "each post made exactly one connection (read per transfer, before the re-creation; a TCP success before the TLS failure counts)");
+    CHECK(nc == 2 && acc == 2, "the cumulative count is 2 and the listener accepted 2");
+    CHECK(x1.sock == AMM_RPC_SOCK_NONE && x2.sock == AMM_RPC_SOCK_NONE,
+          "a connection whose handshake failed is not kept: no descriptor");
+}
+
+static void r14c_recreation(void) {
+    printf("R14c the kept transport: re-creation on request\n");
+    listener_t l;
+    listener_start(&l);
+    char url[64];
+    snprintf(url, sizeof(url), "https://127.0.0.1:%d/", l.port);
+    lg_begin();
+    amm_rpc_curl_t *cu = amm_rpc_curl_new(2000, "t");
+    amm_rpc_xfer_t x1, x2, x3;
+    int r1 = curl_post_to(cu, url, 0, &x1);
+    int r2 = curl_post_to(cu, url, 1, &x2);
+    int r3 = curl_post_to(cu, url, 0, &x3);
+    uint64_t pf = 0, nc = 0, fl = 0, dr = 0;
+    amm_rpc_curl_counts(cu, &pf, &nc, &fl, &dr);
+    amm_rpc_curl_free(cu);
+    lg_end();
+    listener_stop(&l);
+    CHECK(r1 == AMM_ETH_ERR && r2 == AMM_ETH_ERR && r3 == AMM_ETH_ERR, "all three posts fail");
+    CHECK(pf == 3 && fl == 3 && dr == 4,
+          "performs 3, failures 3, drops 4 (post 1's failure 1; post 2's drop_pool 2 and its failure 3; post 3's failure 4)");
+    CHECK(x1.new_conns == 1 && x2.new_conns == 1 && x3.new_conns == 1,
+          "each post made a connection (a re-created handle has none to re-use)");
+    CHECK(lg_count("t: every connection dropped, the handle re-created (2 since start)") == 1,
+          "the INFO line for the drop_pool re-creation is written exactly once");
+    CHECK(rpc_line_has(g_lbuf, "t: post: transfer failed: ", "(1 re-creations since start)", NULL) &&
+          rpc_line_has(g_lbuf, "t: post: transfer failed: ", "(3 re-creations since start)", NULL) &&
+          rpc_line_has(g_lbuf, "t: post: transfer failed: ", "(4 re-creations since start)", NULL),
+          "three failure lines whose suffixes read 1, 3 and 4 re-creations");
+    CHECK(strstr(g_lbuf, "127.0.0.1") == NULL, "no URL in the log");
+}
+
+typedef struct { amm_rpc_curl_t *cu; int n; } r15_arg_t;
+
+static void *r15_worker(void *arg) {
+    r15_arg_t *a = arg;
+    amm_rpc_xfer_t x;
+    for (int i = 0; i < a->n; i++) (void)curl_post_to(a->cu, "https://127.0.0.1:9/", 0, &x);
+    return NULL;
+}
+
+static void r15_threads(void) {
+    printf("R15 the kept transport: threads\n");
+    amm_rpc_curl_t *own[3], *shared = amm_rpc_curl_new(1000, "s");
+    char nm[16];                                      /* "o" + the worst case of %d */
+    for (int i = 0; i < 3; i++) { snprintf(nm, sizeof(nm), "o%d", i); own[i] = amm_rpc_curl_new(1000, nm); }
+    r15_arg_t a[5] = { {own[0], 20}, {own[1], 20}, {own[2], 20}, {shared, 20}, {shared, 20} };
+    pthread_t th[5];
+    for (int i = 0; i < 5; i++) pthread_create(&th[i], NULL, r15_worker, &a[i]);
+    for (int i = 0; i < 5; i++) pthread_join(th[i], NULL);
+    int ok_own = 1;
+    for (int i = 0; i < 3; i++) {
+        uint64_t pf = 0, nc = 0, fl = 0, dr = 0;
+        amm_rpc_curl_counts(own[i], &pf, &nc, &fl, &dr);
+        ok_own &= pf == 20 && fl == 20 && dr == 20;
+        amm_rpc_curl_free(own[i]);
+    }
+    uint64_t pf = 0, nc = 0, fl = 0, dr = 0;
+    amm_rpc_curl_counts(shared, &pf, &nc, &fl, &dr);
+    CHECK(ok_own, "three transports, one thread each: performs, failures and drops are exactly 20 each");
+    CHECK(pf == 40 && fl == 40 && dr == 40,
+          "one transport shared by two threads: performs, failures and drops are exactly 40 (its mutex serialises them)");
+    amm_rpc_curl_free(shared);
+}
+
+/* R14d a refused argument still reports: with a non-NULL xf holding other
+ * values, a URL that is not https:// is refused (AMM_ETH_ERR) and xf reads
+ * new_conns 0 and AMM_RPC_SOCK_NONE (xf is written on every return). Falsely
+ * passes if xf already held those values: it is preset to others. */
+static void r14d_refused_reports(void) {
+    printf("R14d a refused argument writes the transfer report\n");
+    amm_rpc_curl_t *cu = amm_rpc_curl_new(1000, "t");
+    amm_rpc_xfer_t xf = { .new_conns = 77, .sock = 99 };
+    uint8_t resp[16], body[2] = {'{', '}'};
+    size_t rl = 0;
+    CHECK(amm_rpc_curl_post(cu, "http://127.0.0.1:9/", body, 2, resp, sizeof(resp), &rl, 0, 0, &xf) == AMM_ETH_ERR,
+          "a URL that is not https:// is refused");
+    CHECK(xf.new_conns == 0 && xf.sock == AMM_RPC_SOCK_NONE, "  and the report reads 0 connections, no descriptor");
+    xf.new_conns = 77; xf.sock = 99;
+    CHECK(amm_rpc_curl_post(cu, NULL, body, 2, resp, sizeof(resp), &rl, 0, 0, &xf) == AMM_ETH_ERR &&
+          xf.new_conns == 0 && xf.sock == AMM_RPC_SOCK_NONE, "a missing URL: refused, the report is written too");
+    amm_rpc_curl_free(cu);
+}
+
+/* R16 .. R28: the chain-id rule */
+
+static void r16_verified_path(void) {
+    printf("R16 a verified connection needs no check\n");
+    mk(65536);
+    uint64_t u = 0;
+    result("\"0x2377\"");
+    CHECK(bn_call(&u) == AMM_ETH_OK && u == 0x2377 && g_calls == 1, "one POST, the answer returned");
+}
+
+static void r17_hold_and_accept(void) {
+    printf("R17 a new connection: hold, check, accept\n");
+    mk(65536);
+    uint64_t u = 0;
+    lg_begin();
+    scr_result(0, "\"0x2377\""); scr_conn(0, 1, 6);
+    scr_result(1, "\"0x1\"");    scr_conn(1, 0, 6);
+    CHECK(bn_call(&u) == AMM_ETH_OK && u == 0x2377, "the held answer is returned after the check");
+    CHECK(g_calls == 2, "exactly 2 POSTs");
+    CHECK(!strcmp(g_bodies[0], BN_REQ) && !strcmp(g_bodies[1], CHAIN_REQ), "the first POST is the call, the second is eth_chainId");
+    script_reset();
+    scr_result(0, "\"0x2378\""); scr_conn(0, 0, 6);
+    CHECK(bn_call(&u) == AMM_ETH_OK && u == 0x2378 && g_calls == 1,
+          "the next call over that connection (no new connection, descriptor 6) is 1 POST");
+    lg_end();
+    CHECK(rpc_line_has(g_lbuf, "stub-1: eth_blockNumber: ", "chain id 1 checked on this connection: the answer counts", NULL),
+          "the INFO line names the provider, the method and the id");
+    CHECK(strstr(g_lbuf, "SECRET-KEY") == NULL && strstr(g_lbuf, "eth.example.test") == NULL, "no URL in the log");
+}
+
+static void r18_wrong_chain(void) {
+    printf("R18 a wrong chain id never counts\n");
+    mk(65536);
+    uint64_t u = 7;
+    lg_begin();
+    scr_result(0, "\"0x2377\""); scr_conn(0, 1, 6);
+    scr_result(1, "\"0x2\"");    scr_conn(1, 0, 6);
+    CHECK(bn_call(&u) == AMM_ETH_ERR && u == 7 && g_calls == 2, "the answer is discarded after the check reported chain id 2");
+    script_reset();
+    /* the next POST re-creates the provider's handle: drop_pool 1, a new connection 7 */
+    scr_result(0, "\"0x2379\""); scr_conn(0, 1, 7);
+    scr_result(1, "\"0x1\"");    scr_conn(1, 0, 7);
+    CHECK(bn_call(&u) == AMM_ETH_OK && u == 0x2379 && g_calls == 2, "the next call is checked on the new connection and counts (2 POSTs)");
+    CHECK(g_drop[0] == 1 && g_drop[1] == 0, "its first POST carries drop_pool 1, the check carries 0");
+    script_reset();
+    scr_result(0, "\"0x237a\""); scr_conn(0, 0, 7);
+    CHECK(bn_call(&u) == AMM_ETH_OK && g_calls == 1 && g_drop[0] == 0, "the call after that is 1 POST with drop_pool 0");
+    lg_end();
+    CHECK(rpc_line_has(g_lbuf, "stub-1: eth_blockNumber: ",
+                       "the answer does not count: the connection reports chain id 2, the setting is 1", NULL),
+          "the WARN line names the provider and both ids");
+    CHECK(strstr(g_lbuf, "SECRET-KEY") == NULL && strstr(g_lbuf, "eth.example.test") == NULL, "never the URL");
+}
+
+static void r19_check_reconnects(void) {
+    printf("R19 the check itself needs another new connection\n");
+    mk(65536);
+    uint64_t u = 7;
+    lg_begin();
+    scr_result(0, "\"0x2377\""); scr_conn(0, 1, 6);
+    scr_result(1, "\"0x1\"");    scr_conn(1, 1, 7);
+    CHECK(bn_call(&u) == AMM_ETH_ERR && u == 7 && g_calls == 2, "the held answer is discarded");
+    script_reset();
+    scr_result(0, "\"0x2378\""); scr_conn(0, 0, 7);
+    CHECK(bn_call(&u) == AMM_ETH_OK && u == 0x2378 && g_calls == 1,
+          "the check verified the connection it ran on (7): the next call there is 1 POST");
+    lg_end();
+    CHECK(rpc_line_has(g_lbuf, "stub-1: eth_blockNumber: ", "the chain-id check needed another new connection", NULL),
+          "the WARN line says the check needed another new connection");
+}
+
+static void r20_check_fails(void) {
+    printf("R20 the check fails or gives nothing usable\n");
+    const char *what[] = { "the check's post fails", "its answer is not JSON", "its answer is a JSON-RPC error",
+                           "its result is null" };
+    for (int v = 0; v < 4; v++) {
+        mk(65536);
+        uint64_t u = 7;
+        scr_result(0, "\"0x2377\""); scr_conn(0, 1, 6);
+        scr_conn(1, 0, 6);
+        if (v == 0) { scr_result(1, "\"0x1\""); g_rcs[1] = AMM_ETH_ERR; }
+        if (v == 1) scr_raw(1, "not json");
+        if (v == 2) scr_raw(1, "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"nope\"}}");
+        if (v == 3) scr_result(1, "null");
+        char m[96];
+        snprintf(m, sizeof(m), "%s: the held answer is discarded after 2 POSTs", what[v]);
+        CHECK(bn_call(&u) == AMM_ETH_ERR && u == 7 && g_calls == 2, m);
+        script_reset();
+        scr_result(0, "\"0x2378\""); scr_conn(0, 0, 6);
+        scr_result(1, "\"0x1\"");    scr_conn(1, 0, 6);
+        snprintf(m, sizeof(m), "%s: the next call checks again (2 POSTs)", what[v]);
+        CHECK(bn_call(&u) == AMM_ETH_OK && u == 0x2378 && g_calls == 2, m);
+    }
+}
+
+static void r21_chainid_itself(void) {
+    printf("R21 eth_chainId itself is never checked\n");
+    mk(65536);
+    uint64_t u = 0;
+    scr_result(0, "\"0x2\""); scr_conn(0, 1, 6);
+    CHECK(chain(&u) == AMM_ETH_OK && u == 2 && g_calls == 1, "the id 2 is returned (the caller compares), one POST, no check");
+    script_reset();
+    scr_result(0, "\"0x2377\""); scr_conn(0, 0, 6);
+    scr_result(1, "\"0x1\"");    scr_conn(1, 0, 6);
+    CHECK(bn_call(&u) == AMM_ETH_OK && u == 0x2377 && g_calls == 2,
+          "the next other-method call is checked (2 POSTs)");
+    CHECK(g_drop[0] == 1 && g_drop[1] == 0, "  its first POST re-creates the handle (drop_pool 1)");
+}
+
+static void r22_deadline(void) {
+    printf("R22 the deadline of the check\n");
+    mk(65536);
+    uint64_t u = 0;
+    const uint64_t far = 4000000000000ULL;          /* an absolute monotonic ms far in the future */
+    scr_result(0, "\"0x2377\""); scr_conn(0, 1, 6);
+    scr_result(1, "\"0x1\"");    scr_conn(1, 0, 6);
+    CHECK(g_p.block_number(g_p.ctx, &u, far) == AMM_ETH_OK && g_calls == 2, "a far deadline: the answer counts");
+    CHECK(g_dl[0] == far && g_dl[1] == far, "the check is posted with the caller's deadline");
+    mk(65536);
+    lg_begin();
+    scr_result(0, "\"0x2377\""); scr_conn(0, 1, 6);
+    u = 7;
+    CHECK(g_p.block_number(g_p.ctx, &u, 1) == AMM_ETH_ERR && u == 7 && g_calls == 1,
+          "an already passed deadline: the answer is not counted after exactly 1 POST (no check posted)");
+    lg_end();
+    CHECK(rpc_line_has(g_lbuf, "stub-1: eth_blockNumber: ", "the deadline passed before the chain-id check", NULL),
+          "the WARN line says the deadline passed before the chain-id check");
+}
+
+static void r23_held_null(void) {
+    printf("R23 a held null is a vote only after the check\n");
+    uint8_t tx[32];
+    memset(tx, 0xab, 32);
+    amm_eth_receipt_t rc;
+    mk(65536);
+    scr_result(0, "null");     scr_conn(0, 1, 6);
+    scr_result(1, "\"0x1\"");  scr_conn(1, 0, 6);
+    CHECK(g_p.get_receipt(g_p.ctx, tx, &rc, 0) == AMM_ETH_NOT_FOUND && g_calls == 2,
+          "a null receipt over a checked new connection is NOT_FOUND (a counted vote)");
+    mk(65536);
+    scr_result(0, "null");     scr_conn(0, 1, 6);
+    scr_result(1, "\"0x2\"");  scr_conn(1, 0, 6);
+    CHECK(g_p.get_receipt(g_p.ctx, tx, &rc, 0) == AMM_ETH_ERR && g_calls == 2,
+          "the same null with the check reporting chain id 2 is ERR (never a vote)");
+    amm_eth_rpc_cfg_t z = { .url = "https://x.example.test/", .name = "n", .post = stub_post, .max_response = 4096,
+                            .chain_id = 0 };
+    CHECK(amm_eth_rpc_new(&z) == NULL, "a configuration with chain_id 0 is refused");
+}
+
+static void r24_other_connection(void) {
+    printf("R24 the check ran on another connection\n");
+    mk(65536);
+    uint64_t u = 7;
+    lg_begin();
+    scr_result(0, "\"0x2377\""); scr_conn(0, 0, 6);        /* not the verified descriptor 5 */
+    scr_result(1, "\"0x1\"");    scr_conn(1, 0, 8);
+    CHECK(bn_call(&u) == AMM_ETH_ERR && u == 7 && g_calls == 2, "the answer is discarded after 2 POSTs");
+    script_reset();
+    scr_result(0, "\"0x2378\""); scr_conn(0, 0, 8);
+    CHECK(bn_call(&u) == AMM_ETH_OK && u == 0x2378 && g_calls == 1,
+          "the check verified its own connection (8): the next call there is 1 POST");
+    lg_end();
+    CHECK(rpc_line_has(g_lbuf, "stub-1: eth_blockNumber: ", "the chain-id check ran on another connection", NULL),
+          "the WARN line says the check ran on another connection");
+}
+
+static void r25_not_kept(void) {
+    printf("R25 a connection that was not kept never counts\n");
+    uint64_t u = 7;
+    for (int v = 0; v < 2; v++) {
+        mk(65536);
+        lg_begin();
+        scr_result(0, "\"0x2377\""); scr_conn(0, v == 0 ? 1 : 0, AMM_RPC_SOCK_NONE);
+        char m[96];
+        snprintf(m, sizeof(m), "new_conns %d, no descriptor: not counted after exactly 1 POST", v == 0 ? 1 : 0);
+        CHECK(bn_call(&u) == AMM_ETH_ERR && u == 7 && g_calls == 1, m);
+        lg_end();
+        CHECK(rpc_line_has(g_lbuf, "stub-1: eth_blockNumber: ", "the answer does not count: its connection was not kept", NULL),
+              "  the WARN line says the connection was not kept");
+    }
+}
+
+static void r26_reused_number(void) {
+    printf("R26 a descriptor number given to a new connection\n");
+    mk(65536);
+    uint64_t u = 0;
+    scr_result(0, "\"0x2377\""); scr_conn(0, 1, 5);          /* the verified number, but a new connection */
+    scr_result(1, "\"0x1\"");    scr_conn(1, 0, 5);
+    CHECK(bn_call(&u) == AMM_ETH_OK && u == 0x2377 && g_calls == 2,
+          "a new connection is checked even when it carries the verified number (2 POSTs), then counts");
+}
+
+static void r27_keep_rule(void) {
+    printf("R27 the keep rule after a failed call\n");
+    uint64_t u = 7;
+    const char *what[] = { "a failed post", "an answer that is not JSON", "an eth_chainId result that does not parse" };
+    for (int v = 0; v < 3; v++) {
+        mk(65536);
+        scr_conn(0, 1, 5);
+        if (v == 0) g_rcs[0] = AMM_ETH_ERR;
+        if (v == 1) scr_raw(0, "not json");
+        if (v == 2) scr_result(0, "\"0xzz\"");
+        int rc = v == 2 ? chain(&u) : bn_call(&u);
+        char m[96];
+        snprintf(m, sizeof(m), "%s over a new connection with the verified number: ERR", what[v]);
+        CHECK(rc == AMM_ETH_ERR, m);
+        script_reset();
+        scr_result(0, "\"0x2378\""); scr_conn(0, 0, 5);
+        scr_result(1, "\"0x1\"");    scr_conn(1, 0, 5);
+        snprintf(m, sizeof(m), "%s: the next call is checked (2 POSTs), not trusted on the old number", what[v]);
+        CHECK(bn_call(&u) == AMM_ETH_OK && u == 0x2378 && g_calls == 2, m);
+    }
+    /* a failed post as the transport now reports it: no connection counted, no descriptor */
+    mk(65536);
+    g_rcs[0] = AMM_ETH_ERR; scr_conn(0, 0, AMM_RPC_SOCK_NONE);
+    CHECK(bn_call(&u) == AMM_ETH_ERR, "a failed post reported with no descriptor: ERR");
+    script_reset();
+    scr_result(0, "\"0x2378\""); scr_conn(0, 1, 5);
+    scr_result(1, "\"0x1\"");    scr_conn(1, 0, 5);
+    CHECK(bn_call(&u) == AMM_ETH_OK && u == 0x2378 && g_calls == 2,
+          "  the next call, on a new connection, is checked (2 POSTs) and counts");
+}
+
+static void r28_right_id_not_kept(void) {
+    printf("R28 a right chain id over a connection that was not kept\n");
+    mk(65536);
+    uint64_t u = 0;
+    scr_result(0, "\"0x1\""); scr_conn(0, 1, AMM_RPC_SOCK_NONE);
+    CHECK(chain(&u) == AMM_ETH_OK && u == 1 && g_calls == 1, "the id is returned, 1 POST");
+    script_reset();
+    scr_result(0, "\"0x2377\""); scr_conn(0, 0, 5);
+    scr_result(1, "\"0x1\"");    scr_conn(1, 0, 5);
+    CHECK(bn_call(&u) == AMM_ETH_OK && u == 0x2377 && g_calls == 2,
+          "that check verified nothing: the next call is checked (2 POSTs)");
+}
+
 int main(void) {
     printf("test_amm_eth_rpc\n");
     r1_requests();
@@ -1310,6 +1902,24 @@ int main(void) {
     r11_config_transport();
     r12_error_text();
     r13_log_file();
+    r14a_refused();
+    r14b_real_connections();
+    r14c_recreation();
+    r15_threads();
+    r14d_refused_reports();
+    r16_verified_path();
+    r17_hold_and_accept();
+    r18_wrong_chain();
+    r19_check_reconnects();
+    r20_check_fails();
+    r21_chainid_itself();
+    r22_deadline();
+    r23_held_null();
+    r24_other_connection();
+    r25_not_kept();
+    r26_reused_number();
+    r27_keep_rule();
+    r28_right_id_not_kept();
     if (g_r) amm_eth_rpc_free(g_r);
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

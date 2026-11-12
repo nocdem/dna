@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "amm_eth_fanout.h"
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "AMM_WATCH"
@@ -199,14 +200,36 @@ static int cmp_u64_desc(const void *a, const void *b) {
 
 /* Providers used this step: the configured chain id only (setting
  * eth_chain_id, givens item 77). @return the number used. */
+/* The groups below ask every usable provider at the same time (amm_eth_fanout):
+ * a work unit runs one provider's call(s) on that provider's thread and writes
+ * only slot i of its job; the examination is today's loop, run on the calling
+ * thread after every unit has returned, in provider index order. A unit never
+ * touches why/note text, the journal or `w` beyond the read-only provider
+ * table and configuration. */
+typedef struct {
+    const amm_eth_watch_t *w;
+    uint64_t               dl;
+    int                    rc[AMM_ETH_MAX_PROVIDERS];
+    uint64_t               id[AMM_ETH_MAX_PROVIDERS];
+} qual_job_t;
+
+static void qual_unit(void *arg, int i) {
+    qual_job_t *j = arg;
+    const amm_eth_provider_t *p = &j->w->prov[i];
+    j->id[i] = 0;
+    j->rc[i] = p->chain_id(p->ctx, &j->id[i], j->dl);
+}
+
 static int qualify(amm_eth_watch_t *w, step_t *st) {
     int n = 0;
     char buf[256] = "";
     txt_t t = { buf, sizeof(buf), 0 };
+    qual_job_t job;
+    job.w = w; job.dl = st->deadline;
+    amm_fanout_run(w->cfg.n_providers, NULL, qual_unit, &job);      /* every configured provider */
     for (int i = 0; i < w->cfg.n_providers; i++) {
-        uint64_t id = 0;
-        const amm_eth_provider_t *p = &w->prov[i];
-        int r = p->chain_id(p->ctx, &id, st->deadline);
+        uint64_t id = job.id[i];
+        int r = job.rc[i];
         st->use[i] = (r == AMM_ETH_OK && id == w->cfg.chain_id);
         if (r != AMM_ETH_OK) txt_add(&t, " provider %d gave no chain id (%d);", i, r);
         else if (!st->use[i]) txt_add(&t, " provider %d is on chain %llu;", i, (unsigned long long)id);
@@ -218,14 +241,29 @@ static int qualify(amm_eth_watch_t *w, step_t *st) {
 
 /* The Q-th largest latest block over the usable providers. @return 0 /
  * 1 (fewer than Q reported). */
+typedef struct {
+    const amm_eth_watch_t *w;
+    uint64_t               dl;
+    int                    rc[AMM_ETH_MAX_PROVIDERS];
+    uint64_t               t[AMM_ETH_MAX_PROVIDERS];
+} tip_job_t;
+
+static void tip_unit(void *arg, int i) {
+    tip_job_t *j = arg;
+    const amm_eth_provider_t *p = &j->w->prov[i];
+    j->t[i] = 0;
+    j->rc[i] = p->block_number(p->ctx, &j->t[i], j->dl);
+}
+
 static int quorum_tip(amm_eth_watch_t *w, const step_t *st, uint64_t *out) {
     uint64_t tips[AMM_ETH_MAX_PROVIDERS];
     int n = 0;
+    tip_job_t job;
+    job.w = w; job.dl = st->deadline;
+    amm_fanout_run(w->cfg.n_providers, st->use, tip_unit, &job);
     for (int i = 0; i < w->cfg.n_providers; i++) {
-        uint64_t t = 0;
         if (!st->use[i]) continue;
-        const amm_eth_provider_t *p = &w->prov[i];
-        if (p->block_number(p->ctx, &t, st->deadline) == AMM_ETH_OK) tips[n++] = t;
+        if (job.rc[i] == AMM_ETH_OK) tips[n++] = job.t[i];
     }
     if (n < w->cfg.quorum) {
         why_set(st, "%d usable providers reported their latest block, %d needed", n, w->cfg.quorum);
@@ -269,18 +307,31 @@ static void why_block(amm_eth_watch_t *w, const step_t *st, uint64_t h, const ch
 #define AGREE_QUORUM    1
 #define AGREE_NO_HEADER 2
 #define AGREE_OTHER     3
+typedef struct {
+    const amm_eth_watch_t *w;
+    uint64_t               dl, h;
+    int                    rc[AMM_ETH_MAX_PROVIDERS];
+    amm_eth_block_t        t[AMM_ETH_MAX_PROVIDERS];
+} blk_job_t;
+
+static void blk_unit(void *arg, int i) {
+    blk_job_t *j = arg;
+    const amm_eth_provider_t *p = &j->w->prov[i];
+    j->rc[i] = p->get_block(p->ctx, j->h, &j->t[i], j->dl);
+}
+
 static int quorum_block(amm_eth_watch_t *w, const step_t *st, uint64_t h,
                         amm_eth_block_t *out, int agree[AMM_ETH_MAX_PROVIDERS]) {
     amm_eth_block_t b[AMM_ETH_MAX_PROVIDERS];
     int bi[AMM_ETH_MAX_PROVIDERS];
     int n = 0;
     memset(agree, 0, sizeof(int) * AMM_ETH_MAX_PROVIDERS);
+    blk_job_t job;
+    job.w = w; job.dl = st->deadline; job.h = h;
+    amm_fanout_run(w->cfg.n_providers, st->use, blk_unit, &job);
     for (int i = 0; i < w->cfg.n_providers; i++) {
         if (!st->use[i]) continue;
-        const amm_eth_provider_t *p = &w->prov[i];
-        amm_eth_block_t t;
-        if (p->get_block(p->ctx, h, &t, st->deadline) == AMM_ETH_OK &&
-            t.number == h) { bi[n] = i; b[n++] = t; }
+        if (job.rc[i] == AMM_ETH_OK && job.t[i].number == h) { bi[n] = i; b[n++] = job.t[i]; }
     }
     int found = -1;
     for (int i = 0; i < n; i++) {
@@ -384,16 +435,38 @@ static void plan_free(plan_t *p) { free(p->put); free(p->drop); }
 typedef enum { V_VALID, V_INVALID, V_UNKNOWN } verdict_t;
 
 /* Per-provider verification of a quorum record (amm_eth_watch.h step 6). */
+typedef struct {
+    const amm_eth_watch_t *w;
+    uint64_t               dl;
+    const uint8_t         *tx_hash;
+    int                    rc_tx[AMM_ETH_MAX_PROVIDERS], rc_r[AMM_ETH_MAX_PROVIDERS];
+    amm_eth_tx_t           tx[AMM_ETH_MAX_PROVIDERS];
+    amm_eth_receipt_t      rcpt[AMM_ETH_MAX_PROVIDERS];
+} ver_job_t;
+
+/* one unit: the transaction, then (only if it came) the receipt, in today's order */
+static void ver_unit(void *arg, int i) {
+    ver_job_t *j = arg;
+    const amm_eth_provider_t *p = &j->w->prov[i];
+    j->rc_r[i] = AMM_ETH_ERR;
+    j->rc_tx[i] = p->get_tx(p->ctx, j->tx_hash, &j->tx[i], j->dl);
+    if (j->rc_tx[i] == AMM_ETH_OK)
+        j->rc_r[i] = p->get_receipt(p->ctx, j->tx_hash, &j->rcpt[i], j->dl);
+}
+
 static verdict_t verify_record(amm_eth_watch_t *w, const step_t *st,
                                const amm_eth_block_t *qb, const ent_t *e) {
     int valid = 0, invalid = 0;
+    ver_job_t *job = malloc(sizeof(*job));
+    if (!job) return V_UNKNOWN;
+    job->w = w; job->dl = st->deadline; job->tx_hash = e->tx;
+    amm_fanout_run(w->cfg.n_providers, st->use, ver_unit, job);
     for (int i = 0; i < w->cfg.n_providers; i++) {
         if (!st->use[i]) continue;
-        const amm_eth_provider_t *p = &w->prov[i];
-        amm_eth_tx_t tx;
-        amm_eth_receipt_t rc;
-        if (p->get_tx(p->ctx, e->tx, &tx, st->deadline) != AMM_ETH_OK) continue;
-        if (p->get_receipt(p->ctx, e->tx, &rc, st->deadline) != AMM_ETH_OK) continue;
+        const amm_eth_tx_t tx = job->tx[i];
+        const amm_eth_receipt_t rc = job->rcpt[i];
+        if (job->rc_tx[i] != AMM_ETH_OK) continue;
+        if (job->rc_r[i] != AMM_ETH_OK) continue;
         if (rc.status == 1 && rc.block_number == qb->number &&
             !memcmp(rc.block_hash, qb->hash, 32) && tx.has_to &&
             !memcmp(tx.to, w->cfg.usdt, 20) && !memcmp(tx.from, e->from, 20) &&
@@ -402,6 +475,7 @@ static verdict_t verify_record(amm_eth_watch_t *w, const step_t *st,
         else
             invalid++;
     }
+    free(job);
     if (valid >= w->cfg.quorum && invalid < w->cfg.quorum) return V_VALID;
     if (invalid >= w->cfg.quorum && valid < w->cfg.quorum) return V_INVALID;
     char th[65];
@@ -434,6 +508,24 @@ static void rec_from_ent(amm_rec_t *r, const ent_t *e, const amm_eth_block_t *qb
  * checked (log_ok) and flattened. `ans[i]` marks the providers that answered.
  * @return the number of entries, -1 on memory failure (`*ents_out` heap, the
  * caller frees it). */
+typedef struct {
+    const amm_eth_watch_t *w;
+    uint64_t               dl;
+    const amm_eth_block_t *qb;
+    int                    rc[AMM_ETH_MAX_PROVIDERS], n[AMM_ETH_MAX_PROVIDERS];
+} logs_job_t;
+
+/* one unit: provider i's logs of the quorum block into its own slice of w->logbuf */
+static void logs_unit(void *arg, int i) {
+    logs_job_t *j = arg;
+    const amm_eth_watch_t *w = j->w;
+    const amm_eth_provider_t *p = &w->prov[i];
+    amm_eth_log_t *buf = w->logbuf + (size_t)i * AMM_ETH_LOGS_MAX;
+    j->n[i] = 0;
+    j->rc[i] = p->get_logs(p->ctx, j->qb->number, j->qb->hash, w->cfg.usdt, TRANSFER_TOPIC,
+                           w->cfg.foundation, buf, AMM_ETH_LOGS_MAX, &j->n[i], j->dl);
+}
+
 static int gather_logs(amm_eth_watch_t *w, const step_t *st,
                        const amm_eth_block_t *qb, const int *agree, ent_t **ents_out,
                        int ans[AMM_ETH_MAX_PROVIDERS], int *answered_out) {
@@ -441,8 +533,10 @@ static int gather_logs(amm_eth_watch_t *w, const step_t *st,
     if (!ents) return -1;
     int n_ent = 0, answered = 0;
     memset(ans, 0, sizeof(int) * AMM_ETH_MAX_PROVIDERS);
-    /* The parent's provider set: a single loop in provider index order, no early
-     * stop, every usable provider is asked whatever its header read returned (a
+    /* The parent's provider set: every usable provider is asked at once
+     * (amm_eth_fanout), no early stop, the answers examined in provider index
+     * order after every call has returned; every usable provider is asked
+     * whatever its header read returned (a
      * provider that failed, had none or returned another header may still hold
      * the quorum block). The logs are read BY THE ACCEPTED BLOCK'S HASH
      * (amm_eth_watch.h step 5), so an answer is about exactly that block: a
@@ -450,15 +544,14 @@ static int gather_logs(amm_eth_watch_t *w, const step_t *st,
      * which is "not answered", never an empty list counted as an absent vote;
      * log_ok still checks each log's number and hash. */
     {
+      logs_job_t job;
+      job.w = w; job.dl = st->deadline; job.qb = qb;
+      amm_fanout_run(w->cfg.n_providers, st->use, logs_unit, &job);
       for (int i = 0; i < w->cfg.n_providers; i++) {
         if (!st->use[i]) continue;
-        const amm_eth_provider_t *p = &w->prov[i];
         amm_eth_log_t *buf = w->logbuf + (size_t)i * AMM_ETH_LOGS_MAX;
-        int n = 0;
-        if (p->get_logs(p->ctx, qb->number, qb->hash, w->cfg.usdt, TRANSFER_TOPIC,
-                        w->cfg.foundation, buf, AMM_ETH_LOGS_MAX, &n,
-                        st->deadline) != AMM_ETH_OK ||
-            n < 0 || n > AMM_ETH_LOGS_MAX) continue;
+        int n = job.n[i];
+        if (job.rc[i] != AMM_ETH_OK || n < 0 || n > AMM_ETH_LOGS_MAX) continue;
         ans[i] = 1;
         answered++;
         for (int k = 0; k < n; k++) {
@@ -734,6 +827,33 @@ typedef struct { amm_rec_t nw; } moved_t;
 /* Where is the transaction of `rec` now, at the quorum? Exactly one of: in
  * the same block, in another block, no receipt / failed receipt; anything
  * else is unknown. */
+typedef struct {
+    const amm_eth_watch_t *w;
+    uint64_t               dl;
+    const amm_rec_t       *rec;
+    int                    want_tip;       /* the depth vote is asked (deep_ok != NULL) */
+    int                    rc_r[AMM_ETH_MAX_PROVIDERS], rc_tip[AMM_ETH_MAX_PROVIDERS];
+    amm_eth_receipt_t      rcpt[AMM_ETH_MAX_PROVIDERS];
+    uint64_t               tip[AMM_ETH_MAX_PROVIDERS];
+} cls_job_t;
+
+/* one unit: the receipt, then (for a status-1 receipt of the record's own block,
+ * when the depth vote is asked) the SAME provider's latest block, in today's
+ * per-provider order. Today every receipt is read before any tip; in the unit
+ * provider i's tip is read right after its own receipt, which the joint vote
+ * does not depend on (the same provider's hash and tip). */
+static void cls_unit(void *arg, int i) {
+    cls_job_t *j = arg;
+    const amm_eth_provider_t *p = &j->w->prov[i];
+    j->rc_tip[i] = AMM_ETH_ERR;
+    j->tip[i] = 0;
+    j->rc_r[i] = p->get_receipt(p->ctx, j->rec->tx, &j->rcpt[i], j->dl);
+    if (j->want_tip && j->rc_r[i] == AMM_ETH_OK && j->rcpt[i].status == 1 &&
+        !memcmp(j->rcpt[i].block_hash, j->rec->block_hash, 32) &&
+        j->rcpt[i].block_number == j->rec->block_number)
+        j->rc_tip[i] = p->block_number(p->ctx, &j->tip[i], j->dl);
+}
+
 static cls_t classify(amm_eth_watch_t *w, const step_t *st, const amm_rec_t *rec,
                       moved_t *mv, int *deep_ok, uint64_t min_gap, txt_t *dt) {
     amm_eth_receipt_t rc[AMM_ETH_MAX_PROVIDERS];
@@ -741,11 +861,14 @@ static cls_t classify(amm_eth_watch_t *w, const step_t *st, const amm_rec_t *rec
     int pidx[AMM_ETH_MAX_PROVIDERS];       /* provider behind each answer    */
     int n = 0;
     if (deep_ok) *deep_ok = 0;
+    cls_job_t *job = malloc(sizeof(*job));
+    if (!job) return C_UNKNOWN;
+    job->w = w; job->dl = st->deadline; job->rec = rec; job->want_tip = deep_ok != NULL;
+    amm_fanout_run(w->cfg.n_providers, st->use, cls_unit, job);
     for (int i = 0; i < w->cfg.n_providers; i++) {
         if (!st->use[i]) continue;
-        const amm_eth_provider_t *p = &w->prov[i];
-        amm_eth_receipt_t t;
-        int r = p->get_receipt(p->ctx, rec->tx, &t, st->deadline);
+        const amm_eth_receipt_t t = job->rcpt[i];
+        int r = job->rc_r[i];
         char bh[9];
         if (r == AMM_ETH_OK) {
             rc[n] = t;
@@ -776,9 +899,8 @@ static cls_t classify(amm_eth_watch_t *w, const step_t *st, const amm_rec_t *rec
              * payment's block hash must also report a tip at least
              * `min_gap` (the payment's count) above it */
             if (deep_ok) {
-                uint64_t tip = 0;
-                const amm_eth_provider_t *p = &w->prov[pidx[i]];
-                int tr = p->block_number(p->ctx, &tip, st->deadline);
+                uint64_t tip = job->tip[pidx[i]];
+                int tr = job->rc_tip[pidx[i]];
                 if (tr == AMM_ETH_OK && tip >= rec->block_number &&
                     tip - rec->block_number >= min_gap)
                     (*deep_ok)++;
@@ -800,6 +922,7 @@ static cls_t classify(amm_eth_watch_t *w, const step_t *st, const amm_rec_t *rec
                      !memcmp(rc[mg[m]].block_hash, rc[i].block_hash, 32);
         if (!known) mg[nmg++] = i;
     }
+    free(job);                                  /* every slot has been read */
     int q = w->cfg.quorum;
     int hits = (same >= q) + (gone >= q) + nmg;
     txt_add(dt, "; same block %d, no or failed receipt %d, other blocks at the quorum %d",

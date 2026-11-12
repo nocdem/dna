@@ -3,7 +3,10 @@
  * @brief nodus-amm USDT payout and refund on Ethereum: an EIP-1559
  *        transaction calling USDT `transfer(user, amount)` from the bot's own
  *        key, signed, STORED before it is broadcast, broadcast, settled by its
- *        receipt.
+ *        receipt. The payer's chain-id, balance, estimate and receipt groups
+ *        ask every usable provider at once (amm_eth_fanout.h, one thread per
+ *        provider) and examine the answers after all have returned, in
+ *        provider index order; the quorum rules are unchanged.
  *
  * Governing text: docs/plans/2026-11-08-swap-bot-plan.nodus1.md (revision 4)
  * section 10 (lines 263-272), section 17 (write-ahead rule, line 369: "every
