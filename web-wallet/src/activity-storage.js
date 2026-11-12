@@ -140,7 +140,10 @@ export async function parseSites(text, id, key) {
 }
 
 export async function serializeBalances(id, entries, key) {
-  const selected = Object.entries(entries).slice(0, BALANCES_MAX).map(([asset, e]) => [asset, { units: e.units, observedAt: e.observedAt, address: e.address }]);
+  // `price` (optional): the last price read for the asset, { units, observedAt } with units a decimal string, kept next
+  // to the balance so the total can be shown at once on the next open (an older build ignores the field).
+  const selected = Object.entries(entries).slice(0, BALANCES_MAX).map(([asset, e]) => [asset, { units: e.units, observedAt: e.observedAt, address: e.address,
+    ...(e.price ? { price: { units: e.price.units, observedAt: e.price.observedAt } } : {}) }]);
   return sealRecord(BALANCES_CONTEXT, id, Object.fromEntries(selected), key, BALANCES_MAX_PLAIN, 'balances');
 }
 // -> { assetKey: { units: bigint, observedAt, address } }; anything that does
@@ -154,7 +157,9 @@ export async function parseBalances(text, id, key, now = Date.now()) {
     if (!/^[a-z0-9]{1,24}:[A-Za-z0-9]{1,12}$/.test(asset) || !e || typeof e.units !== 'string' || !/^(0|[1-9]\d{0,77})$/.test(e.units) ||
         !Number.isSafeInteger(e.observedAt) || e.observedAt <= 0 || e.observedAt > now + 60000 ||
         typeof e.address !== 'string' || e.address.length === 0 || e.address.length > 128) throw new Error('Invalid saved balances.');
-    out[asset] = { units: BigInt(e.units), observedAt: e.observedAt, address: e.address };
+    const p = e.price;
+    if (p !== undefined && (!p || typeof p.units !== 'string' || !/^(0|[1-9]\d{0,77})$/.test(p.units) || !Number.isSafeInteger(p.observedAt) || p.observedAt <= 0 || p.observedAt > now + 60000)) throw new Error('Invalid saved balances.');
+    out[asset] = { units: BigInt(e.units), observedAt: e.observedAt, address: e.address, ...(p ? { price: { units: BigInt(p.units), observedAt: p.observedAt } } : {}) };
   }
   return out;
 }

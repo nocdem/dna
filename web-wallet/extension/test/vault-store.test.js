@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, encryptVault, decryptVault, parseVault } from '../../src/vault.js';
+import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY, encryptVault, decryptVault, parseVault } from '../../src/vault.js';
 import { validateNodusPhrase } from '../../src/recovery.js';
 import { createVaultStore } from '../src/background/vault-store.js';
 import { createLockCoordinator } from '../src/background/lock.js';
@@ -60,7 +60,7 @@ test('change password preserves vault id and delete locks and removes every wall
   assert.equal((await store.unlock(newer)).id, original.id);
   assert.equal(storage.values[ACTIVITY_KEY], activity);
   assert.deepEqual(await parseActivity(storage.values[ACTIVITY_KEY], original.id, {}, await activityKeyFor(phrase, original.id)), []);
-  for (const key of [BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, SITES_KEY, `${ACTIVITY_KEY}.solana.devnet`, `${HISTORY_KEY}.tron.nile`]) storage.values[key] = 'public encrypted fixture';
+  for (const key of [BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY, SITES_KEY, `${ACTIVITY_KEY}.solana.devnet`, `${HISTORY_KEY}.tron.nile`]) storage.values[key] = 'public encrypted fixture';
   storage.values.unrelated = 'keep';
   // The agreed data notice is not wallet data: "Delete saved wallet" leaves it (plan section 2.7).
   storage.values['nodus.privacyConsent.v1'] = '1';

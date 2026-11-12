@@ -1,6 +1,7 @@
 import { groupNetworkEntries } from './network-groups.js';
 import { capabilitiesFor } from './capabilities.js';
 import { CHAINS } from './config.js';
+import { debugLog } from './debug-log.js';
 import { PQ_NETWORKS } from './pq/networks.js';
 import { ASSETS, chainBalances, balanceErrorDetail, unavailableBalanceLabel, holdingActions, sameAssetKeys, readPrices as defaultReadPrices, portfolioSnapshot, groupNetworks, usdText, displayAmount } from './portfolio.js';
 
@@ -135,9 +136,32 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   let autoMinutes = 0, autoTimer, readAt = 0, pricesAt = 0, doneAt = 0;
   // assetKey -> { units: bigint, observedAt, address }: the last balance read.
   let kept = {};
+  // The kept rows already replaced by a fresh read this session (for the debug line), and the kept-row count last shown.
+  const replaced = new Set(); let lastKeptCount = 0;
+  // `price` of an entry: the last price read for that asset, kept with the balance (the quote of this session when there
+  // is one, else the one that was kept) so the next open can value the kept balance at once.
+  function keepOut() {
+    onKept?.(Object.fromEntries(Object.entries(kept).map(([key, k]) => [key, { units: k.units.toString(), observedAt: k.observedAt, address: k.address,
+      ...(k.price ? { price: { units: k.price.units.toString(), observedAt: k.price.observedAt } } : {}) }])));
+  }
   function keepRead(chain, result) {
-    for (const [key, value] of Object.entries(result)) if (value.state === 'ready') kept[key] = { units: value.units, observedAt: value.observedAt, address: addresses[chain] };
-    onKept?.(Object.fromEntries(Object.entries(kept).map(([key, k]) => [key, { units: k.units.toString(), observedAt: k.observedAt, address: k.address }])));
+    for (const [key, value] of Object.entries(result)) {
+      if (value.state !== 'ready') continue;
+      if (kept[key] && !replaced.has(key)) debugLog('portfolio', 'kept-row-replaced', { asset: key, kept_age_ms: Date.now() - kept[key].observedAt });
+      replaced.add(key);
+      const price = quotes[key] ?? kept[key]?.price;
+      kept[key] = { units: value.units, observedAt: value.observedAt, address: addresses[chain], ...(price ? { price: { units: price.units, observedAt: price.observedAt } } : {}) };
+    }
+    keepOut();
+  }
+  // A price read replaces the kept price of every kept balance whose asset it names, and the entries are kept again.
+  function keepPrices() {
+    let changed = false;
+    for (const [key, k] of Object.entries(kept)) {
+      const quote = quotes[key];
+      if (quote && quote.observedAt <= Date.now() + 60000 && (k.price?.units !== quote.units || k.price?.observedAt !== quote.observedAt)) { k.price = { units: quote.units, observedAt: quote.observedAt }; changed = true; }
+    }
+    if (changed) keepOut();
   }
   // One extra action per network, shown under that network's asset group
   // (today only NODUS: "Claim your allocation", src/app.js refreshClaim).
@@ -172,9 +196,18 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
     // next scheduled read, so a value is never crossed out between reads.
     const snap = portfolioSnapshot(balances, quotes, Date.now(), assets, visibleKept(), { balanceMaxAge: autoMinutes ? (autoMinutes + 2) * 60000 : 0 });
     $('portfolio-total').textContent = text(usdText(snap.total, snap.positive));
-    $('portfolio-label').textContent = snap.state === 'partial' ? 'Known value · incomplete' : snap.state === 'loading' ? 'Updating portfolio' : 'Estimated portfolio value';
+    // A total that still holds kept (last read) balances says so, with the oldest read time, until every row is read
+    // again; then the label is the ordinary one.
+    const updating = jobs.size > 0 || !!priceJob || snap.state === 'loading';
+    if (snap.keptCount !== lastKeptCount) {
+      if (snap.keptCount > 0) debugLog('portfolio', 'kept-total-shown', { rows: snap.keptCount, age_ms: Date.now() - snap.keptAt });
+      lastKeptCount = snap.keptCount;
+    }
+    $('portfolio-label').textContent = snap.keptCount > 0 ? `Last read ${readTime(snap.keptAt)}${updating ? ' · updating' : ''}`
+      : snap.state === 'partial' ? 'Known value · incomplete' : snap.state === 'loading' ? 'Updating portfolio' : 'Estimated portfolio value';
     $('portfolio-status').textContent = snap.state === 'idle' ? 'Refresh all to read your balances and prices.'
       : snap.state === 'loading' ? `${snap.known} of ${assets.filter(asset => asset.priceId).length} asset values available. Reading all networks…`
+      : snap.keptCount > 0 ? `${snap.keptCount} of the values are from the last read and are replaced as the new reads arrive.`
       : snap.complete ? 'All supported asset balances are included.'
       : `${snap.missingBalances} balances and ${snap.missingPrices} prices unavailable or out of date. Missing values are excluded.`;
     $('portfolio-refresh').disabled = jobs.size > 0 || !!priceJob;
@@ -290,7 +323,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   // which still expire by their own age (PRICE_MAX_AGE).
   function readQuotes(current, controller) {
     return readPrices({ signal: controller.signal })
-      .then(value => { if (session === current && !controller.signal.aborted) { quotes = value; pricesAt = Date.now(); return true; } return false; })
+      .then(value => { if (session === current && !controller.signal.aborted) { quotes = value; pricesAt = Date.now(); keepPrices(); return true; } return false; })
       .catch(() => false);
   }
   function updatedText() {
@@ -376,7 +409,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   document.addEventListener('visibilitychange', () => setTimeout(autoTick, 0));
   function clear() {
     session++; for (const job of jobs.values()) job.abort(); jobs.clear(); priceJob?.abort(); priceJob = undefined;
-    clearInterval(timer); addresses = undefined; endpoints = undefined; balances = {}; quotes = {}; filter = 'all'; hidden = false; rowActions = {}; earn = {}; kept = {};
+    clearInterval(timer); addresses = undefined; endpoints = undefined; balances = {}; quotes = {}; filter = 'all'; hidden = false; rowActions = {}; earn = {}; kept = {}; replaced.clear(); lastKeptCount = 0;
     readAt = 0; pricesAt = 0; doneAt = 0; backgroundJobs.clear(); expandedNetworkGroups.clear();
     $('portfolio-updated').textContent = ''; render();
   }
@@ -384,7 +417,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   // parseBalances), shown until a fresh read replaces them.
   function open(publicAddresses, publicEndpoints, { automatic = true, kept: initial = {} } = {}) {
     clear(); addresses = { ...publicAddresses }; endpoints = { ...publicEndpoints };
-    for (const [key, k] of Object.entries(initial)) kept[key] = { units: k.units, observedAt: k.observedAt, address: k.address };
+    for (const [key, k] of Object.entries(initial)) kept[key] = { units: k.units, observedAt: k.observedAt, address: k.address, ...(k.price ? { price: { units: k.price.units, observedAt: k.price.observedAt } } : {}) };
     timer = setInterval(render, 30000); render(); if (automatic) void refresh();
   }
   function changeEndpoint(chain, endpoint) {

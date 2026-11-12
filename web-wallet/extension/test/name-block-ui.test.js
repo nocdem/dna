@@ -36,6 +36,24 @@ test('wallet greeting is visible while the first name read is pending', async ()
   assert.equal(nodes['wallet-register-name'].hidden, true);
 });
 
+// Proves the kept (unconfirmed) name from the background's public state is on the screen before getOwnName answers,
+// that a found answer replaces it, and that a not-found answer takes it away and offers registration. Could falsely pass if
+// the text came from the answer: the reply is held, and the greeting is read before it is released.
+test('the kept name is shown before the lookup answers; the answer replaces or removes it', async () => {
+  let reply;
+  const { nodes, names, ui } = fixture(() => new Promise(resolve => { reply = resolve; }));
+  ui.state.nodus.keptOwnName = 'keptname';
+  const pending = names.refresh();
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back, keptname');
+  assert.match(nodes['own-name'].textContent, /"keptname" \(last known; confirming/);
+  reply({ found: true, name: 'newname' }); await pending;
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back, newname');
+  const second = names.refresh();
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back, keptname');
+  reply({ found: false }); await second;
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back'); assert.equal(nodes['wallet-register-name'].hidden, false);
+});
+
 test('wallet greeting uses the name returned by getOwnName', async () => {
   const { nodes, names, calls } = fixture(() => ({ found: true, name: 'publicname' }), false);
   await names.refresh();

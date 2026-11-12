@@ -17,9 +17,9 @@ import { keepBusyEnvelope, canResubmit, dropSettledEnvelope, resubmitKept, NODUS
 import { recordActivity, watchActivity, terminal, evmActivityText, publicActivityRow } from '../../../src/activity.js';
 import { activityKeyFor, parseActivity, serializeActivity, serializeWithoutQuarantined, requireSavedForEvm,
   historyKeyFor, parseHistory, serializeHistory, balancesKeyFor, parseBalances, serializeBalances,
-  addressBookKeyFor, parseAddressBook, serializeAddressBook } from '../../../src/activity-storage.js';
+  addressBookKeyFor, parseAddressBook, serializeAddressBook, identityKeyFor, parseIdentity, serializeIdentity } from '../../../src/activity-storage.js';
 import { checkAddressBook } from '../../../src/address-book.js';
-import { ACTIVITY_KEY, VAULT_KEY, HISTORY_KEY, BALANCES_KEY, ADDRESS_BOOK_KEY } from '../../../src/vault.js';
+import { ACTIVITY_KEY, VAULT_KEY, HISTORY_KEY, BALANCES_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY } from '../../../src/vault.js';
 import { EvmAccount, Contract, describeArgs } from '../../../src/evm/contract.js';
 import { parseRaw, parseWei, formatRaw, formatWei } from '../../../src/evm/units.js';
 import { rpcErrors, providerErrors } from '@metamask/rpc-errors';
@@ -57,6 +57,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     previous.historyKey = null; previous.history = {};
     previous.balancesKey = null; previous.kept = {}; previous.contractAccount = null;
     previous.addressBookKey = null; previous.addressBook = [];
+    previous.identityKey = null; previous.identity = { addresses: {} };
     sharedVaults.lock(); previous.receipts?.clear();
     previous.networkActivities?.clear();
     // src/app.js:1770 clears after client shutdown logs its final state.
@@ -71,7 +72,46 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
   // confirmed it for this exact address. It lives on the session, so a lock drops it. The signature window reads it
   // without waiting for the network; warmOwnName asks in the background so a later window has it.
   function keepOwnName(s, own) {
-    if (session === s && own?.found && typeof own.name === 'string') s.ownName = { address: s.addresses.nodus, name: own.name };
+    if (session !== s) return;
+    if (own?.found && typeof own.name === 'string') {
+      const had = s.identity?.name;
+      s.ownName = { address: s.addresses.nodus, name: own.name };
+      noteIdentity(s, { name: own.name });
+      debugLog('identity', had === own.name ? 'kept-name-confirmed' : had ? 'kept-name-replaced' : 'name-kept');
+    } else if (own?.found === false) {
+      // The lookup answered that this wallet has no name: neither the confirmed nor the kept one stands.
+      const had = Boolean(s.identity?.name);
+      s.ownName = undefined;
+      noteIdentity(s, { name: '' });
+      if (had) debugLog('identity', 'kept-name-removed');
+    }
+  }
+  // The own identity of a saved wallet (decision 2026-10-02-device-cache-only-when-saved: the extension's wallet is
+  // always a saved vault wallet): the own receive addresses and the own chain name last confirmed, kept encrypted
+  // under the identity key and shown at once on the next open. A kept name is unconfirmed until a lookup answers; the
+  // signature window uses only the confirmed name. Lock drops the key and the copy.
+  function keptAddresses(addresses) {
+    const valid = ([chain, value]) => typeof value === 'string' && /^[a-z][a-z0-9]{1,15}$/.test(chain) && (chain === 'nodus' ? /^[0-9a-f]{128}$/.test(value) : /^[A-Za-z0-9]{1,128}$/.test(value));
+    return Object.fromEntries(Object.entries(addresses ?? {}).filter(valid).sort(([a], [b]) => (a === 'nodus' ? -1 : b === 'nodus' ? 1 : 0)).slice(0, 8));
+  }
+  function noteIdentity(s, change) {
+    if (session !== s || !s.identityKey) return;
+    const next = { ...s.identity, ...change, addresses: { ...s.identity.addresses, ...keptAddresses(change.addresses) } };
+    if (!next.name) delete next.name;
+    if (JSON.stringify(next) === JSON.stringify(s.identity)) return;
+    s.identity = next;
+    const job = writes.catch(() => {}).then(async () => {
+      current(s);
+      const value = await serializeIdentity(s.id, next, s.identityKey); current(s);
+      const saved = await storage.get(VAULT_KEY); current(s);
+      if (saved[VAULT_KEY] !== s.vault) return;
+      await storage.set({ [IDENTITY_KEY]: value });
+    }).catch(() => { /* kept again at the next change */ });
+    writes = job;
+  }
+  function keptOwnNameOf(s) {
+    const name = s?.identity?.name;
+    return name && (!s.identity.addresses?.nodus || s.identity.addresses.nodus === s.addresses?.nodus) ? name : '';
   }
   function confirmedOwnName(s, account) { return s.ownName?.address === account ? s.ownName.name : ''; }
   function warmOwnName(s) {
@@ -187,7 +227,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     lock();
     if (typeof factory !== 'function') throw new Error('Nodus sending is not available in this wallet build.');
     const s = { abort: new AbortController(), rows: [], quarantined: [], activityBlocked: false, retries: 0,
-      releasedQuarantine: new Set(), quarantineReadAt: -Infinity, reviews: new Map(), networkActivities: new Map(), assertReady, id };
+      releasedQuarantine: new Set(), quarantineReadAt: -Infinity, reviews: new Map(), networkActivities: new Map(), assertReady, id, identity: { addresses: {} } };
     session = s;
     s.client = newClient(s);
     try {
@@ -202,9 +242,16 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       s.historyKey = await historyKeyFor(phrase, id);
       s.balancesKey = await balancesKeyFor(phrase, id);
       s.addressBookKey = await addressBookKeyFor(phrase, id);
+      s.identityKey = await identityKeyFor(phrase, id);
       current(s); combined.throwIfAborted();
-      const saved = await storage.get([VAULT_KEY, ACTIVITY_KEY, HISTORY_KEY, BALANCES_KEY, ADDRESS_BOOK_KEY]); current(s);
+      const saved = await storage.get([VAULT_KEY, ACTIVITY_KEY, HISTORY_KEY, BALANCES_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY]); current(s);
       s.vault = saved[VAULT_KEY];
+      // The kept own identity (name and addresses) of the last use; nothing readable keeps the empty one.
+      try { s.identity = await parseIdentity(saved[IDENTITY_KEY], id, s.identityKey); }
+      catch { s.identity = { addresses: {} }; }
+      current(s);
+      if (s.identity.name) debugLog('identity', 'kept-name-loaded');
+      noteIdentity(s, { addresses: s.addresses });
       try { s.history = await parseHistory(saved[HISTORY_KEY], id, s.historyKey); }
       catch { s.history = {}; }
       try { s.kept = await parseBalances(saved[BALANCES_KEY], id, s.balancesKey); }
@@ -482,7 +529,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     getSessionLog() { return { entries: log.entries(), running: log.running(), startedAt: log.startedAt }; },
     getKeptBalances() {
       const s = active();
-      return Object.fromEntries(Object.entries(s.kept).map(([key, value]) => [key, { ...value, units: value.units.toString() }]));
+      return Object.fromEntries(Object.entries(s.kept).map(([key, value]) => [key, { ...value, units: value.units.toString(),
+        ...(value.price ? { price: { units: value.price.units.toString(), observedAt: value.price.observedAt } } : {}) }]));
     },
     keepBalances(entries) {
       const s = active();
@@ -701,7 +749,10 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       evmBuildable: session?.client.evmBuildable ?? false, evmReadable: session?.client.evmReadable ?? false,
       publicKey: session?.client.publicKey ? `0x${session.client.publicKey}` : undefined,
       // src/app.js:2559: recovery is offered only for the unlock-time read problem or quarantine.
-      activityError: session?.activityBlocked ? session.activityError : [...(session?.networkActivities.values() ?? [])].find(activity => activity.blocked)?.error() ?? '', quarantinedCount: session?.quarantined.length ?? 0 }; },
+      activityError: session?.activityBlocked ? session.activityError : [...(session?.networkActivities.values() ?? [])].find(activity => activity.blocked)?.error() ?? '', quarantinedCount: session?.quarantined.length ?? 0,
+      // The own chain name kept from the last use, shown at once as an unconfirmed name until a lookup answers (the
+      // signature window never uses it: confirmedOwnName). Empty while locked.
+      keptOwnName: keptOwnNameOf(session) }; },
     async getBalances() {
       const s = active(); track(s);
       const rows = await adapter.balances('nodus', s.addresses.nodus, undefined, { client: s.client, signal: s.abort.signal });

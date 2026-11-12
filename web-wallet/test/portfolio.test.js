@@ -215,3 +215,38 @@ test('unavailable sources and safe read errors retain a last balance without exp
   assert.equal(row.balance, '1.25'); assert.equal(row.error, 'HTTP 503'); assert.equal(row.keptAt, now - 1000); assert.equal(row.usd, null);
   assert.equal(portfolioSnapshot({}, {}, now, [asset]).rows[0].balance, null);
 });
+
+// ---- Kept prices (operator 2026-11-12: show the last read total at once, replace as fresh reads arrive) ----
+const ETH = ASSETS.find(asset => asset.key === 'ethereum:ETH'), UNITS = 15n * 10n ** 17n, PRICE = 200000000n * 1000n, PRICE_NEW = 250000000n * 1000n;
+const valued = (units, price) => units * price / 10n ** 18n;
+
+// Proves a kept balance with its kept price gives the total at once, from the kept values only (nothing read yet), with
+// the oldest of the balance and price read times; the row is marked as a kept value. Could falsely pass if the total
+// came from another asset: only the ETH entry is given, and the expected value is computed from its own numbers.
+test('kept balances with kept prices give the total at once, with the last read time', () => {
+  const kept = { 'ethereum:ETH': { units: UNITS, observedAt: now - 1000, address: '0xabc', price: { units: PRICE, observedAt: now - 5000 } } };
+  const snap = portfolioSnapshot({}, {}, now, ASSETS, kept);
+  const row = snap.rows.find(r => r.key === 'ethereum:ETH');
+  assert.equal(snap.total, valued(UNITS, PRICE)); assert.equal(row.usd, valued(UNITS, PRICE)); assert.equal(row.keptUsd, true);
+  assert.equal(snap.keptCount, 1); assert.equal(snap.keptAt, now - 5000); assert.equal(snap.positive, true);
+});
+
+// Proves the fresh reads replace the kept value: with a fresh balance and a fresh price the total is the fresh one and no
+// kept row remains; with only a fresh price (balance still kept) the kept balance is valued at the fresh price. Could
+// falsely pass if the kept value equalled the fresh one; the numbers differ (1.5 and 2 ETH, two prices).
+test('fresh reads replace the kept total', () => {
+  const kept = { 'ethereum:ETH': { units: UNITS, observedAt: now - 1000, address: '0xabc', price: { units: PRICE, observedAt: now - 5000 } } };
+  const fresh = { 'ethereum:ETH': { state: 'ready', units: 2n * 10n ** 18n, observedAt: now } }, quote = { 'ethereum:ETH': { units: PRICE_NEW, observedAt: now } };
+  const all = portfolioSnapshot(fresh, quote, now, ASSETS, kept);
+  assert.equal(all.total, valued(2n * 10n ** 18n, PRICE_NEW)); assert.equal(all.keptCount, 0); assert.equal(all.keptAt, undefined);
+  const priceOnly = portfolioSnapshot({}, quote, now, ASSETS, kept);
+  assert.equal(priceOnly.total, valued(UNITS, PRICE_NEW)); assert.equal(priceOnly.keptCount, 1);
+});
+
+// Proves a kept balance whose price was never kept stays out of the total, as before: no total, no kept row counted, the
+// row still shows its last read time. Could falsely pass if the asset were unpriced; ETH has a price identity.
+test('a kept balance without a kept price stays out of the total', () => {
+  const snap = portfolioSnapshot({}, {}, now, ASSETS, { 'ethereum:ETH': { units: UNITS, observedAt: now - 1000, address: '0xabc' } });
+  const row = snap.rows.find(r => r.key === 'ethereum:ETH');
+  assert.equal(snap.total, null); assert.equal(snap.keptCount, 0); assert.equal(row.usd, null); assert.equal(row.keptAt, now - 1000);
+});

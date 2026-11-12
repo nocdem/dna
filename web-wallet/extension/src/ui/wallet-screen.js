@@ -132,7 +132,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   const initial = ui.request('getKeptBalances').catch(() => ({})).then(entries => {
     if (disposed) return;
     latestKept = Object.fromEntries(Object.entries(entries).filter(([key]) => !['algorand', 'ckb'].includes(key.split(':')[0]) && (!['solana', 'tron'].includes(key.split(':')[0]) || ui.state.networks?.[key.split(':')[0]] === 'mainnet')));
-    const kept = Object.fromEntries(Object.entries(latestKept).map(([key, value]) => [key, { ...value, units: BigInt(value.units) }]));
+    const kept = Object.fromEntries(Object.entries(latestKept).map(([key, value]) => [key, { ...value, units: BigInt(value.units), ...(value.price ? { price: { units: BigInt(value.price.units), observedAt: value.price.observedAt } } : {}) }]));
     portfolio.open(publicAddresses(), endpoints(), { kept, automatic: false }); opened = true;
     earn?.update(); void claim?.refresh();
     return portfolio.refresh();

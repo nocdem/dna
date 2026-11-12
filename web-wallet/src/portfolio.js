@@ -115,14 +115,23 @@ export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = A
     const usd = priced && freshBalance && (balance.units === 0n || freshPrice)
       ? balance.units * (quote?.units || 0n) / (10n ** BigInt(asset.decimals)) : null;
     const last = !freshBalance && typeof kept[asset.key]?.units === 'bigint' ? kept[asset.key] : undefined;
+    // A kept balance is valued at once when a price was kept with it (or the fresh price, which then replaces the kept
+    // one): the total shows the last read value while the fresh reads are made. A kept balance whose price was never
+    // kept stays out of the total.
+    const keptPrice = last && priced && typeof last.price?.units === 'bigint' ? (freshPrice ? quote : last.price) : undefined;
+    const keptUsd = keptPrice ? last.units * keptPrice.units / (10n ** BigInt(asset.decimals)) : null;
     return { ...asset, ...balance, state: balance.state === 'ready' && !freshBalance ? 'stale' : balance.state,
       balance: freshBalance ? formatUnits(balance.units, asset.decimals) : last ? formatUnits(last.units, asset.decimals) : null,
-      ...(last ? { units: last.units, keptAt: last.observedAt } : {}), usd,
+      ...(last ? { units: last.units, keptAt: last.observedAt } : {}), usd: usd ?? keptUsd,
+      ...(keptUsd !== null && usd === null ? { keptUsd: true, keptPriceAt: keptPrice.observedAt } : {}),
       positive: freshBalance && balance.units > 0n, priceMissing: priced && freshBalance && balance.units > 0n && !freshPrice };
   });
   const priced = rows.filter(row => row.priceId !== undefined);
   const known = priced.filter(row => row.usd !== null), total = known.reduce((sum, row) => sum + row.usd, 0n);
   const complete = known.length === priced.length;
+  // The rows whose value comes from a kept balance: the total is then the last read value, as old as the oldest of
+  // their balance reads (the label says so until every row is read again).
+  const keptKnown = known.filter(row => row.keptUsd);
   // 'unsupported' rows are never read, so they take no part in the load state.
   const tracked = rows.filter(r => r.state !== 'unsupported');
   const state = tracked.every(r => r.state === 'idle') ? 'idle' : tracked.some(r => r.state === 'loading') ? 'loading' : complete ? 'complete' : 'partial';
@@ -131,7 +140,9 @@ export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = A
   // asset's own load state is already visible on its own row and never was
   // part of "the estimate covers only the 14 configured balances".
   return { rows, complete, state, known: known.length, total: complete || total > 0n ? total : null,
-    positive: known.some(row => row.positive), missingBalances: priced.filter(r => r.balance === null || r.keptAt !== undefined).length,
+    positive: known.some(row => row.positive || (row.keptUsd && row.units > 0n)),
+    keptCount: keptKnown.length, keptAt: keptKnown.length ? Math.min(...keptKnown.map(row => Math.min(row.keptAt, row.keptPriceAt))) : undefined,
+    missingBalances: priced.filter(r => r.balance === null || r.keptAt !== undefined).length,
     missingPrices: priced.filter(r => r.priceMissing).length };
 }
 // The listing order (0.1.102, operator 2026-10-12): NODUS first, then the
