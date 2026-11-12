@@ -49,6 +49,8 @@ export const amountProblem = reason => AMOUNT_WORDS[reason] ?? 'The amount is no
 
 // An error from the adapter (adapter.js) in plain words.
 // ctx.requestNumber: the request number of the price the user approved (named in a liquidity add's text).
+// ctx.flow: 'add' for the liquidity add; anything else is the swap flow. The bot's open-approval rule differs: an add
+// is refused against an open swap or add of the same Ethereum address and USDT amount (amm_journal.c:1055-1069, :2794-2812).
 export function describeAdapterError(err, ctx = {}) {
   if (err?.code === 'not_configured') return { text: 'The extension part of this action is not available yet. Nothing was signed or paid.' };
   if (err?.code === 'no_extension') return { text: 'The Nodus Connect extension was not found. Nothing was signed or paid.' };
@@ -61,7 +63,13 @@ export function describeAdapterError(err, ctx = {}) {
     // the same sender and amount exists; its number is kept so the page follows that open swap.
     if (err.openRequestNumber != null) {
       out.openRequestNumber = String(err.openRequestNumber);
-      out.text = `This new request paid nothing. You already have an open swap with the same amount (request ${out.openRequestNumber}); it is shown below. The bot refuses a new swap of exactly this amount until that one's payment is confirmed or it has expired; a different amount can be swapped now.`;
+      const n = out.openRequestNumber;
+      out.text = ctx.flow === 'add'
+        ? `This new request paid nothing. You already have an open request with the same USDT amount (request ${n}), a swap or a liquidity add. ` +
+          `The bot refuses this exact USDT amount again until it has seen that request's payment (a swap's payment must also be confirmed) or the request has expired; a different amount can be used now.`
+        : `This new request paid nothing. You already have an open request with the same amount (request ${n}). ` +
+          `The bot refuses this exact amount again until it has seen that request's payment (a swap's payment must also be confirmed) or the request has expired; a different amount can be used now. ` +
+          `If request ${n} is a swap, it is shown below.`;
       return out;
     }
     out.text = typeof err.reason === 'string' && err.answered
@@ -90,8 +98,13 @@ export function describeAdapterError(err, ctx = {}) {
         `Check the extension's activity. An add with one payment missing is handled by the Foundation: contact the Foundation with the request number.`;
       return out;
     }
-    out.text = err.paid === 'unknown'
-      ? 'The payment may have been sent. Do not pay again; check the extension\'s activity.'
+    if (err.paid === 'unknown') {
+      out.text = 'The payment may have been sent. Do not pay again; check the extension\'s activity.';
+      return out;
+    }
+    out.text = ctx.flow === 'add'
+      ? 'The bot has your liquidity add but nothing was paid. The add stays open until its approval time has passed and the bot has checked that no payment came. ' +
+        'Until then the bot refuses a new liquidity add or a USDT to NODUS swap with exactly this USDT amount from your Ethereum address; a different amount can be used now.'
       : 'The bot has your request but nothing was paid. The request stays open until its approval time has passed and the bot has checked that no payment came; this page then shows it as expired. Until then the bot refuses a new swap of exactly this amount; a different amount can be swapped now.';
     return out;
   }
@@ -273,6 +286,15 @@ export function createSwapFlow({
         const ms = L.timer();
         const res = await bot.swapState(requestNumber);
         if (stale()) { L.info('follow', 'stopped', { requestNumber, poll: i }); return { final: false, stopped: true }; }
+        // 404 unknown_number: the bot has no swap with this number (amm_http.c:621-629). An open request with the same
+        // USDT amount can be a liquidity add, which has no swap answer: stop at once instead of waiting for every read.
+        if (res.ok && res.status === 404 && res.json?.reason === 'unknown_number') {
+          const info = { final: false, kind: 'unknown', state: '', text: 'The bot has no swap with this request number. An open request with the same USDT amount can be a liquidity add, which this page does not follow.' };
+          last = { info, answer: null, poll: i };
+          L.warn('follow', 'unknown', { requestNumber, poll: i });
+          onState(last);
+          return { final: false, unknown: true, ...last };
+        }
         let info, answer = null;
         if (res.ok && res.json && typeof res.json.state === 'string') {
           answer = res.json;
@@ -323,7 +345,7 @@ export function createSwapFlow({
           requestNumber: q.requestNumber, ethChainId: s.status.settings.ethChainId,
         }, { onStep: stepped }), onStep);
       } catch (err) {
-        const info = describeAdapterError(err, { requestNumber: q.requestNumber });
+        const info = describeAdapterError(err, { requestNumber: q.requestNumber, flow: 'add' });
         if (info.delivered) { s.addQuote = null; return { ok: false, reason: 'delivered', requestNumber: q.requestNumber, ...info }; }
         return { ok: false, reason: err?.code ?? 'extension_error', ...info };
       }

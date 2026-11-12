@@ -264,6 +264,7 @@ async function followSwap(requestNumber, unit) {
   $('step-state').classList.remove('done'); $('step-state').classList.add('now'); $('result').hidden = true;
   const r = await flow.follow(requestNumber, update => renderState(update, unit));
   if (r.stopped) return;
+  // r.unknown (the bot has no swap with this number) shows its text through renderState and no "Check again": asking again cannot change it.
   if (r.exhausted) {
     say($('state-note'), STILL_PENDING_TEXT);
     $('check-again').hidden = false;
