@@ -878,3 +878,63 @@ test('a rejected account-history read keeps the rows saved and the tracker runni
   assert.deepEqual(background.nodus.getLocalHistory().map(row => row.status), ['confirmed', 'confirmed']);
   assert.deepEqual(await savedHashes(values, id, key, addresses), [first.hash, later.hash]);
 });
+
+// Proves: a confirmation arriving while an account-history listing is still running causes exactly ONE further read
+// after it (listAgain), not zero and not one per row; both rows leave the saved activity. The module queue is single
+// (src/nodus/client.js enqueue), so a held addrHistory would also hold the second row's scan; the listing is therefore
+// held open at its save instead: every saved-activity write waits on `gate`, and the listing awaits its own write.
+// Leaves nothing behind (in-memory storage; the gate is released before the end). Could falsely pass if both rows
+// were confirmed in the same pass (one read, reads === 1) or the second never confirmed; the first pass leaves the
+// second row pending, and its confirmation is awaited before the gate opens.
+test('a confirmation during a running listing causes exactly one further read', { timeout: 10000 }, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let reads = 0, second = false;
+  const first = savedRow({ hash: '01'.repeat(64) }), later = savedRow({ hash: '02'.repeat(64) }), gate = deferred();
+  t.after(() => gate.resolve());
+  const { background, values, fixture } = await setup(t, {
+    async scanConfirm({ intentId }) { return intentId === later.hash && !second ? { found: false, tip: '10' } : { found: true, tip: '11', height: '11' }; },
+    async addrHistory() { reads++; return pageAt('11'); },
+  });
+  const { id, key } = await saveActivity(values, [first, later]);
+  const set = fixture.storage.set;
+  t.mock.method(fixture.storage, 'set', async items => { if (items[ACTIVITY_KEY]) await gate.promise; await set(items); });
+  await unlockConnected(background);
+  const addresses = { ...background.walletKeys.getAddresses() };
+  await until(() => reads === 1, 'the first listing read');
+  await settle();
+  second = true; t.mock.timers.tick(12000);
+  await until(() => background.nodus.getLocalHistory().every(row => row.status === 'confirmed'), 'the second row confirms during the first listing');
+  await settle();
+  assert.equal(reads, 1, 'the first listing is still running; no read per confirmation');
+  gate.resolve();
+  await until(async () => (await savedHashes(values, id, key, addresses)).length === 0, 'both rows leave the saved activity');
+  await settle();
+  assert.equal(reads, 2, 'exactly one further read');
+});
+
+// Proves: a listing read whose answer arrives after the wallet was locked writes nothing and throws nothing out of the
+// background (the session-bound guards: current(s) after the read in listConfirmed, current(s) inside persist, and the
+// client refusing a result after lock). The stored activity value is compared before and after the late answer.
+// Could falsely pass if the read never started or the row was not saved; both are asserted. Note: the client also
+// rejects a result that returns after lock, so this pins the combined guarantee, not current(s) alone.
+test('a listing answer arriving after lock writes nothing', async t => {
+  const answer = deferred(), problems = [];
+  let entered = false;
+  const { background, values } = await setup(t, {
+    async scanConfirm() { return { found: true, tip: '11', height: '11' }; },
+    async addrHistory() { entered = true; await answer.promise; return pageAt('11'); },
+  });
+  const onProblem = error => problems.push(error); process.on('unhandledRejection', onProblem);
+  t.after(() => { process.off('unhandledRejection', onProblem); answer.resolve(); });
+  const { id, key } = await saveActivity(values, [savedRow()]);
+  await unlockConnected(background);
+  const addresses = { ...background.walletKeys.getAddresses() };
+  await until(() => entered, 'the listing read started');
+  const locking = background.lock();
+  await settle();
+  const stored = JSON.stringify(values[ACTIVITY_KEY]);
+  assert.deepEqual(await savedHashes(values, id, key, addresses), [savedRow().hash], 'the row is saved before the late answer');
+  answer.resolve(); await locking; await settle();
+  assert.equal(JSON.stringify(values[ACTIVITY_KEY]), stored, 'the late answer wrote nothing');
+  assert.deepEqual(problems, []);
+});
