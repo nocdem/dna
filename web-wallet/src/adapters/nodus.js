@@ -26,6 +26,7 @@
 // - Confirmation screen values are decoded from the signed envelope (G1).
 // - Amounts are decimal strings at the module boundary, BigInt here (RT1 L4 F10).
 import { amountUnits, formatUnits } from '../core.js';
+import { timed } from '../debug-log.js';
 import { NODUS_ASSET, NODUS_TOKEN_ID, nodusTokens } from '../nodus/network.js';
 import { chainName, chainNameOk, parseNameOf } from '../nodus/names.js';
 import { isNodusBusy } from '../nodus/client.js';
@@ -411,10 +412,12 @@ export async function prepare({ client, from, to, amount, tokenId, locked = new 
     return value;
   })();
   // A chain name resolves to its owner first (one node, decision item 9).
-  const { recipient, resolved } = await resolveNodusRecipient(client, to);
-  const balanceAnswer = await client.balance();
+  // Each read is one debug line with its duration (never the recipient, amounts or coins).
+  const step = (name, work) => timed('nodus-prepare', name, { token: asset.native ? 'native' : 'token' }, work);
+  const { recipient, resolved } = await step('recipient-resolve', () => resolveNodusRecipient(client, to));
+  const balanceAnswer = await step('balance', () => client.balance());
   const { spendable } = parseBalance(balanceAnswer);
-  const listing = await client.list();
+  const listing = await step('list', () => client.list());
   const coins = parseCoins(listing);
   // A read error on the node answers "0 coins" (design §1.4); with a positive
   // spendable balance, an empty list is a read failure, not "insufficient".
@@ -433,7 +436,7 @@ export async function prepare({ client, from, to, amount, tokenId, locked = new 
     if (tokenCoins.length === 0 && tokenSpendable > 0n) throw new Error(`Your ${asset.symbol} coin list could not be read. Nothing was sent; try again later.`);
   }
   // HF-4: which rules the node runs, then the expiry they allow.
-  const ruleset = parseRulesetInfo(await client.rulesetInfo());
+  const ruleset = parseRulesetInfo(await step('ruleset-info', () => client.rulesetInfo()));
   const tip = parseTip(listing.tip), expiryHeight = expiryHeightFor(tip, ruleset);
   let candidates;
   if (inputs) {
@@ -451,7 +454,7 @@ export async function prepare({ client, from, to, amount, tokenId, locked = new 
     }
   }
   const request = { to: recipient, amount: units.toString(), expiryHeight: expiryHeight.toString(), coins: candidates };
-  const decoded = decodeBuilt(await (asset.native ? client.buildAndSign({ ...request, tokenId: asset.tokenId }) : client.tokenBuildAndSign({ ...request, tokenId: asset.tokenId })));
+  const decoded = decodeBuilt(await step('build-and-sign', () => (asset.native ? client.buildAndSign({ ...request, tokenId: asset.tokenId }) : client.tokenBuildAndSign({ ...request, tokenId: asset.tokenId }))));
   // The signed envelope must be exactly what was requested — the TOKEN too
   // (§6 item 1: prepare() refuses when decoded.token differs from the
   // requested one) — or nothing is shown.

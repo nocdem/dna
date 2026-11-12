@@ -10,6 +10,7 @@ import { createWalletMiddleware, providerAsMiddleware } from '@metamask/eth-json
 import { rpcErrors, providerErrors, serializeError } from '@metamask/rpc-errors';
 import { convertHexToDecimal } from '@metamask/controller-utils';
 import log from 'loglevel';
+import { debugLog, stopwatch } from '../../../src/debug-log.js';
 import { CHAINS } from '../../../src/config.js';
 import { EIP_1193_PROVIDER, PROVIDER_METHODS } from '../constants/stream.js';
 import { NODUS_PERMISSION } from './permissions.js';
@@ -96,11 +97,18 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
     function resetNetwork() { clientEngine?.destroy(); clientEngine = null; clientMiddleware = null; }
     // Port: lib/createLoggerMiddleware.js:17-30. ADAPTATION: plan §3.4:299-303/§11:964-966,
     // F7 forbids the reference's whole-error log too; emit only trusted origin/method/status, never params/errors.
-    engine.push((req, res, next) => next(done => {
-      // ADAPTATION: plan Q-9 (:999) renames req.isMetamaskInternal; preserve the reference's flag-based skip.
-      if (!req.isNodusInternal) log.info(`RPC (${origin}): ${req.method} -> ${res.error ? 'error' : 'success'}`);
-      done();
-    }));
+    engine.push((req, res, next) => {
+      const elapsed = stopwatch();
+      next(done => {
+        // ADAPTATION: plan Q-9 (:999) renames req.isMetamaskInternal; preserve the reference's flag-based skip.
+        if (!req.isNodusInternal) {
+          log.info(`RPC (${origin}): ${req.method} -> ${res.error ? 'error' : 'success'}`);
+          // Debug line: origin, method name, request id, duration, outcome and error code. Never params, result or error text.
+          debugLog('request', 'done', { origin, method: req.method, id: req.id, ms: elapsed(), outcome: res.error ? 'error' : 'success', code: res.error?.code });
+        }
+        done();
+      });
+    });
     // Before the user agreed to the data notice (plan section 2.7) a website gets nothing that would reach a server or
     // return wallet data: the same "unauthorized" answer as the disk-page refusal below. eth_chainId is answered from
     // local configuration (package-smoke.test.js "networkClient in background/evm.js answers eth_chainId from local config").

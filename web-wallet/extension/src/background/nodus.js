@@ -1,6 +1,7 @@
 import { createNodusClient, NODUS_CONNECT_BOUND_MS } from '../../../src/nodus/client.js';
 import { nodusSigningSeed } from '../../../src/nodus/derive.js';
 import { createSessionLog, stepLog } from '../../../src/session-log.js';
+import { debugLog, errorFields, stopwatch } from '../../../src/debug-log.js';
 import { createChainHistory } from './chain-history.js';
 import { createSharedVaults } from './shared-vaults.js';
 import { nodusSendModuleFactory } from '../../../src/nodus/send-module.js';
@@ -161,6 +162,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
   }
   async function reconnect(s) {
     let seed;
+    const elapsed = stopwatch();
+    debugLog('nodus', 'reconnect-started');
     try {
       current(s); lockCoordinator.assertUnlocked();
       const previous = s.client;
@@ -174,7 +177,10 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       await client.identify({ seed, fingerprint: s.addresses.nodus }); current(s);
       await onIdentified?.({ client, phrase: getWords(), vaultId: s.id, fresh: false }); current(s);
       await connectIdentified(s, client);
-    } catch (error) { if (session === s && !s.abort.signal.aborted) { log.log('net', error, { error: true }); scheduleRetry(s); } }
+      debugLog('nodus', 'reconnect-finished', { ms: elapsed(), outcome: 'ok' });
+    } catch (error) {
+      debugLog('nodus', 'reconnect-finished', { ms: elapsed(), ...errorFields(error) });
+      if (session === s && !s.abort.signal.aborted) { log.log('net', error, { error: true }); scheduleRetry(s); } }
     finally { seed?.fill(0); }
   }
   async function consumeNodusSeed(seed, { phrase, id, addresses, nodusWasmBytes, signal, assertReady } = {}) {
@@ -596,6 +602,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       // dropped only when the new one is stored, so two calls can never both be stored for one site.
       if (s.holding) throw rpcErrors.internal('A hold is already being made. Finish or reject it first.');
       s.holding = true;
+      const holdElapsed = stopwatch();
+      debugLog('nodus-hold', 'started', { origin });
       try {
       await releaseExpiredHolds(s);
       // The builder's own answer carries the wire id and the chain id; prepare() keeps them inside, so the
@@ -614,9 +622,14 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
         !Array.isArray(built.decoded.inputs)) throw new Error('The Nodus module gave no transfer id. Nothing was held.');
       const expiryHeight = BigInt(prepared.expiryHeight);
       // prepare() decoded the signed bytes and refused any difference from the request (recipient, amount, token).
-      await approvals.controller.addAndShowApprovalRequest({ origin, type: SWAP_PAYMENT_APPROVAL, requestData: { account, title: 'Hold a NODUS payment for a swap',
-        rows: [...prepared.review, ['Transfer ID', wireId]],
-        note: 'Signing this payment does not send it. It is sent only after the bot has received your signed request.' } });
+      debugLog('nodus-hold', 'approval-shown', { origin, transfer: wireId, ms: holdElapsed() });
+      const approvalElapsed = stopwatch();
+      try {
+        await approvals.controller.addAndShowApprovalRequest({ origin, type: SWAP_PAYMENT_APPROVAL, requestData: { account, title: 'Hold a NODUS payment for a swap',
+          rows: [...prepared.review, ['Transfer ID', wireId]],
+          note: 'Signing this payment does not send it. It is sent only after the bot has received your signed request.' } });
+      } catch (error) { debugLog('nodus-hold', 'approval-rejected', { origin, transfer: wireId, ms: approvalElapsed(), ...errorFields(error) }); throw error; }
+      debugLog('nodus-hold', 'approval-approved', { origin, transfer: wireId, ms: approvalElapsed() });
       assertCurrent();
       // Coins another hold or a send took while the user decided make this transfer unusable.
       const takenMeanwhile = heldInputs(s, origin);
@@ -633,7 +646,9 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
           try { return await prepared.send(async details => { await onBroadcast(details); reached = true; }); }
           catch (error) { if (reached && error && typeof error === 'object') error.broadcastReached = true; throw error; }
         } });
+      debugLog('nodus-hold', 'stored', { origin, hold: id, transfer: wireId, ms: holdElapsed() });
       return { holdId: id, transferId: wireId, chainId, expiryHeight: expiryHeight.toString(), account };
+      } catch (error) { debugLog('nodus-hold', 'failed', { origin, ms: holdElapsed(), ...errorFields(error) }); throw error;
       } finally { s.holding = false; }
     },
     // What swap.js checks a request text against: the hold's own values, never the site's.

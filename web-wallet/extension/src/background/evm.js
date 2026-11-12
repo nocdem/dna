@@ -6,6 +6,7 @@ import { CHAINS } from '../../../src/config.js';
 import { amountUnits, rawInteger, rpc } from '../../../src/core.js';
 import { assertWalletActive } from '../../../src/keys.js';
 import { ethersGetUrl, endpointUrl } from '../../../src/rpc-transport.js';
+import { debugLog, errorFields, hostOf, stopwatch, timed } from '../../../src/debug-log.js';
 import * as adapter from '../../../src/adapters/evm.js';
 import { prepareTransfer } from '../../../src/wallet.js';
 import { nameReviewRows, NAME_CHECK_ROW } from '../../../src/adapters/nodus.js';
@@ -68,8 +69,8 @@ export async function prepareSiteTransaction({ chain, wallet, fields, endpoint, 
   const provider = ethersProvider(endpoint);
   try {
     // Adapter :34-40: pending nonce, legacy gas price, 120% estimate, balance.
-    const [gas, fees, nonce, balance] = await Promise.all([provider.estimateGas(tx), provider.getFeeData(),
-      provider.getTransactionCount(tx.from, 'pending'), provider.getBalance(tx.from)]);
+    const [gas, fees, nonce, balance] = await timed('evm', 'fee-reads', { chain, host: hostOf(endpoint) }, () => Promise.all([provider.estimateGas(tx), provider.getFeeData(),
+      provider.getTransactionCount(tx.from, 'pending'), provider.getBalance(tx.from)]));
     assertCurrent();
     const gasLimit = fields.gas === undefined ? gas * 120n / 100n : rawInteger(fields.gas), gasPrice = fees.gasPrice;
     if (!gasPrice || balance < gasLimit * gasPrice + tx.value) throw new Error('Insufficient native balance for amount and network fee.');
@@ -85,6 +86,7 @@ export async function prepareSiteTransaction({ chain, wallet, fields, endpoint, 
         await onBroadcast?.({ hash, nonce }); assertCurrent(); assertWalletActive(wallet);
         const returned = await rpc(endpoint, 'eth_sendRawTransaction', [signed]);
         if (returned?.toLowerCase() !== hash.toLowerCase()) throw new Error('RPC returned a different transaction identifier.');
+        debugLog('evm', 'transaction-sent', { chain, hash });
         return hash;
       } };
   } finally { provider.destroy(); }
@@ -222,7 +224,12 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
   }
   async function approved(origin, type, requestData, assertCurrent) {
     assertCurrent();
-    await approvals.controller.addAndShowApprovalRequest({ origin, type, requestData });
+    // Debug lines: the approval's type and origin and how long the user took; never its request data.
+    debugLog('evm', 'approval-shown', { origin, type });
+    const elapsed = stopwatch();
+    try { await approvals.controller.addAndShowApprovalRequest({ origin, type, requestData }); }
+    catch (error) { debugLog('evm', 'approval-rejected', { origin, type, ms: elapsed(), ...errorFields(error) }); throw error; }
+    debugLog('evm', 'approval-approved', { origin, type, ms: elapsed() });
     assertCurrent();
   }
   function assertFresh(prepared) {

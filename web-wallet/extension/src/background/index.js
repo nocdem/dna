@@ -11,6 +11,7 @@ import { Messenger } from '@metamask/messenger';
 import { rpcErrors } from '@metamask/rpc-errors';
 import { createPersistedStore } from './store.js';
 import { createApprovals } from './approvals.js';
+import { debugLog } from '../../../src/debug-log.js';
 import { createPermissions } from './permissions.js';
 import { createConnectedSites } from './connected-sites.js';
 import { createPrivacyConsent } from './privacy-consent.js';
@@ -50,6 +51,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   sessionStorage = globalThis.chrome?.storage?.session,
   nodusOptions = {}, consumeNodusSeed, readPrices = readWalletPrices } = {}) {
   const lockCoordinator = createLockCoordinator();
+  debugLog('worker', 'start', { version: runtime?.getManifest?.()?.version });
   const invalidateWallet = () => {
     for (const port of uiPorts) try { port.postMessage({ name: 'controller', data: { jsonrpc: '2.0', method: 'connectStateChanged', params: [] } }); }
     catch { /* a closing interface cannot receive the invalidation */ }
@@ -282,7 +284,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     },
     approvePermissionsRequest: request => permissions.acceptPermissionsRequest(request),
     rejectPermissionsRequest: id => permissions.controller.rejectPermissionsRequest(id),
-    resolvePendingApproval: (id, value) => approvals.controller.acceptRequest(id, value),
+    resolvePendingApproval: (id, value) => { debugLog('approvals', 'resolved', { id }); return approvals.controller.acceptRequest(id, value); },
     rejectPendingApproval: id => approvals.reject(id),
     // The approval window page marks its own close as automatic just before closing; without the mark, a removed
     // approval window rejects every pending approval.

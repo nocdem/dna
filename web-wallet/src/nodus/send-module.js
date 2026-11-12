@@ -29,6 +29,7 @@
 //
 // Amounts and heights cross into C as decimal strings and come back as
 // decimal strings (RT1 L4 F10); nothing here converts them to Number.
+import { debugLog, errorFields, logWebSocketsFor, stopwatch } from '../debug-log.js';
 const HEX64 = /^[0-9a-f]{64}$/, HEX128 = /^[0-9a-f]{128}$/, RAW = /^(0|[1-9]\d{0,19})$/;
 // NODUS itself in a send's asset identity: the all-zero token id.
 const NATIVE_TOKEN_ID = '0'.repeat(128);
@@ -278,10 +279,28 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
   // subprotocol).
   // printErr: the C client's stderr diagnostics go to the normal log, not console.error (operator 2026-10-29:
   // "Extension bu satırları normal günlüğe yönlendirsin."); the glue reads Module["printErr"].
+  // Debug log: the module's sockets are opened through the global WebSocket (its glue takes only a url and a
+  // subprotocol), so the connection and frame sizes of the configured endpoints are logged through a thin subclass
+  // (debug-log.js logWebSocketsFor), never the frames' content.
+  logWebSocketsFor(endpoints.map(endpoint => `${endpoint.host}:${endpoint.port}`));
   const M = await createNodusSendWasm({ websocket: { url: `${net.scheme}://`, subprotocol: 'binary' }, printErr: text => console.log(text) });
-  const num = (name, types = [], args = []) => M.ccall(name, 'number', types, args);
-  const str = (name, types = [], args = []) => M.ccall(name, 'string', types, args);
-  const call = (name, types = [], args = []) => M.ccall(name, 'number', types, args, { async: true });
+  // Every module call is one debug line: its nsw_* name, its kind and duration, and the failure (the module's own
+  // error text is not logged: only whether it was the busy refusal). Arguments and results never are.
+  const logged = (kind, name, run) => {
+    const elapsed = stopwatch();
+    try {
+      const value = run();
+      if (value && typeof value.then === 'function') {
+        return value.then(result => { debugLog('nodus-module', kind, { name, ms: elapsed(), outcome: 'ok', rc: typeof result === 'number' ? result : undefined }); return result; },
+          error => { debugLog('nodus-module', kind, { name, ms: elapsed(), ...errorFields(error) }); throw error; });
+      }
+      debugLog('nodus-module', kind, { name, ms: elapsed(), outcome: 'ok' });
+      return value;
+    } catch (error) { debugLog('nodus-module', kind, { name, ms: elapsed(), ...errorFields(error) }); throw error; }
+  };
+  const num = (name, types = [], args = []) => logged('call', name, () => M.ccall(name, 'number', types, args));
+  const str = (name, types = [], args = []) => logged('call', name, () => M.ccall(name, 'string', types, args));
+  const call = (name, types = [], args = []) => logged('async-call', name, () => M.ccall(name, 'number', types, args, { async: true }));
   // `busy` (web 0.1.119): the node answered RATE_LIMITED (nodus 0.26.1
   // client front door) — nothing was forwarded and the same request may be
   // made again; the text is the module's "network is busy" one. Read from

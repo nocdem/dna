@@ -1,6 +1,7 @@
 import { rpcErrors, providerErrors } from '@metamask/rpc-errors';
 import { getAddress } from 'ethers';
 import { SWAP_METHODS, SWAP_PATHS, assertSwapUsdtToken } from '../constants/swap.js';
+import { debugLog, errorFields, hostOf, stopwatch } from '../../../src/debug-log.js';
 import { HEX128, botOrigin, liquidityAddTyped, lowerHex, parseLiquidityAddText, parseNodusToUsdtText, rawAmount, usdtToNodusTyped } from './swap-texts.js';
 
 // The swap and the liquidity add on the extension side (plan 2026-11-08-swap-bot-plan.nodus1.md section 18 change 1;
@@ -34,7 +35,16 @@ function evmAddress(value, label) {
 const mismatch = () => rpcErrors.invalidParams('The request text does not match the request or the held payment.');
 
 // One POST of the signed request. Never retried here (givens item 88: the user tries again).
+// One debug line per delivery: the bot's host (not the URL), the fixed path, the HTTP status (when it answered),
+// the reason word (a fixed word, or http_<status>), the duration and whether the request reached the bot. Never the
+// body, which carries the signatures and the signed text.
 async function deliver(origin, path, body) {
+  const elapsed = stopwatch();
+  const result = await deliverOnce(origin, path, body);
+  debugLog('swap', 'delivery', { host: hostOf(origin), path, ms: elapsed(), status: result.status, reached: result.reached, answered: result.answered, reason: result.reason });
+  return result;
+}
+async function deliverOnce(origin, path, body) {
   let response;
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
   try {
@@ -68,13 +78,13 @@ async function readAnswer(response, controller) {
   } catch { return null; /* an answer that is not JSON, or a body that failed */ }
 }
 function classify(response, answer) {
-  if (response.ok && answer?.received === true) return { reached: true, answered: true, answer };
+  if (response.ok && answer?.received === true) return { reached: true, answered: true, answer, status: response.status };
   const word = typeof answer?.reason === 'string' && /^[a-z_]{1,40}$/.test(answer.reason) ? answer.reason : `http_${response.status}`;
   // The open-approval refusal names the open swap (givens item 57; amm_http.c:355-372); the bot's number is a u32
   // (amm_http.c:599), so only a canonical decimal string 1..4294967295 is passed on.
   const open = word === 'open_approval' && typeof answer.openRequestNumber === 'string' && /^[1-9]\d{0,9}$/.test(answer.openRequestNumber) && BigInt(answer.openRequestNumber) <= 4294967295n
     ? { openRequestNumber: answer.openRequestNumber } : {};
-  return { reached: false, answered: true, reason: word, ...open };
+  return { reached: false, answered: true, reason: word, status: response.status, ...open };
 }
 function notDelivered(result) {
   return rpcErrors.internal({ message: result.answered ? `The bot did not take the request (${result.reason}). Nothing was paid.` : 'The request did not reach the bot. Nothing was paid.',
@@ -104,13 +114,17 @@ export function createSwap({ evm, nodus }) {
     assertSwapUsdtToken(session.chain, token); // before any signature, post or payment
     const sender = from.toLowerCase();
     const fields = { sender, destination, amount: amount.toString(), minimumToReceive: minimum.toString(), requestNumber: number.toString() };
+    debugLog('swap', 'signature-asked', { flow: 'usdt_to_nodus', origin });
     const signature = await session.signTyped(usdtToNodusTyped({ chainId: session.chainId, ...fields }));
+    debugLog('swap', 'signature-given', { flow: 'usdt_to_nodus', origin });
     const result = await deliver(bot, SWAP_PATHS.swap, { kind: 'usdt_to_nodus', ...fields, signature });
-    if (!result.reached) throw notDelivered(result);
+    if (!result.reached) { debugLog('swap', 'not-delivered', { flow: 'usdt_to_nodus', paid: false }); throw notDelivered(result); }
     try {
       const payment = await session.approveUsdtPayment({ token, to: payTo, amount, bot });
-      return { delivered: true, paid: true, hash: await payment.send(), answer: result.answer };
-    } catch (error) { throw afterDelivery(error); }
+      const hash = await payment.send();
+      debugLog('swap', 'payment-sent', { flow: 'usdt_to_nodus', hash });
+      return { delivered: true, paid: true, hash, answer: result.answer };
+    } catch (error) { debugLog('swap', 'delivered-unpaid', { flow: 'usdt_to_nodus', ...errorFields(error) }); throw afterDelivery(error); }
   }
 
   // The held NODUS transfer of a request text (NODUS -> USDT 6.4.4, liquidity add 6.4.6): the text must name exactly the
@@ -124,7 +138,9 @@ export function createSwap({ evm, nodus }) {
     try { return await nodus.checkHold(origin, holdId); } catch (error) { nodus.cancelHold(origin, holdId); throw error; }
   }
   async function signHeldText(origin, hold, text) {
+    debugLog('swap', 'signature-asked', { flow: 'nodus_text', origin });
     const signature = await nodus.signMessage(origin, [hexText(text), hold.account]);
+    debugLog('swap', 'signature-given', { flow: 'nodus_text', origin });
     return { text: hexText(text), publicKey: nodus.getAccount().publicKey, signature };
   }
 
@@ -140,11 +156,12 @@ export function createSwap({ evm, nodus }) {
       const signed = await signHeldText(origin, hold, request.text);
       result = await deliver(bot, SWAP_PATHS.swap, { kind: 'nodus_to_usdt', ...signed });
     } catch (error) { nodus.cancelHold(origin, request.holdId); throw error; }
-    if (!result.reached) { nodus.cancelHold(origin, request.holdId); throw notDelivered(result); }
+    if (!result.reached) { debugLog('swap', 'not-delivered', { flow: 'nodus_to_usdt', paid: false }); nodus.cancelHold(origin, request.holdId); throw notDelivered(result); }
     try {
       const sent = await nodus.sendHeld(origin, request.holdId);
+      debugLog('swap', 'payment-sent', { flow: 'nodus_to_usdt', intent: sent.intentId, transfer: sent.transferId });
       return { delivered: true, paid: true, intentId: sent.intentId, transferId: sent.transferId, answer: result.answer };
-    } catch (error) { nodus.cancelHold(origin, request.holdId); throw afterDelivery(error); }
+    } catch (error) { debugLog('swap', 'delivered-unpaid', { flow: 'nodus_to_usdt', ...errorFields(error) }); nodus.cancelHold(origin, request.holdId); throw afterDelivery(error); }
   }
 
   // Liquidity add (plan 6.4.6 steps (3), (4)): both halves signed and posted with the flat body of amm_http.h:44-51,
@@ -165,18 +182,20 @@ export function createSwap({ evm, nodus }) {
       session = evm.swapSession(origin, ethereumAddress);
       if (getAddress(session.account) !== ethereumAddress) throw providerErrors.unauthorized();
       assertSwapUsdtToken(session.chain, token); // before any signature, post or payment
+      debugLog('swap', 'signature-asked', { flow: 'liquidity_add', origin });
       const ethSignature = await session.signTyped(liquidityAddTyped({ chainId: session.chainId, ethereumAddress: ethereumAddress.toLowerCase(), nodusAddress: hold.account,
         usdtAmount: usdt.toString(), nodusAmount: nodusAmount.toString(), requestNumber: number.toString() }));
       const signed = await signHeldText(origin, hold, request.text);
       result = await deliver(bot, SWAP_PATHS.liquidityAdd, { ethereumAddress: ethereumAddress.toLowerCase(), nodusAddress: hold.account, usdtAmount: usdt.toString(),
         nodusAmount: nodusAmount.toString(), requestNumber: number.toString(), ethSignature, text: signed.text, publicKey: signed.publicKey, nodusSignature: signed.signature });
     } catch (error) { nodus.cancelHold(origin, request.holdId); throw error; }
-    if (!result.reached) { nodus.cancelHold(origin, request.holdId); throw notDelivered(result); }
+    if (!result.reached) { debugLog('swap', 'not-delivered', { flow: 'liquidity_add', paid: false }); nodus.cancelHold(origin, request.holdId); throw notDelivered(result); }
     let payment, sent;
     try {
       payment = await session.approveUsdtPayment({ token, to: payTo, amount: usdt, bot });
       sent = await nodus.sendHeld(origin, request.holdId);
     } catch (error) {
+      debugLog('swap', 'delivered-unpaid', { flow: 'liquidity_add', stage: 'before-usdt-payment', ...errorFields(error) });
       nodus.cancelHold(origin, request.holdId);
       // nodus.js wraps a failure after its record was durable as activityTracked (src/background/nodus.js:743), which
       // replaces the error that carried broadcastReached: either mark means the NODUS transfer may have been sent.
@@ -184,8 +203,10 @@ export function createSwap({ evm, nodus }) {
       throw afterDelivery(error, { nodusSent: nodusUncertain ? 'unknown' : false });
     }
     try {
-      return { delivered: true, nodusPaid: true, usdtPaid: true, hash: await payment.send(), intentId: sent.intentId, transferId: sent.transferId, answer: result.answer };
-    } catch (error) { throw afterDelivery(error, { nodusSent: true, intentId: sent.intentId, transferId: sent.transferId }); }
+      const hash = await payment.send();
+      debugLog('swap', 'payment-sent', { flow: 'liquidity_add', hash, intent: sent.intentId, transfer: sent.transferId });
+      return { delivered: true, nodusPaid: true, usdtPaid: true, hash, intentId: sent.intentId, transferId: sent.transferId, answer: result.answer };
+    } catch (error) { debugLog('swap', 'delivered-unpaid', { flow: 'liquidity_add', stage: 'usdt-payment', ...errorFields(error) }); throw afterDelivery(error, { nodusSent: true, intentId: sent.intentId, transferId: sent.transferId }); }
   }
 
   return {

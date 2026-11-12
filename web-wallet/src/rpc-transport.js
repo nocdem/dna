@@ -1,3 +1,4 @@
+import { debugLog, errorFields, hostOf, stopwatch } from './debug-log.js';
 const DEFAULT_LIMIT = 256 * 1024;
 const LARGE_METHODS = { eth_getBlockByNumber: 2 * 1024 * 1024, getTokenAccountsByOwner: 4 * 1024 * 1024 };
 // The public endpoint throttles bursts. Space reads across helpers and SDKs in
@@ -79,7 +80,30 @@ function validateJsonShape(value) {
   }
 }
 // SDK adapters use this too: bounding only the common JSON-RPC helper is insufficient.
-export async function rpcFetch(url, options = {}, { fetcher = fetch } = {}) {
+// The JSON-RPC method name of a request body, for the debug line only: the parameters (which can be a signed
+// transaction) are never read out. A batch or a body that is not JSON gives a fixed word.
+function methodNameOf(body) {
+  try {
+    const data = JSON.parse(typeof body === 'string' ? body : new TextDecoder().decode(body));
+    if (Array.isArray(data)) return 'batch';
+    return typeof data?.method === 'string' && /^[A-Za-z0-9_]{1,64}$/.test(data.method) ? data.method : 'unknown';
+  } catch { return 'unknown'; }
+}
+// One debug line per call: host (never the URL), method name, duration, HTTP status or the JSON-RPC error code.
+export async function rpcFetch(url, options = {}, config = {}) {
+  const elapsed = stopwatch(), note = {};
+  let host = 'invalid'; try { host = hostOf(url); } catch { /* the call itself reports the bad URL */ }
+  const method = options.body ? methodNameOf(options.body) : 'get';
+  try {
+    const response = await fetchBounded(url, options, config, note);
+    debugLog('rpc', 'call', { host, method, ms: elapsed(), status: response.status, jsonrpc_error: note.jsonrpcError, outcome: response.ok ? 'ok' : 'error' });
+    return response;
+  } catch (error) {
+    debugLog('rpc', 'call', { host, method, ms: elapsed(), ...errorFields(error) });
+    throw error;
+  }
+}
+async function fetchBounded(url, options = {}, { fetcher = fetch } = {}, note = {}) {
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000);
   const endpoint = endpointUrl(url);
   await pacePublicRead(endpoint, options.body, signal);
@@ -91,6 +115,7 @@ export async function rpcFetch(url, options = {}, { fetcher = fetch } = {}) {
     try { data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
     catch { throw new Error('RPC returned invalid JSON.'); }
     validateJsonShape(data);
+    if (typeof data?.error?.code === 'number') note.jsonrpcError = data.error.code;
   }
   const headers = new Headers(response.headers);
   headers.delete('content-encoding'); headers.set('content-length', String(bytes.length));
