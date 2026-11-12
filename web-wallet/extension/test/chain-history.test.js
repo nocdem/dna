@@ -90,10 +90,12 @@ test('account history cancelled before its queued turn never starts a provider r
 
 // B2: cross-read the site's balance format; a different id must not decrypt.
 // No flags/network/artifacts. Reusing the same id would miss cache isolation.
+// The record is in the current format: every row carries the network it was read on (a mainnet row `network: 'main'`); a row
+// without one is a legacy row and is dropped on load (balance-storage.test.js covers that), so it would not prove the key.
 test('kept balances use the web-wallet key and reject another vault id', async t => {
   let entries;
   const { nodus, values, lockCoordinator } = await walletSession(t, { beforeOpen: async ({ values, id, addresses }) => {
-    entries = { 'ethereum:ETH': { units: '123', observedAt: Date.now(), address: addresses.ethereum } };
+    entries = { 'ethereum:ETH': { units: '123', observedAt: Date.now(), address: addresses.ethereum, network: 'main' } };
     values[BALANCES_KEY] = await serializeBalances(id, entries, await balancesKeyFor(phrase, id));
   } });
   assert.deepEqual(nodus.getKeptBalances(), entries); await nodus.keepBalances(entries);
