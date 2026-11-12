@@ -11,8 +11,8 @@
 // untouched; every other byte of every file is copied as is.
 
 import { createHash } from 'node:crypto';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdir, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ENTRY = 'swap.js';
@@ -37,6 +37,21 @@ function importsOf(name, text) {
 export async function stamp(srcDir, outDir) {
   srcDir = resolve(srcDir);
   outDir = resolve(outDir);
+
+  // Refuse an outDir equal to or inside srcDir (symbolic links resolved where the path exists), and one whose
+  // parent is missing: only outDir itself is ever created.
+  const realSrc = await realpath(srcDir);
+  const parent = dirname(outDir);
+  let realParent;
+  try { realParent = await realpath(parent); } catch (e) {
+    if (e.code === 'ENOENT') throw new Error(`parent directory ${parent} of ${outDir} does not exist`);
+    throw e;
+  }
+  let realOut = join(realParent, basename(outDir));
+  try { realOut = await realpath(outDir); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  if (realOut === realSrc || realOut.startsWith(realSrc + sep)) {
+    throw new Error(`output directory ${outDir} is equal to or inside the source directory ${srcDir}`);
+  }
 
   let existing = [];
   try { existing = await readdir(outDir); } catch (e) { if (e.code !== 'ENOENT') throw e; }
@@ -78,7 +93,7 @@ export async function stamp(srcDir, outDir) {
   files.push({ name: 'swap.css', data: css, version: cssVersion });
   for (const [name, m] of done) files.push({ name, data: Buffer.from(m.text, 'latin1'), version: m.version });
 
-  await mkdir(outDir, { recursive: true });
+  try { await mkdir(outDir); } catch (e) { if (e.code !== 'EEXIST') throw e; }   // existing: checked empty above
   const rows = [];
   for (const f of files) {
     await writeFile(join(outDir, f.name), f.data);
