@@ -79,12 +79,13 @@ function stubAdapter(behaviour = {}) {
 
 // settings: fields merged into STATUS.settings; noToken: do not give the usdtToken option.
 // connected: false leaves the flow with no accounts (the extension not connected yet).
-function makeFlow({ routes, adapter = stubAdapter(), signText, pollMax, sleep, random, settings, noToken, connected = true } = {}) {
+// log: a logger for the flow and the bot client (log.js); none by default.
+function makeFlow({ routes, adapter = stubAdapter(), signText, pollMax, sleep, random, settings, noToken, connected = true, log } = {}) {
   const status = settings ? { ...STATUS, settings: { ...STATUS.settings, ...settings } } : STATUS;
   const fetch = stubFetch({ 'GET /amm/status': [200, status], ...routes });
   const sleeps = [];
   const flow = createSwapFlow({
-    bot: createBotClient({ fetch }), adapter, signText, botUrl: BOT_ORIGIN, usdtToken: noToken ? undefined : TOKEN,
+    bot: createBotClient({ fetch, log }), adapter, signText, log, botUrl: BOT_ORIGIN, usdtToken: noToken ? undefined : TOKEN,
     sleep: sleep ?? (async ms => { sleeps.push(ms); }), pollMax, pollIntervalMs: 5000, random,
   });
   if (connected) flow.setAccounts(ACCOUNTS);
@@ -427,7 +428,7 @@ test('the bot is reached only at BOT_ORIGIN under /amm (plan section 18 change 5
   }
   const swapJs = readFileSync(new URL('../swap.js', import.meta.url), 'utf8');
   assert.match(swapJs, /const botUrl = BOT_ORIGIN;/);                           // the extension gets the same constant
-  assert.match(swapJs, /createBotClient\(\{ fetch: \(\.\.\.a\) => fetch\(\.\.\.a\) \}\)/);   // client default base = BOT_ORIGIN/amm
+  assert.match(swapJs, /createBotClient\(\{ fetch: \(\.\.\.a\) => fetch\(\.\.\.a\), log \}\)/);   // client default base = BOT_ORIGIN/amm
   // The one allowed use of `location` is the existing navigation to the extension page (an assignment, not a read);
   // with that exact statement removed, no `location` and no other page-address property may remain in swap.js.
   assert.ok(swapJs.includes('location.href = EXT_PAGE;'));
