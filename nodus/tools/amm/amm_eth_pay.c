@@ -284,6 +284,14 @@ static void say(amm_ep_step_t *o, const char *m) {
     if (o) snprintf(o->msg, sizeof(o->msg), "%s", m);
 }
 
+/* A transaction hash as hex (out holds 65), for the log. */
+static const char *hash_hex(const uint8_t h[32], char out[65]) {
+    static const char *dg = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) { out[2 * i] = dg[h[i] >> 4]; out[2 * i + 1] = dg[h[i] & 15]; }
+    out[64] = '\0';
+    return out;
+}
+
 static int unhex20(const char *s, uint8_t out[20]) {
     if (!s || strlen(s) != 40) return -1;
     for (int i = 0; i < 20; i++) {
@@ -616,12 +624,21 @@ static int step_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
                 rc = AMM_EP_ERR;
                 goto done;
             }
+            char th[65];
+            QGP_LOG_INFO(LOG_TAG, "swap %s: USDT %s 0x%s confirmed in block %llu (%llu units)",
+                         s.id, is_payout(&s) ? "payout" : "refund", hash_hex(a.hash, th),
+                         (unsigned long long)r->block_number, (unsigned long long)a.net);
             if (out) { out->worked = 1; out->confirmed = 1; }
             rc = AMM_EP_OK;
             goto done;
         }
         if (amm_journal_eth_attempt_finish(j, swap_seq, AMM_EA_FAILED) != 0) { rc = AMM_EP_ERR; goto done; }
         if (out) out->worked = 1;
+        {
+            char th[65];
+            QGP_LOG_WARN(LOG_TAG, "swap %s: USDT transaction 0x%s failed in block %llu (receipt status %d)",
+                         s.id, hash_hex(a.hash, th), (unsigned long long)r->block_number, r->status);
+        }
         say(out, "the payout transaction failed (receipt status is not 1)");
         rc = AMM_EP_FAILED;
         goto done;
@@ -637,6 +654,11 @@ static int step_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
             goto done;
         }
         if (out) out->worked = 1;
+        {
+            char th[65];
+            QGP_LOG_WARN(LOG_TAG, "swap %s: USDT transaction 0x%s orphaned: nonce %llu used by another transaction",
+                         s.id, hash_hex(a.hash, th), (unsigned long long)a.nonce);
+        }
         say(out, "orphaned: the swap is unknown and the bot stops");
         rc = AMM_EP_ORPHANED;
         goto done;
@@ -653,8 +675,17 @@ static int step_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
         if (pr->send_raw(pr->ctx, a.raw, a.raw_len, h, deadline_ms) == AMM_ETH_OK &&
             !memcmp(h, a.hash, 32)) accepted++;
     }
-    if (accepted == 0) { say(out, "no provider took the transaction"); rc = AMM_EP_UNKNOWN; goto done; }
+    char th[65];
+    hash_hex(a.hash, th);
+    if (accepted == 0) {
+        QGP_LOG_WARN(LOG_TAG, "swap %s: USDT transaction 0x%s: no provider took it", s.id, th);
+        say(out, "no provider took the transaction");
+        rc = AMM_EP_UNKNOWN;
+        goto done;
+    }
     if (amm_journal_eth_attempt_submitted(j, swap_seq, tip) != 0) { rc = AMM_EP_ERR; goto done; }
+    QGP_LOG_INFO(LOG_TAG, "swap %s: USDT transaction 0x%s submitted (nonce %llu, %d providers took it, latest block %llu)",
+                 s.id, th, (unsigned long long)a.nonce, accepted, (unsigned long long)tip);
     if (out) { out->worked = 1; out->submitted = 1; }
     rc = AMM_EP_OK;
 done:

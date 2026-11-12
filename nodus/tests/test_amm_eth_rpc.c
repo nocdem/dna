@@ -705,7 +705,8 @@ static void r8_tx_receipt(void) {
     char b[2500], b2[2500];
     /* a legacy transaction (type 0x0) with every field transaction.yaml:364-479 /
      * :487-518 require: contextual blockHash, blockNumber, blockTimestamp, from,
-     * hash, transactionIndex; type, nonce, gas, value, input, gasPrice, v, r, s */
+     * hash, transactionIndex; type, nonce, gas, value, input, gasPrice, v, r, s
+     * (blockTimestamp is not required by the reader, below) */
     snprintf(b, sizeof(b), TX_FIELDS("%s", "\"0x627306090abab3a6e1400e9345bc60c78a8bef57\"", "0xa9059cbb0000"), hh);
     result(b);
     CHECK(g_p.get_tx(g_p.ctx, want, &t, 0) == AMM_ETH_OK && t.has_to && t.from[0] == 0xfe && t.from[19] == 0x73 &&
@@ -723,7 +724,7 @@ static void r8_tx_receipt(void) {
     CHECK(g_p.get_tx(g_p.ctx, want, &t, 0) == AMM_ETH_ERR, "an escaped input: ERR");
     /* every required field, removed (its key renamed) or of the wrong type: ERR */
     snprintf(b, sizeof(b), TX_FIELDS("%s", "\"0x627306090abab3a6e1400e9345bc60c78a8bef57\"", "0xa9059cbb0000"), hh);
-    static const char *txreq[] = { "blockHash", "blockNumber", "blockTimestamp", "from", "hash", "transactionIndex",
+    static const char *txreq[] = { "blockHash", "blockNumber", "from", "hash", "transactionIndex",
                                    "type", "nonce", "gas", "value", "input", "gasPrice", "v", "r", "s", "to" };
     for (size_t i = 0; i < sizeof(txreq) / sizeof(txreq[0]); i++) {
         char m[100];
@@ -731,6 +732,20 @@ static void r8_tx_receipt(void) {
         snprintf(m, sizeof(m), "transaction without `%s`: ERR", txreq[i]);
         CHECK(g_p.get_tx(g_p.ctx, want, &t, 0) == AMM_ETH_ERR, m);
     }
+    /* blockTimestamp is not read: two of the three live Sepolia providers
+     * leave it out (rpc.sepolia.ethpandaops.io and
+     * ethereum-sepolia-rpc.blockreq.com, eth_getTransactionByHash, types 0x0,
+     * 0x2 and 0x3, 2026-11-12), and the client THORChain's bifrost reads
+     * transactions with (shared/evm/eth_rpc.go:134) takes only blockNumber,
+     * blockHash and from besides the transaction (op-geth v1.101503.1
+     * ethclient/ethclient.go:254-258, thornode go.mod:20; the same in
+     * go-ethereum v1.17.8 ethclient/ethclient.go:268-272) */
+    result(drop_key(b, "blockTimestamp", b2, sizeof(b2)));
+    CHECK(g_p.get_tx(g_p.ctx, want, &t, 0) == AMM_ETH_OK && t.has_to && t.from[0] == 0xfe &&
+          t.input_len == 6 && t.input_head[0] == 0xa9,
+          "transaction without `blockTimestamp` (as two live providers answer): it maps");
+    result(subst(b, "\"blockTimestamp\":\"0x11\"", "\"blockTimestamp\":17", b2, sizeof(b2)));
+    CHECK(g_p.get_tx(g_p.ctx, want, &t, 0) == AMM_ETH_OK, "transaction with a numeric `blockTimestamp`: it maps (not read)");
     result(subst(b, "\"blockNumber\":\"0x422\"", "\"blockNumber\":\"0x0422\"", b2, sizeof(b2)));
     CHECK(g_p.get_tx(g_p.ctx, want, &t, 0) == AMM_ETH_ERR, "transaction with a leading-zero blockNumber: ERR");
     result(subst(b, "\"nonce\":\"0x1\"", "\"nonce\":1", b2, sizeof(b2)));

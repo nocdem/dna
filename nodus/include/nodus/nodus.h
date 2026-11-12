@@ -201,6 +201,8 @@ typedef struct nodus_client {
 
     /* Keepalive ping (prevents server idle sweep) */
     uint64_t               last_ping_ms; /* Monotonic ms (nodus_time_mono_ms) of last ping sent */
+    uint32_t               keepalive_txn;  /* txn of the last keepalive ping (sent with no pending slot) */
+    bool                   keepalive_open; /* its pong has not arrived yet */
 
     /* Active subscriptions (for re-subscribe on reconnect) */
     nodus_key_t            listen_keys[NODUS_CLIENT_MAX_LISTENS];

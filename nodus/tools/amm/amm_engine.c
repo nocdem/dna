@@ -33,6 +33,10 @@ struct amm_engine {
                                 * with no deposit matched                    */
     /* the question path's shared reads (givens item 98) */
     struct { int valid; uint64_t at_ms; uint64_t v; } rc_usdt, rc_nodus, rc_ethfee;
+    /* the log: the last wait written per swap, so a wait is written once when
+     * it starts or changes (in memory; a restart writes each wait again) */
+    struct { int64_t seq; char why[96]; } waits[16];
+    int n_waits, waits_next;
 };
 
 #include <time.h>
@@ -639,12 +643,34 @@ static int room_line(amm_engine_t *e, amm_engine_step_t *o) {
     return 0;
 }
 
+/* A swap's wait, written to the log when it starts or changes. */
+static void wait_log(amm_engine_t *e, const amm_swap_t *s, const char *why) {
+    int k = -1;
+    for (int i = 0; i < e->n_waits; i++) if (e->waits[i].seq == s->seq) k = i;
+    if (k >= 0 && !strcmp(e->waits[k].why, why)) return;
+    if (k < 0) {
+        if (e->n_waits < (int)(sizeof(e->waits) / sizeof(e->waits[0]))) k = e->n_waits++;
+        else { k = e->waits_next; e->waits_next = (k + 1) % e->n_waits; }
+        e->waits[k].seq = s->seq;
+    }
+    snprintf(e->waits[k].why, sizeof(e->waits[k].why), "%s", why);
+    QGP_LOG_INFO(LOG_TAG, "swap %s waits: %s", s->id, why);
+}
+
 /* The count of a swap that holds room and whose payment is deep. NO_ROOM is a
  * waiting payment, not a fault. */
 static int count_swap(amm_engine_t *e, const amm_swap_t *s, amm_engine_step_t *o) {
     int tr = amm_journal_swap_transition(e->c.journal, s->seq, AMM_S_COUNTED, NULL, NULL, NULL);
-    if (tr == AMM_J_OK) { o->counted++; return 0; }
-    if (tr == AMM_J_NO_ROOM) { o->waiting++; return 0; }
+    if (tr == AMM_J_OK) {
+        o->counted++;
+        QGP_LOG_INFO(LOG_TAG, "swap %s counted", s->id);
+        return 0;
+    }
+    if (tr == AMM_J_NO_ROOM) {
+        o->waiting++;
+        wait_log(e, s, "its payment is deep, no room to count it");
+        return 0;
+    }
     if (tr == AMM_J_DUP_TRANSFER) return 0;
     QGP_LOG_ERROR(LOG_TAG, "counting refused (%d)", tr);
     return tr == -1 ? -1 : 0;
@@ -727,6 +753,10 @@ static int eth_records(amm_engine_t *e, amm_engine_step_t *o) {
                         if (sr == AMM_J_OK) {
                             o->matched++;
                             taken = 1;
+                            QGP_LOG_INFO(LOG_TAG, "swap %s: its payment is seen in block %llu (%s%s)",
+                                         ap.id, (unsigned long long)r->block_number,
+                                         deep ? "deep" : "not deep yet",
+                                         took ? "" : ", no room: it waits in the line");
                             if (!took) o->waiting++;
                             else if (deep) {
                                 amm_swap_t now_s;
@@ -910,7 +940,11 @@ static int decide_refund(amm_engine_t *e, const amm_swap_t *s, const char *why,
     d.refund = 1;
     d.message = why;
     int jr = amm_journal_swap_decide(e->c.journal, &d);
-    if (jr == AMM_J_OK) { o->to_refund++; return 0; }
+    if (jr == AMM_J_OK) {
+        o->to_refund++;
+        QGP_LOG_INFO(LOG_TAG, "swap %s decided: refund (%s)", s->id, why);
+        return 0;
+    }
     if (jr == -1) return -1;
     QGP_LOG_ERROR(LOG_TAG, "swap %s: the refund decision was refused (%d)", s->id, jr);
     return 0;
@@ -967,7 +1001,12 @@ static int decide_one(amm_engine_t *e, const amm_swap_t *s, int paused, uint64_t
     /* payouts_paused: nothing is signed and no swap is decided of any kind, the
      * trading-halt refund included (plan section 16): the swap waits counted
      * with its room */
-    if (e->cfg.payouts_paused) { e->wait_shared = B_PAUSED; o->undecided++; return 0; }
+    if (e->cfg.payouts_paused) {
+        wait_log(e, s, "payouts are paused (setting payouts_paused)");
+        e->wait_shared = B_PAUSED;
+        o->undecided++;
+        return 0;
+    }
     if (paused) return decide_refund(e, s, "trading halted", o);
 
     amm_pool_t pool;
@@ -1010,8 +1049,18 @@ static int decide_one(amm_engine_t *e, const amm_swap_t *s, int paused, uint64_t
          * NODUS payout is signed or submitted */
         int owed = amm_journal_nodus_payout_owed(e->c.journal);
         if (owed < 0) return -1;
-        if (owed == 1) { e->wait_shared = B_NODUS_LIVE; o->undecided++; return 0; }
-        if (e->blk & B_NODUS_NODE) { e->wait_shared = B_NODUS_NODE; o->undecided++; return 0; }
+        if (owed == 1) {
+            wait_log(e, s, "another NODUS payout is signed or submitted and not settled yet");
+            e->wait_shared = B_NODUS_LIVE;
+            o->undecided++;
+            return 0;
+        }
+        if (e->blk & B_NODUS_NODE) {
+            wait_log(e, s, "the Nodus node did not answer earlier in this round");
+            e->wait_shared = B_NODUS_NODE;
+            o->undecided++;
+            return 0;
+        }
         amm_np_prepared_t pre;
         int pr = amm_nodus_pay_prepare(e->c.nodus_pay, s->dest, output, s->minimum, dl, &pre);
         if (pr == AMM_NP_ZERO || pr == AMM_NP_BELOW_MIN) {
@@ -1034,14 +1083,24 @@ static int decide_one(amm_engine_t *e, const amm_swap_t *s, int paused, uint64_t
         d.nattempt = &pre.attempt;
         int jr = amm_journal_swap_decide(e->c.journal, &d);
         amm_np_prepared_free(&pre);
-        if (jr == AMM_J_OK) { o->decided++; return 0; }
+        if (jr == AMM_J_OK) {
+            o->decided++;
+            QGP_LOG_INFO(LOG_TAG, "swap %s decided: %llu NODUS units to pay, fee %llu",
+                         s->id, (unsigned long long)d.out_paid, (unsigned long long)d.out_fee);
+            return 0;
+        }
         if (jr == -1) return -1;
         QGP_LOG_WARN(LOG_TAG, "swap %s: the decision wrote nothing (%d)", s->id, jr);
         o->undecided++;
         return 0;
     }
 
-    if (e->blk & B_ETH) { e->wait_shared = B_ETH; o->undecided++; return 0; }   /* found earlier this round */
+    if (e->blk & B_ETH) {                               /* found earlier this round */
+        wait_log(e, s, "the Ethereum payer could not plan a payout earlier in this round");
+        e->wait_shared = B_ETH;
+        o->undecided++;
+        return 0;
+    }
     amm_ep_prepared_t pre;
     int pr = amm_eth_pay_prepare(e->c.eth_pay, s->dest, output, s->minimum, dl, &pre);
     if (pr == AMM_EP_ZERO || pr == AMM_EP_BELOW_MIN) {
@@ -1064,7 +1123,12 @@ static int decide_one(amm_engine_t *e, const amm_swap_t *s, int paused, uint64_t
     d.eattempt = &pre.attempt;
     int jr = amm_journal_swap_decide(e->c.journal, &d);
     amm_ep_prepared_free(&pre);
-    if (jr == AMM_J_OK) { o->decided++; return 0; }
+    if (jr == AMM_J_OK) {
+        o->decided++;
+        QGP_LOG_INFO(LOG_TAG, "swap %s decided: %llu USDT units to pay, fee %llu",
+                     s->id, (unsigned long long)d.out_paid, (unsigned long long)d.out_fee);
+        return 0;
+    }
     if (jr == -1) return -1;
     QGP_LOG_WARN(LOG_TAG, "swap %s: the decision wrote nothing (%d)", s->id, jr);
     o->undecided++;
