@@ -1434,6 +1434,34 @@ static void w27_failed_header_provider_is_fallback(void) {
     CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"), "(b) the payment counts");
 }
 
+/* W28  disagreement among the quorum-header providers asks the failed-header
+ * provider too (Sol's scenario, 2026-11-12), as the parent's full set did.
+ * PROVES: quorum 2; A and B return the quorum header at height 10, C's header
+ * read fails; A and C list the same valid payment, B lists nothing. In ONE step
+ * the payment is stored as counted (state seen or deep, never candidate): C was
+ * asked because the first pass (A: payment, B: empty) was not unanimous.
+ * HOW IT CAN FALSELY PASS: C's header failure is the stub switch fail_blocks for
+ * every height; the check is on the record state after one step, so a later
+ * step that happens to reach C would not hide it (a single step is run). On
+ * e40c11e66 the first pass counts two answers and stops, the payment stays a
+ * candidate, and the check fails. */
+static void w28_disagreement_asks_failed_header_provider(void) {
+    printf("W28 a disagreement among the quorum-header providers asks the failed-header provider\n");
+    fresh(20);
+    ch_build(&g_chain, 1, 13, 0, 0);
+    g_alt[0] = g_chain; g_alt[1] = g_chain; g_alt[2] = g_chain;
+    ch_pay(&g_alt[0], 0x31, 0, 10, 0x11, 5);          /* A lists the payment   */
+    ch_pay(&g_alt[2], 0x31, 0, 10, 0x11, 5);          /* C lists the same one  */
+    for (int i = 0; i < 3; i++) g_sp[i].ch = &g_alt[i];   /* B (index 1): empty */
+    g_sp[2].fail_blocks = 1;                          /* C's header read fails */
+    amm_eth_step_t o;
+    step(&o);
+    char st[16];
+    CHECK(rec_state(0x31, 0, st) == 0 && (!strcmp(st, "seen") || !strcmp(st, "deep")),
+          "the payment is counted in that step (A and C agree), not left a candidate");
+    CHECK(g_sp[2].asked[10] > 0, "C was asked for block 10 because A and B disagreed");
+}
+
 int main(void) {
     printf("test_amm_eth_watch\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_watch_testXXXXXX");
@@ -1466,6 +1494,7 @@ int main(void) {
     w25_window_by_value();
     w26_logs_only_from_quorum_header_providers();
     w27_failed_header_provider_is_fallback();
+    w28_disagreement_asks_failed_header_provider();
 
     if (g_w) amm_eth_watch_free(g_w);
     if (g_j) amm_journal_close(g_j);
