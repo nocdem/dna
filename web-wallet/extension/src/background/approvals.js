@@ -98,11 +98,14 @@ export function createApprovals({ messenger, runtime, windows, tabs, platform, g
 
   // The user asked to see the approval (a notification click): the same single-flight opening as triggerUi, without its
   // skips for an open toolbar popup or an active wallet tab. Nothing waiting: nothing opens.
-  function showWindow() {
-    if (pendingCount() === 0) return Promise.resolve();
-    if (uiOpening) return uiOpening;
+  // An opening already in flight is waited for, not joined: it may be a triggerUi that skips (an active wallet tab), and
+  // the click must still get a window. If that opening made the window, showPopup focuses it. Its failure was already
+  // reported by the caller that started it.
+  async function showWindow() {
+    while (uiOpening) { try { await uiOpening; } catch { /* reported by its own caller */ } }
+    if (pendingCount() === 0) return;
     uiOpening = showPopup().finally(() => { uiOpening = null; });
-    return uiOpening;
+    await uiOpening;
   }
 
   // Port: approval-controller 10.0.0 dist/ApprovalController.js:82-115.

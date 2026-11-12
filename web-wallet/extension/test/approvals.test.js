@@ -231,6 +231,44 @@ test('pendingCount and showWindow serve the approval notification click', async 
   approvals.reject('first'); await pending.catch(() => {}); approvals.destroy();
 });
 
+// Proves a notification click is not swallowed by an opening already in flight that will skip: an approval waits, a
+// full-page wallet tab is active, and triggerUi's tab query is held open; showWindow called meanwhile waits for it, then
+// (the query answered "active tab", so triggerUi opened nothing) opens exactly one window itself and resolves only after
+// that. Could falsely pass if the query were not held: then triggerUi would already have skipped and the check "showWindow
+// has not resolved while the query is pending" would be meaningless; the test asserts it has not, and that no window
+// exists before the release.
+test('showWindow after a skipped opening in flight still opens the window', async () => {
+  const fixture = approvalFixture(), ui = { popupCount: 0, tabIds: new Set([7]) };
+  let release; const held = new Promise(resolve => { release = resolve; });
+  const tabs = { query: async () => { await held; return [{ id: 7 }]; } };
+  const approvals = createApprovals({ ...fixture, tabs, messenger: new Messenger({ namespace: 'Background' }), getUiState: () => ui });
+  const pending = approvals.controller.addAndShowApprovalRequest({ id: 'first', origin: 'https://site.example', type: 'personal_sign' });
+  const outcome = pending.then(() => 'accepted', error => error.code);
+  await idle();
+  let resolved = false; const showing = approvals.showWindow().then(() => { resolved = true; });
+  await idle(); assert.equal(resolved, false, 'showWindow waits for the opening in flight'); assert.equal(fixture.created.length, 0);
+  release(); await showing;
+  assert.equal(fixture.created.length, 1, 'exactly one window, opened by the click'); assert.equal(resolved, true);
+  approvals.reject('first'); assert.equal(await outcome, 4001); approvals.destroy();
+});
+
+// Proves single flight is kept: when the opening in flight itself opens the window (its window creation is held), the click
+// waits for it and then focuses that window; no second window is created and the two never open at once. Could falsely
+// pass if the click ran at once: it would then find no window and create one, making two; the test counts created windows.
+test('showWindow after an opening in flight that opens the window focuses it', async () => {
+  const fixture = approvalFixture(), plainCreate = fixture.windows.create;
+  let release; const held = new Promise(resolve => { release = resolve; });
+  fixture.windows.create = async options => { await held; return plainCreate(options); };
+  const approvals = createApprovals({ ...fixture, messenger: new Messenger({ namespace: 'Background' }) });
+  const pending = approvals.controller.addAndShowApprovalRequest({ id: 'first', origin: 'https://site.example', type: 'personal_sign' });
+  const outcome = pending.then(() => 'accepted', error => error.code);
+  await idle();
+  const showing = approvals.showWindow(); await idle(); assert.equal(fixture.created.length, 0);
+  release(); await showing;
+  assert.equal(fixture.created.length, 1, 'no second window'); assert.deepEqual(fixture.focused, [{ id: 1, focused: true }]);
+  approvals.reject('first'); assert.equal(await outcome, 4001); approvals.destroy();
+});
+
 // Window removal as the browser reports it: the window leaves the list, then every onRemoved listener hears its id.
 const closeWindow = (fixture, id) => {
   fixture.open.splice(fixture.open.findIndex(win => win.id === id), 1);

@@ -114,8 +114,10 @@ export function createAttention({ action, notifications, runtime, windows, tabs,
   messenger.subscribe('ApprovalController:stateChange', onApprovalChange);
   // A click can be the event that wakes a stopped worker: the worker's lazy listener buffers it until this call.
   const lazyListener = globalThis.chrome?.notifications === notifications && notifications?.onClicked && globalThis.stateHooks?.lazyListener;
-  if (lazyListener) lazyListener.addListener('notifications', 'onClicked', onClicked);
-  else notifications?.onClicked?.addListener(onClicked);
+  try {
+    if (lazyListener) lazyListener.addListener('notifications', 'onClicked', onClicked);
+    else notifications?.onClicked?.addListener(onClicked);
+  } catch (error) { note('notification-failed', error, { call: 'onClicked.addListener' }); }
   // No approval survives a restart, so a notification left by an earlier worker is cleared; the message one is not.
   notify('clear', APPROVAL_ID);
   onApprovalChange();
@@ -127,7 +129,8 @@ export function createAttention({ action, notifications, runtime, windows, tabs,
       if (destroyed) return;
       destroyed = true;
       messenger.unsubscribe('ApprovalController:stateChange', onApprovalChange);
-      try { notifications?.onClicked?.removeListener(onClicked); } catch { /* the listener goes with the worker */ }
+      try { notifications?.onClicked?.removeListener(onClicked); }
+      catch (error) { note('notification-failed', error, { call: 'onClicked.removeListener' }); }
       try { action?.setBadgeText({ text: '' }); } catch { /* the badge is only a hint */ }
     },
   };

@@ -37,7 +37,8 @@ function rig(t, options = {}) {
     async create(id, details) { log.push({ fn: 'create', id, options: details }); if (options.createFails) throw new Error('notification refused'); return id; },
     async clear(id) { log.push({ fn: 'clear', id }); trace.push(['clear', id]); return true; },
     onClicked: {
-      addListener(fn) { clickListeners.push(fn); }, removeListener(fn) { const i = clickListeners.indexOf(fn); if (i >= 0) clickListeners.splice(i, 1); },
+      addListener(fn) { if (options.addListenerThrows) throw new Error('listener refused'); clickListeners.push(fn); },
+      removeListener(fn) { if (options.removeListenerThrows) throw new Error('listener removal refused'); const i = clickListeners.indexOf(fn); if (i >= 0) clickListeners.splice(i, 1); },
       hasListener: fn => clickListeners.includes(fn),
     },
   };
@@ -69,6 +70,7 @@ function rig(t, options = {}) {
     globalThis.chrome = { notifications };
     globalThis.stateHooks = { lazyListener: { addListener(namespace, name, callback) {
       options.lazy.calls.push([namespace, name]);
+      if (options.lazy.throws) throw new Error('lazy registration refused');
       for (const args of options.lazy.buffered) callback(...args);
     } } };
   }
@@ -301,4 +303,21 @@ test('start clears only the approval notification, a broken badge harms nothing,
   const m = rig(t, { minimalNotifications: true, noAction: true }); await settle(); m.add('x', 'personal_sign'); await settle();
   assert.equal(m.log.length, 1, 'only create exists on this notifications object');
   m.accept('x'); await Promise.all(m.outcomes);
+});
+
+// T6 (listener failures). Proves the click listener's registration (direct and through the lazy listener) and its removal are
+// guarded like every other notification call: each refusal is written as exactly one `attention notification-failed` line and
+// neither createAttention nor destroy throws; the rest of the module still works (the badge shows the approval). Can falsely
+// pass if the line came from another call: each case counts the lines of its own step only, with the others at zero.
+test('a refused click-listener registration or removal is logged once and never thrown', async t => {
+  const lines = [], stop = onDebugLine(line => lines.push(`${line.area} ${line.event}`)); t.after(stop);
+  const failed = () => lines.filter(line => line === 'attention notification-failed').length;
+  const direct = rig(t, { addListenerThrows: true }); await settle();
+  assert.equal(failed(), 1, 'direct registration');
+  direct.add('a', 'personal_sign'); await settle(); assert.equal(direct.text(), '!'); direct.accept('a'); await Promise.all(direct.outcomes);
+  rig(t, { lazy: { buffered: [], throws: true } }); await settle();
+  assert.equal(failed(), 2, 'lazy registration');
+  const removal = rig(t, { removeListenerThrows: true }); await settle();
+  assert.equal(failed(), 2, 'a working registration logs nothing');
+  removal.destroyAttention(); assert.equal(failed(), 3, 'removal');
 });
