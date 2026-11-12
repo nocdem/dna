@@ -388,7 +388,8 @@ static int r_submit(void *ctx, const uint8_t wire_id[64], const uint8_t *env,
     amm_node_real_t *n = ctx;
     const uint64_t t0 = amm_now_ms();
     char wid[17];                       /* the first 8 bytes of the wire id, hex */
-    for (int i = 0; i < 8; i++) snprintf(wid + 2 * i, 3, "%02x", wire_id[i]);
+    if (wire_id) for (int i = 0; i < 8; i++) snprintf(wid + 2 * i, 3, "%02x", wire_id[i]);
+    else snprintf(wid, sizeof(wid), "none");   /* no read of a NULL id: the parent's -1 path below */
     if (lock_until(n, dl) != 0) {
         QGP_LOG_WARN(LOG_TAG, "node call submit %s...: the session lock was not obtained "
                      "after %llu ms", wid, (unsigned long long)(amm_now_ms() - t0));

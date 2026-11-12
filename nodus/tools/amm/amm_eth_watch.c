@@ -263,11 +263,10 @@ static void why_block(amm_eth_watch_t *w, const step_t *st, uint64_t h, const ch
 
 /* How a usable provider's header read at h compares with the quorum header
  * (`agree[i]`, 0 for an unusable provider and for all when the result is 1):
- * the logs of the block are asked first of the AGREE_QUORUM providers; the
- * AGREE_NO_HEADER ones (their header read failed, so their logs may still be
- * those of the quorum block, log_ok checks the block hash) are asked only when
- * fewer than `quorum` of the first answered; the AGREE_OTHER ones (another
- * header at h) are never asked. */
+ * the logs of the block are asked of the AGREE_QUORUM providers first, then of
+ * the AGREE_NO_HEADER ones (their header read failed, so their logs may still
+ * be those of the quorum block, log_ok checks the block hash); the AGREE_OTHER
+ * ones (another header at h) are never asked. */
 #define AGREE_QUORUM    1
 #define AGREE_NO_HEADER 2
 #define AGREE_OTHER     3
@@ -445,38 +444,12 @@ static int gather_logs(amm_eth_watch_t *w, const step_t *st,
     int asked[AMM_ETH_MAX_PROVIDERS];
     memset(ans, 0, sizeof(int) * AMM_ETH_MAX_PROVIDERS);
     memset(asked, 0, sizeof(asked));
-    /* pass 0: the providers that returned the quorum header; pass 1, only when
-     * fewer than `quorum` of them answered: the providers whose header read
-     * failed (the old evidence set minus the providers with another header) */
+    /* pass 0: the providers that returned the quorum header; pass 1: the
+     * providers whose header read failed. No early stop: every usable provider
+     * is asked except those that returned ANOTHER header at this height (the
+     * parent's evidence set minus those), so no verdict differs from the
+     * parent's because a provider able to answer was skipped. */
     for (int pass = 0; pass < 2; pass++) {
-      if (pass == 1) {
-          /* the first pass alone gives the parent's verdict only when every
-           * provider of it answered and all returned the same entries; any
-           * disagreement (or a failed read) asks the failed-header providers
-           * too, as the parent's full set did */
-          int first = 0, same = answered >= w->cfg.quorum;
-          for (int i = 0; i < w->cfg.n_providers; i++) first += asked[i];
-          if (answered != first) same = 0;
-          for (int i = 0; same && i < w->cfg.n_providers; i++) {
-              if (!ans[i]) continue;
-              int ci = 0;
-              for (int a = 0; a < n_ent; a++) ci += ents[a].prov == i;
-              for (int j = 0; same && j < w->cfg.n_providers; j++) {
-                  if (!ans[j] || j == i) continue;
-                  int cj = 0;
-                  for (int a = 0; a < n_ent; a++) cj += ents[a].prov == j;
-                  if (ci != cj) { same = 0; break; }
-                  for (int a = 0; same && a < n_ent; a++) {
-                      if (ents[a].prov != i) continue;
-                      int found = 0;
-                      for (int b = 0; b < n_ent && !found; b++)
-                          found = ents[b].prov == j && ent_same_key(&ents[a], &ents[b]);
-                      if (!found) same = 0;
-                  }
-              }
-          }
-          if (same) break;
-      }
       for (int i = 0; i < w->cfg.n_providers; i++) {
         if (!st->use[i] || agree[i] != (pass == 0 ? AGREE_QUORUM : AGREE_NO_HEADER)) continue;
         asked[i] = 1;
@@ -504,9 +477,7 @@ static int gather_logs(amm_eth_watch_t *w, const step_t *st,
     txt_t t = { skipped, sizeof(skipped), 0 };
     for (int i = 0; i < w->cfg.n_providers; i++) {
         if (!st->use[i] || asked[i]) continue;
-        txt_add(&t, " provider-%d (%s);", i + 1,
-                agree[i] == AGREE_OTHER ? "a different header at that height"
-                                        : "no header at that height, not needed");
+        txt_add(&t, " provider-%d (a different header at that height);", i + 1);
     }
     if (t.len)
         QGP_LOG_INFO(LOG_TAG, "block %llu: not asked for its logs:%s %d of the asked "
