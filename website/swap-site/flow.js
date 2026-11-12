@@ -66,9 +66,9 @@ export function describeAdapterError(err, ctx = {}) {
       const n = out.openRequestNumber;
       out.text = ctx.flow === 'add'
         ? `This new request paid nothing. You already have an open request with the same USDT amount (request ${n}), a swap or a liquidity add. ` +
-          `The bot refuses this exact USDT amount again until it has seen that request's payment (a swap's payment must also be confirmed) or the request has expired; a different amount can be used now.`
+          `The bot refuses this exact USDT amount again until that request has expired or the bot has taken in its payment: a liquidity add's once its USDT payment is seen, a swap's once its payment is confirmed and it is not waiting in line for room. A different amount can be used now.`
         : `This new request paid nothing. You already have an open request with the same amount (request ${n}). ` +
-          `The bot refuses this exact amount again until it has seen that request's payment (a swap's payment must also be confirmed) or the request has expired; a different amount can be used now. ` +
+          `The bot refuses this exact amount again until that request has expired or the bot has taken in its payment: a liquidity add's once its USDT payment is seen, a swap's once its payment is confirmed and it is not waiting in line for room. A different amount can be used now. ` +
           `If request ${n} is a swap, it is shown below.`;
       return out;
     }

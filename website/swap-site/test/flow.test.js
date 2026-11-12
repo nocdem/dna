@@ -239,10 +239,10 @@ test('the open_approval refusal names the open request and says the same amount 
   const err = { delivered: false, paid: false, answered: true, reason: 'open_approval', openRequestNumber: '77' };
   const swap = describeAdapterError(err);
   assert.equal(swap.openRequestNumber, '77');
-  assert.equal(swap.text, 'This new request paid nothing. You already have an open request with the same amount (request 77). The bot refuses this exact amount again until it has seen that request\'s payment (a swap\'s payment must also be confirmed) or the request has expired; a different amount can be used now. If request 77 is a swap, it is shown below.');
+  assert.equal(swap.text, 'This new request paid nothing. You already have an open request with the same amount (request 77). The bot refuses this exact amount again until that request has expired or the bot has taken in its payment: a liquidity add\'s once its USDT payment is seen, a swap\'s once its payment is confirmed and it is not waiting in line for room. A different amount can be used now. If request 77 is a swap, it is shown below.');
   const add = describeAdapterError(err, { flow: 'add' });
   assert.equal(add.openRequestNumber, '77');
-  assert.equal(add.text, 'This new request paid nothing. You already have an open request with the same USDT amount (request 77), a swap or a liquidity add. The bot refuses this exact USDT amount again until it has seen that request\'s payment (a swap\'s payment must also be confirmed) or the request has expired; a different amount can be used now.');
+  assert.equal(add.text, 'This new request paid nothing. You already have an open request with the same USDT amount (request 77), a swap or a liquidity add. The bot refuses this exact USDT amount again until that request has expired or the bot has taken in its payment: a liquidity add\'s once its USDT payment is seen, a swap\'s once its payment is confirmed and it is not waiting in line for room. A different amount can be used now.');
 });
 
 // Proves the delivered/unpaid text of the add flow differs from the swap flow's and that the swap flow keeps its own.
