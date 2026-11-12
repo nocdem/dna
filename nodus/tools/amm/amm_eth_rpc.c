@@ -721,18 +721,22 @@ done:
 }
 
 /* Required fields of TransactionInfo (transaction.yaml:487-518): the
- * contextual ones (blockHash, blockNumber, blockTimestamp, from, hash,
- * transactionIndex) and, by `type`, the required fields of the signed type
+ * contextual ones (blockHash, blockNumber, from, hash, transactionIndex) and,
+ * by `type`, the required fields of the signed type
  * (TransactionSigned, :480-486; the Unsigned schemas' required lists and the
  * signature properties :364-479): all types need type, nonce, gas, value,
  * input, r, s. `to` is required to be present here (the seam reads it; the
  * schema lets types 0-2 omit it, a stricter reading that is ERR). An unknown
- * type is ERR. */
+ * type is ERR. The schema's contextual blockTimestamp is not read: the bot
+ * never uses it, live providers leave it out (rpc.sepolia.ethpandaops.io and
+ * ethereum-sepolia-rpc.blockreq.com, 2026-11-12), and go-ethereum's client
+ * takes only blockNumber, blockHash and from besides the transaction
+ * (go-ethereum v1.17.8 ethclient/ethclient.go:268-272). */
 static int tx_required_ok(const jn_t *nd, int o) {
     int it = obj_get(nd, o, "type");
     if (it < 0 || nd[it].t != J_STR) return 0;
     if (!f_hash(nd, o, "blockHash") || !f_uint(nd, o, "blockNumber") ||
-        !f_uint(nd, o, "blockTimestamp") || !f_addr(nd, o, "from") ||
+        !f_addr(nd, o, "from") ||
         !f_hash(nd, o, "hash") || !f_uint(nd, o, "transactionIndex") ||
         !f_byte(nd, o, "type") || !f_uint(nd, o, "nonce") || !f_uint(nd, o, "gas") ||
         !f_uint(nd, o, "value") || !f_bytes(nd, o, "input") || !f_uint(nd, o, "r") ||
@@ -799,6 +803,10 @@ static int m_get_tx(void *ctx, const uint8_t hash[32], amm_eth_tx_t *out, uint64
             rc = AMM_ETH_OK;
         }
     }
+    if (rc == AMM_ETH_ERR)
+        QGP_LOG_WARN(LOG_TAG, "%s: eth_getTransactionByHash 0x%s: the answer is not a valid "
+                     "transaction (a required field is missing or malformed)",
+                     ((amm_eth_rpc_t *)ctx)->name, hh);
     doc_free(&d);
     return rc;
 }
@@ -861,6 +869,10 @@ static int m_get_receipt(void *ctx, const uint8_t hash[32], amm_eth_receipt_t *o
         }
         free(r);
     }
+    if (rc == AMM_ETH_ERR)
+        QGP_LOG_WARN(LOG_TAG, "%s: eth_getTransactionReceipt 0x%s: the answer is not a valid "
+                     "receipt (a required field is missing or malformed)",
+                     ((amm_eth_rpc_t *)ctx)->name, hh);
     doc_free(&d);
     return rc;
 }
