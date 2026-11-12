@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
@@ -388,10 +388,22 @@ async function assertHistoryLayout(page) {
   }
 }
 
-test('mounted extension screens follow the web-wallet layout and preserve price/approval state', { timeout: 120_000 }, async () => {
-  let vite, server, browser, cache;
+// The viewport passes were ONE test (one Vite server, one Chromium, five passes under a single 120 s guard): alone about 88 s, in
+// the parallel full suite 93-96 s and, under load, past the guard (DETERMINISM: a whole-suite failure that depends on load).
+// Now the Vite server, the HTTP server, the cache directory and the browser are made ONCE in a `before` hook (guard 120 s)
+// and always closed in `after` (also when a test or the hook failed); every viewport pass is its own test with its own
+// 120 s guard (no timeout value raised); the approval-queue check and the final check of the collected page errors and
+// blocked requests are tests too. The page errors and blocked requests of every pass are collected in shared lists and the
+// LAST test asserts both lists empty, so a failure there cannot be skipped by an earlier failed viewport test (node:test
+// continues with the remaining tests of a suite after a failed one; this is the documented default, not run here).
+// How this could falsely pass: if the `before` hook fails, node:test reports the hook and its tests as failed or cancelled,
+// never passed (UNVERIFIED here: not run); every test also asserts that the hook finished (`ready()`), so a skipped hook
+// cannot let a test pass on empty state. A viewport test that failed early leaves its remaining assertions unrun, as the
+// single test did.
+describe('mounted extension screens follow the web-wallet layout and preserve price/approval state', () => {
+  let vite, server, browser, cache, origin, ready = false;
   const blocked = [], errors = [];
-  try {
+  before(async () => {
     const { createServer: createViteServer } = await import('vite');
     cache = await mkdtemp(join(tmpdir(), 'nodus-layout-vite-'));
     vite = await createViteServer({ configFile: false, root: walletRoot, cacheDir: cache, server: { middlewareMode: true, hmr: false },
@@ -402,11 +414,23 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
       ] }, define: { __APP_VERSION__: JSON.stringify(version), 'process.env.IN_TEST': 'false', global: 'globalThis' } });
     server = createServer(vite.middlewares);
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-    const origin = `http://127.0.0.1:${server.address().port}`;
+    origin = `http://127.0.0.1:${server.address().port}`;
     const { chromium } = await import('playwright');
     browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium' });
     if (process.env.SHOT_DIR) await mkdir(process.env.SHOT_DIR, { recursive: true });
-    for (const [kind, width, height] of [['popup', 400, 600], ['fullscreen', 1100, 900], ['fullscreen', 360, 900], ['notification', 400, 620], ['notification', 360, 620]]) {
+    ready = true;
+  }, { timeout: 120_000 });
+  // Closed after the last test, also when the hook or a test failed (each handle is closed only if it was made).
+  after(async () => {
+    try { await browser?.close(); }
+    finally {
+      try { if (server?.listening) await new Promise((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections(); }); }
+      finally { try { await vite?.close(); } finally { if (cache) await rm(cache, { recursive: true, force: true }); } }
+    }
+  });
+  async function viewportPass(kind, width, height) {
+    assert.equal(ready, true, 'the setup hook (Vite server and browser) did not finish');
+    {
       const context = await browser.newContext({ viewport: { width, height } });
       try {
         const page = await context.newPage(); page.setDefaultTimeout(15_000);
@@ -438,7 +462,7 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
           await open('signature'); await page.getByRole('heading', { name: 'Nodus signature request', exact: true }).waitFor();
           assert.ok((await page.locator('pre').allTextContents()).some(text => text.includes('<img src=x onerror=alert(1)>') && text.endsWith('ab'.repeat(100))));
           await capture('nodus-signature');
-          continue;
+          return;
         }
         await open('home'); await assertHome(page, kind === 'popup');
         // Real reference-page wiring, public fake background, no live keys or
@@ -797,6 +821,12 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
         await capture('locked');
       } finally { await context.close(); }
     }
+  }
+  for (const [kind, width, height] of [['popup', 400, 600], ['fullscreen', 1100, 900], ['fullscreen', 360, 900], ['notification', 400, 620], ['notification', 360, 620]]) {
+    test(`${kind} ${width}px: layout, price and approval state`, { timeout: 120_000 }, () => viewportPass(kind, width, height));
+  }
+  test('a whole-chain failure does not strand the page on an approved request', { timeout: 120_000 }, async () => {
+    assert.equal(ready, true, 'the setup hook (Vite server and browser) did not finish');
     // A whole-chain failure must not strand the page on an already approved
     // request. Assert both distinct messages and both actual request ids.
     const page = await browser.newPage({ viewport: { width: 400, height: 620 } });
@@ -815,13 +845,12 @@ test('mounted extension screens follow the web-wallet layout and preserve price/
       assert.deepEqual(await page.evaluate(() => window.layout.calls.filter(call => call.method === 'resolvePendingApproval').map(call => call.params)), [['first', true], ['second', true]]);
       assert.equal(await page.locator('#wallet-status').textContent(), '');
     } finally { await page.close(); }
+  });
+  // Last: the page errors and blocked requests of EVERY pass above (collected in the shared lists). Runs whatever the
+  // earlier tests did, so a failed viewport test cannot hide an error or an outside request seen by another.
+  test('no pass raised a page error or made an outside request', () => {
+    assert.equal(ready, true, 'the setup hook (Vite server and browser) did not finish');
     assert.deepEqual(errors, [], 'The actual mounted app must load and run without page errors');
     assert.deepEqual(blocked, [], 'Layout fixtures must make no outside request');
-  } finally {
-    try { await browser?.close(); }
-    finally {
-      try { if (server?.listening) await new Promise((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections(); }); }
-      finally { try { await vite?.close(); } finally { if (cache) await rm(cache, { recursive: true, force: true }); } }
-    }
-  }
+  });
 });

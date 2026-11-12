@@ -50,6 +50,8 @@
 #include <unistd.h>
 
 #include "amm_http.h"
+#include "nodus_log_shim.h"
+#include <sys/stat.h>
 
 static int g_failures = 0;
 static int g_checks = 0;
@@ -673,6 +675,115 @@ static void h7_withdraw(void) {
     CHECK(route(&c, "POST", "/amm/liquidity/withdraw", body, big, sizeof(big)) == 400, "no backend wired: 400, no crash");
 }
 
+/* H8  the diagnostic log (operator order 2026-11-12): amm_http_route writes one
+ * line per request with the method, path, status, outcome word, request number
+ * and duration in ms, and the request's body (signatures) never reaches the log.
+ * PROVES: five requests (a refused quote, an approved quote, an unknown path,
+ * an accepted withdrawal, a malformed withdrawal) and a sixth, buffer-less call
+ * write exactly six request lines, each carrying its own method, path, status, outcome word, request
+ * number ("none" where the answer has none; 16909060 for the quote, 77 for the
+ * withdrawal) and " ms"; the approved quote and the accepted withdrawal also
+ * write their detail lines; a route called with no answer buffer (body NULL,
+ * cap 0) still returns the parent's 500 without reading the buffer.
+ * FLAGS: a default build; one /tmp directory, removed at the end.
+ * HOW IT CAN FALSELY PASS: the checks read the file the logger shim appends to,
+ * so they prove the line is written through QGP_LOG_*, not that the line
+ * arrives on stderr; the "ms" check looks for the text " ms", not for a
+ * plausible number (the stub answers in well under 1 ms). The secret-body check
+ * passes vacuously if the logger wrote nothing at all, which the line checks
+ * rule out. The NULL-buffer check proves no crash and the status, not the
+ * contents of a line. */
+static int line_with(const char *buf, const char *a, const char *b) {
+    const char *p = buf;
+    while (*p) {
+        const char *e = strchr(p, '\n');
+        size_t l = e ? (size_t)(e - p) : strlen(p);
+        char one[512];
+        if (l >= sizeof(one)) l = sizeof(one) - 1;
+        memcpy(one, p, l);
+        one[l] = '\0';
+        if (strstr(one, a) && strstr(one, b)) return 1;
+        if (!e) break;
+        p = e + 1;
+    }
+    return 0;
+}
+
+static void h8_log(void) {
+    printf("H8 the request line in the log\n");
+    char dir[] = "/tmp/test_amm_http_log_XXXXXX";
+    if (!mkdtemp(dir)) { printf("FATAL mkdtemp\n"); exit(2); }
+    char path[128];
+    snprintf(path, sizeof(path), "%s/nodus-amm.log", dir);
+    CHECK(nodus_log_file_open(dir, 1 << 20, 1) == 0, "the log file opens");
+
+    amm_http_ctx_t c = mkctx();
+    char out[2048];
+    memset(&B, 0, sizeof(B));
+    B.quote_rc = AMM_Q_PAUSED;
+    CHECK(route(&c, "POST", "/amm/quote",
+                "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\"}", out, sizeof(out)) == 200,
+          "a refused quote answers 200");
+    B.quote_rc = AMM_Q_OK;
+    CHECK(route(&c, "POST", "/amm/quote",
+                "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\"}", out, sizeof(out)) == 200,
+          "an approved quote answers 200");
+    CHECK(route(&c, "GET", "/amm/nothing", NULL, out, sizeof(out)) == 404, "an unknown path is 404");
+    {   /* an accepted withdrawal with request number 77 */
+        static char pkh[2 + 2 * NODUS_PK_BYTES + 1], sgh[2 + 2 * NODUS_SIG_BYTES + 1];
+        static char wbody[2 * 5200 + 2 * 9300 + 400], big[16384];
+        pkh[0] = '0'; pkh[1] = 'x'; sgh[0] = '0'; sgh[1] = 'x';
+        memset(pkh + 2, '1', 2 * NODUS_PK_BYTES); pkh[2 + 2 * NODUS_PK_BYTES] = 0;
+        memset(sgh + 2, '2', 2 * NODUS_SIG_BYTES); sgh[2 + 2 * NODUS_SIG_BYTES] = 0;
+        snprintf(wbody, sizeof(wbody), "{\"text\":\"0x4e6f6475\",\"publicKey\":\"%s\",\"signature\":\"%s\"}", pkh, sgh);
+        B.wd_rc = AMM_HS_RECEIVED; B.wd_req = 77;
+        CHECK(route(&c, "POST", "/amm/liquidity/withdraw", wbody, big, sizeof(big)) == 200,
+              "an accepted withdrawal answers 200");
+    }
+    CHECK(route(&c, "POST", "/amm/liquidity/withdraw",
+                "{\"text\":\"0x00\",\"publicKey\":\"0xSECRETKEYBYTES\",\"signature\":\"0x00\"}",
+                out, sizeof(out)) == 400, "a malformed withdrawal is 400");
+    {   /* no answer buffer: the parent's behaviour, a 500 and no read of the buffer */
+        amm_http_req_t r;
+        memset(&r, 0, sizeof(r));
+        snprintf(r.method, sizeof(r.method), "GET");
+        snprintf(r.path, sizeof(r.path), "/amm/unknown-route");
+        int status = 0;
+        amm_http_route(&c, &r, 0, &status, NULL, 0);
+        CHECK(status == 500, "body NULL, cap 0 on an unknown route: status 500, no crash");
+    }
+    nodus_log_file_close();
+
+    char buf[16384];
+    FILE *f = fopen(path, "r");
+    size_t n = f ? fread(buf, 1, sizeof(buf) - 1, f) : 0;
+    if (f) fclose(f);
+    buf[n] = '\0';
+    int lines = 0;
+    for (const char *p = buf; (p = strstr(p, "AMM_HTTP: request ")) != NULL; p++) lines++;
+    CHECK(lines == 6, "one request line per request (six routed calls, the buffer-less one included)");
+    CHECK(line_with(buf, "POST /amm/quote answered 200 (paused), request number none", " ms"),
+          "the refused quote line: method, path, status, word, no number, ms");
+    CHECK(line_with(buf, "POST /amm/quote answered 200 (approved), request number 16909060", " ms"),
+          "the approved quote line carries its request number and ms");
+    CHECK(line_with(buf, "AMM_HTTP: quote approved: direction nodus_to_usdt, amount 5",
+                    "request number 16909060, valid until 10300"),
+          "the approved quote detail line: direction, amount, request number, validUntil");
+    CHECK(line_with(buf, "GET /amm/nothing answered 404 (not_found), request number none", " ms"),
+          "the 404 line has the reason word not_found");
+    CHECK(line_with(buf, "POST /amm/liquidity/withdraw answered 200 (received), request number 77", " ms"),
+          "the accepted withdrawal request line carries number 77");
+    CHECK(line_with(buf, "liquidity withdraw post: received, request number 77", "AMM_HTTP"),
+          "the withdrawal post line: kind, outcome, request number");
+    CHECK(line_with(buf, "POST /amm/liquidity/withdraw answered 400 (bad_request), request number none", " ms"),
+          "the malformed withdrawal line is 400 bad_request");
+    CHECK(line_with(buf, "GET /amm/unknown-route answered 500 (failed), request number none, in ", " ms"),
+          "the buffer-less call is logged with its status, the outcome word failed and its duration");
+    CHECK(strstr(buf, "SECRETKEYBYTES") == NULL, "the request body is never written to the log");
+    unlink(path);
+    rmdir(dir);
+}
+
 int main(void) {
     printf("test_amm_http\n");
     h1_parser();
@@ -682,6 +793,7 @@ int main(void) {
     h5_server();
     h6_liquidity();
     h7_withdraw();
+    h8_log();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

@@ -11,6 +11,7 @@ import { Messenger } from '@metamask/messenger';
 import { rpcErrors } from '@metamask/rpc-errors';
 import { createPersistedStore } from './store.js';
 import { createApprovals } from './approvals.js';
+import { debugLog } from '../../../src/debug-log.js';
 import { createPermissions } from './permissions.js';
 import { createConnectedSites } from './connected-sites.js';
 import { createPrivacyConsent } from './privacy-consent.js';
@@ -45,11 +46,12 @@ const publicResult = async value => JSON.parse(JSON.stringify(await value, (_key
 // Approved plan §3.5:388-435; packages 1-2 own the vault, key custody and shared lock.
 // Startup constructs fresh locked holders. Store composition receives only controller metadata, never key custody.
 export async function createBackground({ storage = chrome.storage.local, alarms = chrome.alarms,
-  runtime = chrome.runtime, windows = chrome.windows, tabs = globalThis.chrome?.tabs,
+  runtime = chrome.runtime, windows = chrome.windows, tabs = globalThis.chrome?.tabs, action = globalThis.chrome?.action,
   notifications = globalThis.chrome?.notifications, notificationStorage = globalThis.chrome?.storage?.session,
   sessionStorage = globalThis.chrome?.storage?.session,
   nodusOptions = {}, consumeNodusSeed, readPrices = readWalletPrices } = {}) {
   const lockCoordinator = createLockCoordinator();
+  debugLog('worker', 'start', { version: runtime?.getManifest?.()?.version });
   const invalidateWallet = () => {
     for (const port of uiPorts) try { port.postMessage({ name: 'controller', data: { jsonrpc: '2.0', method: 'connectStateChanged', params: [] } }); }
     catch { /* a closing interface cannot receive the invalidation */ }
@@ -89,7 +91,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   // Plan §3.5:407-421 retains package 1's one lock and package 2's guarded signing operations.
 
   const autoLockAlarm = await createAutoLockAlarm({ storage, lockCoordinator, alarms: backgroundAlarms });
-  const approvals = createApprovals({ messenger, runtime, windows, tabs, getUiState: () => ({
+  const approvals = createApprovals({ messenger, runtime, windows, tabs, action, getUiState: () => ({
     // Port: background.ts:857-861 counts only popup ports; :907-916 tracks fullscreen tabs separately.
     popupCount: [...uiPorts].filter(port => port.name === 'popup').length,
     tabIds: new Set([...uiPorts].filter(port => port.name === 'fullscreen').map(port => port.sender?.tab?.id).filter(id => id !== undefined)),
@@ -112,7 +114,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   connectedSites = createConnectedSites({ storage, sessionStorage, controller: permissions.controller, messenger });
   evm = createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring,
     getActivity: chain => nodus.chainActivity(chain),
-    onNetworkChanged: (client, readMetadata) => engine.attachNetworkClient(client, readMetadata) });
+    onNetworkChanged: (client, readMetadata) => engine.attachNetworkClient(client, readMetadata),
+    getNetworkId: chain => networks.get(chain).id, selectWalletNetwork: (chain, id) => networks.select(chain, id) });
 
   // The real background consumer derives and checks the web-wallet identity.
   function attachWalletKeys(consumeNodusSeed) {
@@ -124,6 +127,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
         const result = await unlockKeys(password, options);
         // Opening the wallet again resets every network choice (networks.js resetToDefaults).
         await networks.resetToDefaults();
+        await evm.resetToMainnet();
         permissions.setAccounts(await keyring.getAccounts());
         // The sealed connected-sites list opens with a key from the unlocked wallet (plan section 2.6).
         await connectedSites.load({ id: result.id, key: await sitesKeyFor(walletKeys.getRecoveryPhrase(), result.id) });
@@ -152,6 +156,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   const { solana, tron } = chainHandlers = createSolanaTron({ lockCoordinator, getWalletKeys: () => walletKeys,
     getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
   const algorand = createAlgorand({ lockCoordinator, getWalletKeys: () => walletKeys, getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
+  // The Ethereum and BNB Smart Chain selectors: a change closes the wallet's reviews and reads on the old network.
+  chainHandlers.ethereum = chainHandlers.bsc = { networkChanged: () => evm.walletNetworkChanged() };
   chainHandlers.algorand = algorand;
   const soqucoin = createSoqucoin({ storage, lockCoordinator, getWalletKeys: () => walletKeys, getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
   chainHandlers.soqucoin = soqucoin;
@@ -278,8 +284,11 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     },
     approvePermissionsRequest: request => permissions.acceptPermissionsRequest(request),
     rejectPermissionsRequest: id => permissions.controller.rejectPermissionsRequest(id),
-    resolvePendingApproval: (id, value) => approvals.controller.acceptRequest(id, value),
+    resolvePendingApproval: (id, value) => { debugLog('approvals', 'resolved', { id }); return approvals.controller.acceptRequest(id, value); },
     rejectPendingApproval: id => approvals.reject(id),
+    // The approval window page marks its own close as automatic just before closing; without the mark, a removed
+    // approval window rejects every pending approval.
+    markNotificationPopupAsAutomaticallyClosed: () => approvals.markAutomaticClose(),
     getEvmBalances: chain => evm.getBalances(chain),
     // Design r3 §2.4a: the web-wallet reader owns price validation; only public
     // decimal strings cross the UI stream, whose state comparison uses JSON.
@@ -288,7 +297,11 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       const quotes = await readPrices();
       return Object.fromEntries(Object.entries(quotes).map(([key, quote]) => [key, { units: quote.units.toString(), observedAt: quote.observedAt }]));
     },
-    setChainNetwork: (chain, network) => networks.select(chain, network),
+    async setChainNetwork(chain, network) {
+      await networks.select(chain, network);
+      // The sites' provider follows the Ethereum and BNB Smart Chain selectors.
+      if (chain === 'ethereum' || chain === 'bsc') await evm.followWalletNetwork(chain);
+    },
     // Package 7a: wallet-only methods on the authenticated controller stream
     // (engine.js setupTrustedCommunication); no Solana/Tron site routing.
     getQtcBalances: () => qtc.getBalances(),

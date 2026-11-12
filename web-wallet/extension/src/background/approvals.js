@@ -2,6 +2,7 @@ import { ApprovalController } from '@metamask/approval-controller';
 import { providerErrors } from '@metamask/rpc-errors';
 import { ApprovalType } from '@metamask/controller-utils';
 import { SWAP_METHOD_NAMES, SWAP_PAYMENT_APPROVAL } from '../constants/swap.js';
+import { debugLog, errorFields } from '../../../src/debug-log.js';
 
 // Port: MetaMask v13.54.0 app/scripts/lib/createOriginThrottlingMiddleware.ts:14-43.
 // The swap methods join the list (plan section 18 change 1 leaves the throttled-method list to this build): a site
@@ -14,7 +15,11 @@ const BLOCKABLE_METHODS = new Set([
 const TEST_ORIGINS = ['http://127.0.0.1:8080', 'http://127.0.0.1:8081', 'http://127.0.0.1:8082',
   'http://localhost:8080', 'http://localhost:8081', 'http://localhost:8082'];
 
-export function createApprovals({ messenger, runtime, windows, tabs, platform, getUiState = () => ({ popupCount: 0, tabIds: new Set() }) }) {
+const BADGE_COLOR_APPROVAL = '#0376C9';
+const BADGE_MAX_COUNT = 9;
+export const badgeLabel = (count, maxCount = BADGE_MAX_COUNT) => (count > maxCount ? `${maxCount}+` : String(count));
+
+export function createApprovals({ messenger, runtime, windows, tabs, action, platform, getUiState = () => ({ popupCount: 0, tabIds: new Set() }) }) {
   // Port: app/scripts/platforms/extension.ts:52-59, 198-199; named platform boundary retained.
   platform ??= {
     openWindow: options => windows.create({ ...options, url: runtime.getURL(options.url) }),
@@ -29,7 +34,7 @@ export function createApprovals({ messenger, runtime, windows, tabs, platform, g
   // Port: app/scripts/lib/notification-manager.ts:70-125, 146-163.
   async function showPopup() {
     const popup = (await platform.getAllWindows()).find(win => win.type === 'popup' && win.id === popupId);
-    if (popup && typeof popup.id === 'number') return platform.focusWindow(popup.id);
+    if (popup && typeof popup.id === 'number') { debugLog('approvals', 'window-focused', { window: popup.id }); return platform.focusWindow(popup.id); }
     let left = 0, top = 0;
     try {
       const lastFocused = await platform.getLastFocusedWindow();
@@ -41,12 +46,22 @@ export function createApprovals({ messenger, runtime, windows, tabs, platform, g
       top = Math.max(screenY, 0);
       left = Math.max(screenX + (outerWidth - 400), 0);
     }
-    const popupWindow = await platform.openWindow({ url: 'notification.html', type: 'popup', width: 400, height: 620, left, top });
+    const size = { url: 'notification.html', type: 'popup', width: 400, height: 620 };
+    let popupWindow, placedByBrowser = false;
+    try { popupWindow = await platform.openWindow({ ...size, left, top }); }
+    catch (error) {
+      // The browser refuses a position that is not within the visible screen space; without left and top it places
+      // the window itself, so the approval still gets a window. A second failure reaches the caller as before.
+      debugLog('approvals', 'window-open-failed-retrying-without-position', errorFields(error));
+      popupWindow = await platform.openWindow(size); placedByBrowser = true;
+    }
     // Port: notification-manager.ts:114-121; extension.ts:62-68 provides the platform operation.
-    if (typeof popupWindow.id === 'number' && popupWindow.left !== left && popupWindow.state !== 'fullscreen') {
+    // A window the browser placed keeps its place: asking for the refused position again would fail again.
+    if (!placedByBrowser && typeof popupWindow.id === 'number' && popupWindow.left !== left && popupWindow.state !== 'fullscreen') {
       await platform.updateWindowPosition(popupWindow.id, left, top);
     }
     popupId = popupWindow.id;
+    debugLog('approvals', 'window-opened', { window: popupId, placed_by_browser: placedByBrowser });
   }
 
   // Port: app/scripts/background.ts:1050-1101; plan §3.2:204-212 removes side-panel/Vivaldi.
@@ -74,13 +89,61 @@ export function createApprovals({ messenger, runtime, windows, tabs, platform, g
       // The pinned controller invokes this callback without awaiting its promise (:117).
       // background.ts:1088-1100 resets only the opening flag on failure, leaving pending approvals intact.
       // Observe the unawaited rejection; plan §11:964-966 excludes raw window/request errors from logs.
-      void triggerUi().catch(() => {});
+      void triggerUi().catch(error => { debugLog('approvals', 'window-open-failed', errorFields(error)); });
     },
   });
-  const onRemoved = id => { if (id === popupId) popupId = undefined; };
+  // The toolbar icon shows how many approvals wait; with none the badge is cleared. A failed badge call never
+  // affects an approval.
+  function updateBadge() {
+    const count = Object.keys(controller.state.pendingApprovals ?? {}).length;
+    try {
+      action?.setBadgeText({ text: count > 0 ? badgeLabel(count) : '' });
+      action?.setBadgeBackgroundColor({ color: BADGE_COLOR_APPROVAL });
+    } catch { /* the badge is only a hint */ }
+  }
+  messenger.subscribe('ApprovalController:stateChange', updateBadge);
+  updateBadge();
+  // Debug line for each approval that appears: its id, type and origin only (never its request data, which carries
+  // the text, typed fields or payment rows being approved).
+  const seen = new Set();
+  function logAdded() {
+    const pending = controller.state.pendingApprovals ?? {};
+    for (const approval of Object.values(pending)) {
+      if (!seen.has(approval.id)) { seen.add(approval.id); debugLog('approvals', 'added', { id: approval.id, type: approval.type, origin: approval.origin, pending: Object.keys(pending).length }); }
+    }
+    for (const id of [...seen]) if (!pending[id]) seen.delete(id);
+  }
+  messenger.subscribe('ApprovalController:stateChange', logAdded);
+  const pendingCount = () => Object.keys(controller.state.pendingApprovals ?? {}).length;
+  // Set by the approval window page just before it closes itself and consumed by the next removal of that window, so
+  // the removal can be told from the user closing it.
+  let automaticClose = false;
+  // Opens the window again for approvals still waiting. An opening in flight may have just focused the window that is
+  // closing, so it is waited for first; the new run then sees the cleared window id and opens a new window.
+  async function reopenForPending() {
+    if (uiOpening) { try { await uiOpening; } catch { /* its failure was already observed by the caller that started it */ } }
+    if (pendingCount() > 0) { debugLog('approvals', 'reopened-for-pending', { pending: pendingCount() }); await triggerUi(); }
+  }
+  const onRemoved = id => {
+    if (id !== popupId) return;
+    popupId = undefined;
+    const automatic = automaticClose; automaticClose = false;
+    debugLog('approvals', 'window-removed', { window: id, closed_by: automatic ? 'automatic' : 'user', pending: pendingCount() });
+    // A window the user closed answers every approval waiting in it; a window that closed itself leaves any approval
+    // that arrived meanwhile to a new window.
+    if (!automatic) { rejectAll(); return; }
+    if (pendingCount() > 0) void reopenForPending().catch(error => { debugLog('approvals', 'window-open-failed', errorFields(error)); });
+  };
   windows.onRemoved.addListener(onRemoved);
 
-  function reject(id) { controller.rejectRequest(id, providerErrors.userRejectedRequest()); }
+  function reject(id) { debugLog('approvals', 'rejected', { id }); controller.rejectRequest(id, providerErrors.userRejectedRequest()); }
+  // The cause keeps these rejections out of the per-origin spam count: the site did not ask for them.
+  function rejectAll() {
+    debugLog('approvals', 'rejected-all', { pending: pendingCount() });
+    for (const approval of Object.values(controller.state.pendingApprovals ?? {})) {
+      controller.rejectRequest(approval.id, providerErrors.userRejectedRequest({ data: { cause: 'rejectAllApprovals' } }));
+    }
+  }
   function rejectOrigin(origin) {
     for (const approval of Object.values(controller.state.pendingApprovals)) {
       if (approval.origin === origin) reject(approval.id);
@@ -111,5 +174,6 @@ export function createApprovals({ messenger, runtime, windows, tabs, platform, g
 
   return { controller, triggerUi, reject, rejectOrigin, createOriginThrottlingMiddleware,
     whenUiSettled: () => uiOpening ?? Promise.resolve(),
-    destroy() { windows.onRemoved.removeListener(onRemoved); controller.clearRequests(providerErrors.userRejectedRequest()); controller.destroy(); } };
+    markAutomaticClose: () => { automaticClose = true; },
+    destroy() { windows.onRemoved.removeListener(onRemoved); controller.clearRequests(providerErrors.userRejectedRequest()); messenger.unsubscribe('ApprovalController:stateChange', updateBadge); messenger.unsubscribe('ApprovalController:stateChange', logAdded); controller.destroy(); } };
 }

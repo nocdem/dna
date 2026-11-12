@@ -73,7 +73,18 @@ function needToken(token) {
 
 // getProvider: async () => the EIP-1193 provider of the extension, or null.
 // calls: EXTENSION_CALLS by default; tests may pass their own.
+// Every call below takes an optional second argument { onStep }. onStep({ id, n?, of? }) is called just BEFORE the
+// extension call it describes, so the page can name the window the user is waiting for. It changes nothing else: the
+// calls, their parameters and their order are the same without it, and a callback that throws is ignored.
+//   usdtToNodus : { id: 'switch' }, { id: 'usdt_windows' }  -- one extension call holds two windows (the typed signature,
+//                 then the USDT payment approval); the site cannot see where the first ends, so no step numbers
+//   nodusToUsdt : { id: 'hold', n: 1, of: 2 }, { id: 'sign_send', n: 2, of: 2 }  -- the second call is the Nodus signature
+//                 window, then the extension posts to the bot and sends the held payment (no window the site can see)
+//   liquidityAdd: { id: 'switch' }, { id: 'hold', n: 1, of: 2 }, { id: 'add_windows', n: 2, of: 2 }  -- the second call
+//                 holds three windows (Ethereum signature, Nodus signature, USDT payment approval)
+// 'switch' is announced because wallet_switchEthereumChain may ask the user; the site cannot tell whether it does.
 export function createAdapter({ getProvider, calls = EXTENSION_CALLS } = {}) {
+  const announce = (options, step) => { try { options?.onStep?.(step); } catch { /* a page callback never changes the calls */ } };
   // Refuses before anything is sent to the extension, so a half-configured adapter never opens an approval.
   function assertConfigured(...names) {
     for (const name of names) {
@@ -120,10 +131,12 @@ export function createAdapter({ getProvider, calls = EXTENSION_CALLS } = {}) {
   const done = result => ({ delivered: true, result });
   return {
     // input: { botUrl, ethereumAddress, nodusAddress, token, payTo, amountUsdtRaw, minimumNodusRaw, requestNumber, ethChainId }
-    async usdtToNodus(input) {
+    async usdtToNodus(input, options) {
       assertConfigured('usdtToNodus');
       needToken(input.token);
+      announce(options, { id: 'switch' });
       await switchEthereumChain(input.ethChainId);
+      announce(options, { id: 'usdt_windows' });
       return done(await run('usdtToNodus', {
         from: input.ethereumAddress, botUrl: input.botUrl, token: input.token, payTo: input.payTo,
         destination: input.nodusAddress, amount: raw(input.amountUsdtRaw), minimumToReceive: raw(input.minimumNodusRaw),
@@ -131,28 +144,33 @@ export function createAdapter({ getProvider, calls = EXTENSION_CALLS } = {}) {
       }));
     },
     // input: { botUrl, nodusAddress, ethereumAddress, payTo, amountNodusRaw, minimumUsdtRaw, requestNumber }
-    async nodusToUsdt(input) {
+    async nodusToUsdt(input, options) {
       assertConfigured('nodusHold', 'nodusToUsdt');
+      announce(options, { id: 'hold', n: 1, of: 2 });
       const held = await hold({ account: input.nodusAddress, to: input.payTo, amount: raw(input.amountNodusRaw) });
       const text = buildNodusToUsdtText({
         sender: input.nodusAddress, destination: input.ethereumAddress, amountNodusRaw: input.amountNodusRaw,
         minimumUsdtRaw: input.minimumUsdtRaw, transferId: held.transferId, chainId: held.chainId,
         requestNumber: input.requestNumber,
       });
+      announce(options, { id: 'sign_send', n: 2, of: 2 });
       return done(await run('nodusToUsdt', { holdId: held.holdId, botUrl: input.botUrl, text }));
     },
     // input: { botUrl, ethereumAddress, nodusAddress, token, payEthereum, payNodus, usdtAmountRaw, nodusAmountRaw,
     //          requestNumber, ethChainId }
-    async liquidityAdd(input) {
+    async liquidityAdd(input, options) {
       assertConfigured('liquidityAdd', 'nodusHold');
       needToken(input.token);
+      announce(options, { id: 'switch' });
       await switchEthereumChain(input.ethChainId);
+      announce(options, { id: 'hold', n: 1, of: 2 });
       const held = await hold({ account: input.nodusAddress, to: input.payNodus, amount: raw(input.nodusAmountRaw) });
       const text = buildLiquidityAddText({
         ethereumAddress: input.ethereumAddress, nodusAddress: input.nodusAddress,
         usdtAmountRaw: input.usdtAmountRaw, nodusAmountRaw: input.nodusAmountRaw,
         transferId: held.transferId, chainId: held.chainId, requestNumber: input.requestNumber,
       });
+      announce(options, { id: 'add_windows', n: 2, of: 2 });
       return done(await run('liquidityAdd', {
         holdId: held.holdId, botUrl: input.botUrl, ethereumAddress: input.ethereumAddress, token: input.token,
         payTo: input.payEthereum, usdtAmount: raw(input.usdtAmountRaw), nodusAmount: raw(input.nodusAmountRaw),

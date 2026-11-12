@@ -269,13 +269,19 @@ int amm_nodus_watch_step(amm_nodus_watch_t *w, uint64_t deadline_ms,
     nodus_dnac_ruleset_info_t ri;
     memset(&ri, 0, sizeof(ri));
     if (w->node.ruleset_info(w->node.ctx, &ri, deadline_ms) != AMM_NODE_OK ||
-        ri.tip == 0) return AMM_NW_UNKNOWN;
+        ri.tip == 0) {
+        QGP_LOG_WARN(LOG_TAG, "watch step: the node's tip cannot be read, nothing is judged");
+        return AMM_NW_UNKNOWN;
+    }
     const uint64_t tip = ri.tip;
     o->tip = tip;
 
     uint64_t resume = 0, cursor = 0;
     int have = 0;
-    if (resume_of(w, &resume, &have, &cursor) != 0) return AMM_NW_ERR;
+    if (resume_of(w, &resume, &have, &cursor) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "watch step: the stored cursor cannot be read from the journal");
+        return AMM_NW_ERR;
+    }
     o->through = cursor;
     const int advance = !have || tip > cursor;
 
@@ -283,13 +289,27 @@ int amm_nodus_watch_step(amm_nodus_watch_t *w, uint64_t deadline_ms,
     uint64_t ts_tip = 0;
     if (advance && resume <= tip) {
         if (w->node.block_time(w->node.ctx, tip, &ts_tip, deadline_ms) != AMM_NODE_OK ||
-            ts_tip == 0) return AMM_NW_UNKNOWN;
+            ts_tip == 0) {
+            QGP_LOG_WARN(LOG_TAG, "watch step: the header time of the tip %llu cannot be "
+                         "read, nothing is judged", (unsigned long long)tip);
+            return AMM_NW_UNKNOWN;
+        }
     }
 
     hrow_t *rows = NULL;
     size_t n = 0;
     int rc = read_history(w, tip, resume, deadline_ms, &rows, &n, &o->ignored);
-    if (rc != AMM_NW_OK) return rc;
+    if (rc != AMM_NW_OK) {
+        QGP_LOG_WARN(LOG_TAG, "watch step: the address history from height %llu to the tip "
+                     "%llu cannot be read now (result %d)", (unsigned long long)resume,
+                     (unsigned long long)tip, rc);
+        return rc;
+    }
+    QGP_LOG_INFO(LOG_TAG, "watch step: tip %llu, stored cursor %llu (%s), history read from "
+                 "height %llu: %zu native incoming rows, %d other rows ignored",
+                 (unsigned long long)tip, (unsigned long long)cursor,
+                 advance ? "the tip moved" : "the tip did not move",
+                 (unsigned long long)resume, n, o->ignored);
 
     /* INTENT id kind: resolve every row that is not recorded yet BEFORE the
      * write transaction (network reads stay outside it) */
@@ -404,12 +424,24 @@ int amm_nodus_watch_step(amm_nodus_watch_t *w, uint64_t deadline_ms,
             r.swap_seq = s.seq;
             if (waits) o->waiting++;
             else o->counted++;
+            QGP_LOG_INFO(LOG_TAG, "incoming payment at height %llu item %u: %llu from %.16s... "
+                         "transfer id %s matched request number %llu, %s",
+                         (unsigned long long)e->h, (unsigned)e->i,
+                         (unsigned long long)e->amount, e->peer, id,
+                         (unsigned long long)s.req_no_bot,
+                         waits ? "waits in line for room" : "counted");
         } else {
             snprintf(r.state, sizeof(r.state), "%s", AMM_NR_HELD);
             snprintf(r.reason, sizeof(r.reason), "%s", reason);
             o->held++;
+            QGP_LOG_INFO(LOG_TAG, "incoming payment at height %llu item %u: %llu from %.16s... "
+                         "transfer id %s held: %s", (unsigned long long)e->h, (unsigned)e->i,
+                         (unsigned long long)e->amount, e->peer, have_id ? id : "unknown",
+                         reason);
         }
         if (amm_journal_nrow_put(j, &r) != 0) { fatal = 1; break; }
+        QGP_LOG_INFO(LOG_TAG, "journal write: native row %llu/%u/%u stored %s",
+                     (unsigned long long)e->h, (unsigned)e->i, (unsigned)e->q, r.state);
     }
     if (!fatal && !unknown && advance && resume <= tip) {
         /* the cursor and the time of its block move with the rows */
@@ -424,8 +456,16 @@ int amm_nodus_watch_step(amm_nodus_watch_t *w, uint64_t deadline_ms,
         QGP_LOG_ERROR(LOG_TAG, "a journal write failed: the step wrote nothing");
         return AMM_NW_ERR;
     }
-    if (amm_journal_tx_commit(j) != 0) return AMM_NW_ERR;
+    if (amm_journal_tx_commit(j) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "watch step: the journal transaction could not be committed");
+        return AMM_NW_ERR;
+    }
     if (!unknown && advance && resume <= tip) o->through = tip;
+    QGP_LOG_INFO(LOG_TAG, "watch step committed: %d rows judged (%d counted, %d waiting, %d "
+                 "held), %d already recorded, cursor %llu -> %llu%s", o->rows, o->counted,
+                 o->waiting, o->held, o->skipped, (unsigned long long)cursor,
+                 (unsigned long long)o->through,
+                 unknown ? "; a row could not be judged yet, the cursor stays" : "");
     return unknown ? AMM_NW_UNKNOWN : AMM_NW_OK;
 }
 

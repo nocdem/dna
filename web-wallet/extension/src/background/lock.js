@@ -1,5 +1,7 @@
 // Approved extension plan §3.5: keyring, web-wallet disposal, complete Nodus
 // client lock, then the two chain libraries. Later packages supply the holders.
+import { debugLog, stopwatch } from '../../../src/debug-log.js';
+
 export const LOCK_ORDER = Object.freeze(['keyring', 'webWallet', 'nodus', 'solana', 'tron', 'algorand', 'soqucoin', 'splendor', 'asentum', 'xion', 'ckb', 'qtc', 'tidecoin', 'ixios']);
 
 export function createLockCoordinator() {
@@ -27,6 +29,7 @@ export function createLockCoordinator() {
     const result = await authenticate();
     if (generation !== started || pendingLock) throw new Error('Wallet is locked.');
     locked = false;
+    debugLog('lock', 'unlocked', { generation });
     return result;
   }
 
@@ -38,6 +41,8 @@ export function createLockCoordinator() {
     let complete;
     const result = new Promise(resolve => { complete = resolve; });
     pendingLock = result;
+    const elapsed = stopwatch();
+    debugLog('lock', 'locking', { generation, holders: registered.length });
     // Publish the locked state and shared promise before invoking any holder.
     // Return failures to the caller without allowing one holder to skip others.
     (async () => {
@@ -47,6 +52,7 @@ export function createLockCoordinator() {
         catch (error) { errors.push({ name, error }); }
       }
       pendingLock = null;
+      debugLog('lock', 'locked', { generation, ms: elapsed(), holder_errors: errors.length });
       complete(errors);
     })();
     return result;

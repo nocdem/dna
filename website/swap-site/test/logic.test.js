@@ -18,7 +18,7 @@ import {
   quoteBody, liquidityQuoteBody, withdrawBody, randomRequestNumber,
   buildNodusToUsdtText, buildLiquidityAddText, buildWithdrawText,
   buildUsdtToNodusTypedData, buildLiquidityAddTypedData,
-  readQuoteAnswer, readAddQuoteAnswer, refusalText, describeSwapState, U64_MAX,
+  readQuoteAnswer, readAddQuoteAnswer, refusalText, describeSwapState, PAYOUT_FINAL_DEPTH_ETH, PAYOUT_FINAL_SECONDS_ETH, U64_MAX, approveEnabled,
 } from '../swap-logic.js';
 
 const ETH = `0x${'4b'.repeat(20)}`;
@@ -411,4 +411,43 @@ import { outputUnit } from '../swap-logic.js';
 test('outputUnit: NODUS for USDT -> NODUS, USDT for NODUS -> USDT', () => {
   assert.deepEqual(outputUnit('usdt_to_nodus'), { name: 'NODUS', decimals: 8 });
   assert.deepEqual(outputUnit('nodus_to_usdt'), { name: 'USDT', decimals: 6 });
+});
+
+// PROVES (operator 2026-11-12, "Sending you payment'ta kaldi"): payout_pending says what the bot waits for, by the
+// answer's direction. NODUS -> USDT: the amount is the answer's `paid` as USDT with 6 decimals (93531821 -> 93.531821),
+// omitted when `paid` is not a digit string; it names the 3-block wait (about 36 seconds) and says USDT may arrive
+// before, and does not say mined or confirmed. USDT -> NODUS: a NODUS text with no number of blocks or minutes. An
+// answer without a known direction keeps the old generic text. The state stays pending and never "fail".
+// FALSE PASS: the answer shape is the live one read by main (no hash or count); 3 and 36 are copied from the bot's
+// config on 2026-11-11T23:47Z and a bot with another depth still passes this test.
+test('payout_pending: NODUS -> USDT shows the paid amount and the 3-block wait; USDT -> NODUS shows no invented wait', () => {
+  const live = { requestNumber: '3217168583', state: 'payout_pending', direction: 'nodus_to_usdt', paid: '93531821', output: '93531822' };
+  const d = describeSwapState(live);
+  assert.equal(d.final, false);
+  assert.equal(PAYOUT_FINAL_DEPTH_ETH, 3);
+  assert.equal(PAYOUT_FINAL_SECONDS_ETH, 36);
+  assert.equal(PAYOUT_FINAL_SECONDS_ETH, PAYOUT_FINAL_DEPTH_ETH * 12);   // Sepolia: 12 s per block
+  assert.equal(d.text, 'Your payout of 93.531821 USDT is sent or being sent. The bot marks the swap finished after 3 Ethereum blocks, about 36 seconds; the USDT can reach your wallet before that.');
+  assert.doesNotMatch(d.text, /mined|confirmed|fail/i);
+  for (const paid of [undefined, '', '12.5', '-1', 93531821, '0x10']) {
+    const t = describeSwapState({ ...live, paid }).text;
+    assert.match(t, /^Your payout is sent or being sent\. The bot marks the swap finished after 3 Ethereum blocks/, String(paid));
+  }
+  const nodus = describeSwapState({ state: 'payout_pending', direction: 'usdt_to_nodus', paid: '123' }).text;
+  assert.match(nodus, /NODUS payout/);
+  assert.doesNotMatch(nodus, /\d|USDT|Ethereum|minutes/);
+  assert.equal(describeSwapState({ state: 'payout_pending' }).text, 'The bot is sending your payout.');
+});
+
+// PROVES: the one readiness rule both approve buttons use (swap.js): enabled only when no approval sequence runs, a
+//   quote is held, the tolerance parses (the swap passes the result of percentToBps; the add has none and passes true)
+//   and accounts are connected. Each missing condition alone disables it.
+// FALSE PASS: the function is pure; that swap.js calls it at every place a button changes is not exercised here (no DOM).
+test('approveEnabled: only a held quote, a usable tolerance, connected accounts and no running sequence enable it', () => {
+  const ready = { busy: false, quote: { requestNumber: '1' }, toleranceOk: true, accounts: { ethereum: ETH } };
+  assert.equal(approveEnabled(ready), true);
+  assert.equal(approveEnabled({ ...ready, busy: true }), false);          // a sequence runs
+  assert.equal(approveEnabled({ ...ready, quote: null }), false);         // no quote (spent or never asked)
+  assert.equal(approveEnabled({ ...ready, toleranceOk: false }), false);  // swap: tolerance not usable
+  assert.equal(approveEnabled({ ...ready, accounts: null }), false);      // not connected
 });

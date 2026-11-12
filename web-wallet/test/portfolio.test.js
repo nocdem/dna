@@ -215,3 +215,151 @@ test('unavailable sources and safe read errors retain a last balance without exp
   assert.equal(row.balance, '1.25'); assert.equal(row.error, 'HTTP 503'); assert.equal(row.keptAt, now - 1000); assert.equal(row.usd, null);
   assert.equal(portfolioSnapshot({}, {}, now, [asset]).rows[0].balance, null);
 });
+
+// ---- Kept prices (operator 2026-11-12: show the last read total at once, replace as fresh reads arrive) ----
+const ETH = ASSETS.find(asset => asset.key === 'ethereum:ETH'), UNITS = 15n * 10n ** 17n, PRICE = 200000000n * 1000n, PRICE_NEW = 250000000n * 1000n;
+const valued = (units, price) => units * price / 10n ** 18n;
+
+// Proves a kept balance with its kept price gives the total at once, from the kept values only (nothing read yet), with
+// the oldest of the balance and price read times; the row is marked as a kept value. Could falsely pass if the total
+// came from another asset: only the ETH entry is given, and the expected value is computed from its own numbers.
+test('kept balances with kept prices give the total at once, with the last read time', () => {
+  const kept = { 'ethereum:ETH': { units: UNITS, observedAt: now - 1000, address: '0xabc', price: { units: PRICE, observedAt: now - 5000 } } };
+  const snap = portfolioSnapshot({}, {}, now, ASSETS, kept);
+  const row = snap.rows.find(r => r.key === 'ethereum:ETH');
+  assert.equal(snap.total, valued(UNITS, PRICE)); assert.equal(row.usd, valued(UNITS, PRICE)); assert.equal(row.keptUsd, true);
+  assert.equal(snap.keptCount, 1); assert.equal(snap.keptAt, now - 5000); assert.equal(snap.positive, true);
+});
+
+// Proves the fresh reads replace the kept value: with a fresh balance and a fresh price the total is the fresh one and no
+// kept row remains; with only a fresh price (balance still kept) the kept balance is valued at the fresh price. Could
+// falsely pass if the kept value equalled the fresh one; the numbers differ (1.5 and 2 ETH, two prices).
+test('fresh reads replace the kept total', () => {
+  const kept = { 'ethereum:ETH': { units: UNITS, observedAt: now - 1000, address: '0xabc', price: { units: PRICE, observedAt: now - 5000 } } };
+  const fresh = { 'ethereum:ETH': { state: 'ready', units: 2n * 10n ** 18n, observedAt: now } }, quote = { 'ethereum:ETH': { units: PRICE_NEW, observedAt: now } };
+  const all = portfolioSnapshot(fresh, quote, now, ASSETS, kept);
+  assert.equal(all.total, valued(2n * 10n ** 18n, PRICE_NEW)); assert.equal(all.keptCount, 0); assert.equal(all.keptAt, undefined);
+  const priceOnly = portfolioSnapshot({}, quote, now, ASSETS, kept);
+  assert.equal(priceOnly.total, valued(UNITS, PRICE_NEW)); assert.equal(priceOnly.keptCount, 1);
+});
+
+// Proves a kept balance whose price was never kept stays out of the total, as before: no total, no kept row counted, the
+// row still shows its last read time. Could falsely pass if the asset were unpriced; ETH has a price identity.
+test('a kept balance without a kept price stays out of the total', () => {
+  const snap = portfolioSnapshot({}, {}, now, ASSETS, { 'ethereum:ETH': { units: UNITS, observedAt: now - 1000, address: '0xabc' } });
+  const row = snap.rows.find(r => r.key === 'ethereum:ETH');
+  assert.equal(snap.total, null); assert.equal(snap.keptCount, 0); assert.equal(row.usd, null); assert.equal(row.keptAt, now - 1000);
+});
+
+// Proves a kept balance with a kept price counts in the total only while that asset's fresh read is pending (idle or
+// loading), and leaves it once the read has failed (the existing rule: a chain whose read fails is left out of the
+// total); the failed row still shows its last read value and time. Could falsely pass if the kept entry carried no
+// price; the pending cases assert the kept total first.
+test('a kept value counts while its read is pending and leaves the total when the read fails', () => {
+  const kept = { 'ethereum:ETH': { units: UNITS, observedAt: now - 1000, address: '0xabc', price: { units: PRICE, observedAt: now - 5000 } } };
+  for (const state of [{ state: 'idle' }, { state: 'loading' }]) {
+    const pending = portfolioSnapshot({ 'ethereum:ETH': state }, {}, now, ASSETS, kept);
+    assert.equal(pending.total, valued(UNITS, PRICE), state.state); assert.equal(pending.keptCount, 1); assert.equal(pending.keptAt, now - 5000);
+  }
+  const failed = portfolioSnapshot({ 'ethereum:ETH': { state: 'error', error: 'Balance unavailable' } }, {}, now, ASSETS, kept);
+  const row = failed.rows.find(r => r.key === 'ethereum:ETH');
+  assert.equal(failed.total, null); assert.equal(failed.keptCount, 0); assert.equal(row.usd, null);
+  assert.equal(row.balance, '1.5'); assert.equal(row.keptAt, now - 1000);
+});
+
+// ---- Kept balances are bound to the network they were read on (red team 2026-11-12-ext-cache-redteam.md Finding 1) ----
+import * as P from '../src/portfolio.js';
+import { CHAINS } from '../src/config.js';
+const SEPOLIA_NET = { ...CHAINS.ethereum, symbol: 'ETH', chainId: 11155111, endpoint: 'https://ethereum-sepolia-rpc.publicnode.com', testnet: true, tokens: [] };
+const SOLANA_TEST = { ...CHAINS.solana, testnet: true, endpoint: 'https://api.devnet.solana.com' };
+// A store over mutable networks: the chain's current network object decides its identity, as portfolio-view does.
+function keptStore(networks) {
+  return P.createKeptBalances({ networkIdFor: chain => P.networkIdOf(networks[chain]),
+    pricedFor: key => !networks[key.split(':')[0]].testnet && ASSETS.find(a => a.key === key)?.priceId !== undefined });
+}
+const readReady = (key, units, observedAt) => ({ [key]: { state: 'ready', units, observedAt } });
+const mainQuotes = { 'ethereum:ETH': { units: PRICE, observedAt: now }, 'solana:SOL': { units: PRICE, observedAt: now } };
+
+// Proves the network identity: mainnet is 'main', a test network carries its chain id and endpoint host (so Sepolia and
+// another test network differ), and the id fits the saved record's pattern. Could falsely pass if every test network got the
+// same id; two different ones are compared.
+test('networkIdOf names mainnet, and each test network by chain id and host', () => {
+  assert.equal(P.networkIdOf(CHAINS.ethereum), 'main');
+  assert.equal(P.networkIdOf(SEPOLIA_NET), 'test:11155111:ethereum-sepolia-rpc.publicnode.com');
+  assert.notEqual(P.networkIdOf(SEPOLIA_NET), P.networkIdOf(SOLANA_TEST));
+  for (const network of [CHAINS.ethereum, SEPOLIA_NET, SOLANA_TEST]) assert.match(P.networkIdOf(network), /^[A-Za-z0-9:._-]{1,64}$/);
+});
+
+// Proves a Sepolia ETH balance read under the mainnet key is NOT shown or valued as the mainnet balance after the switch
+// back, while the mainnet read is still pending: the total has no kept part, the row shows no balance, and the entries to be
+// saved hold no Sepolia row. Fails on 1a4b75b32 where createKeptBalances does not exist (and its in-view equivalent counted
+// the Sepolia units at the mainnet price). Could falsely pass if the Sepolia read were never stored: the first assertions
+// show it stored under the Sepolia network and without a price before the switch.
+test('a Sepolia balance does not enter the mainnet total or the saved entries after the switch back', () => {
+  const networks = { ethereum: SEPOLIA_NET }, store = keptStore(networks);
+  store.read('ethereum', readReady('ethereum:ETH', 7n * 10n ** 18n, now - 1000), '0xabc', mainQuotes);
+  const stored = store.raw()['ethereum:ETH'];
+  assert.equal(stored.network, P.networkIdOf(SEPOLIA_NET)); assert.equal(stored.price, undefined, 'a test-network row carries no price');
+  networks.ethereum = CHAINS.ethereum; // back on mainnet, the mainnet read still pending
+  assert.deepEqual(store.visible({ ethereum: '0xabc' }), {});
+  const snap = portfolioSnapshot({ 'ethereum:ETH': { state: 'loading' } }, mainQuotes, now, ASSETS, store.visible({ ethereum: '0xabc' }));
+  const row = snap.rows.find(r => r.key === 'ethereum:ETH');
+  assert.equal(snap.total, null); assert.equal(snap.keptCount, 0); assert.equal(row.balance, null); assert.equal(row.keptAt, undefined);
+  assert.deepEqual(store.out(), {}, 'nothing of the Sepolia read is exported for the mainnet record');
+  store.prices(mainQuotes); assert.equal(store.raw()['ethereum:ETH'].price, undefined, 'a price read does not price the Sepolia row');
+});
+
+// Proves a saved record holding only a legacy row (no network) shows and exports nothing after it is loaded: it is dropped,
+// not assumed to be mainnet. Fails on 1a4b75b32 (no such store). Could falsely pass if load dropped every row; the same
+// call keeps a row that has a network (asserted).
+test('a legacy kept row without a network is dropped on load', () => {
+  const store = keptStore({ ethereum: CHAINS.ethereum, bsc: CHAINS.bsc });
+  store.load({ 'ethereum:ETH': { units: 5n, observedAt: now - 1000, address: '0xabc' }, 'bsc:BNB': { units: 6n, observedAt: now - 1000, address: '0xabc', network: 'main' } });
+  assert.deepEqual(Object.keys(store.visible({ ethereum: '0xabc', bsc: '0xabc' })), ['bsc:BNB']);
+  assert.deepEqual(Object.keys(store.out()), ['bsc:BNB']);
+});
+
+// Proves a Solana test-network row is not exported once the chain is back on mainnet, even when another successful read
+// calls the export in between (the case the red team's blue team qualified). Fails on 1a4b75b32 (no such store). Could
+// falsely pass if the Solana row were never stored; it is asserted stored under its test network first.
+test('a Solana test-network row is not exported after the switch to mainnet', () => {
+  const networks = { solana: SOLANA_TEST, ethereum: CHAINS.ethereum }, store = keptStore(networks);
+  store.read('solana', readReady('solana:SOL', 3n, now - 1000), 'sol', mainQuotes);
+  assert.equal(store.raw()['solana:SOL'].network, P.networkIdOf(SOLANA_TEST));
+  networks.solana = CHAINS.solana;
+  store.read('ethereum', readReady('ethereum:ETH', 2n * 10n ** 18n, now - 500), '0xabc', mainQuotes); // another chain's read exports
+  assert.deepEqual(Object.keys(store.out()), ['ethereum:ETH']);
+});
+
+// Proves the same-network behaviour is kept: a mainnet value read with its price shows at once with its read time and
+// enters the total while the refresh is pending, after a save and load round trip of the exported entries. Could falsely
+// pass if the total came from fresh values: the balance state is 'loading' and no quote is given, so only the kept price
+// can value it.
+test('a same-network kept mainnet value still shows at once and counts while its refresh is pending', () => {
+  const store = keptStore({ ethereum: CHAINS.ethereum });
+  store.read('ethereum', readReady('ethereum:ETH', UNITS, now - 1000), '0xabc', { 'ethereum:ETH': { units: PRICE, observedAt: now - 5000 } });
+  const saved = store.out();
+  assert.equal(saved['ethereum:ETH'].network, 'main'); assert.equal(saved['ethereum:ETH'].price.units, PRICE.toString());
+  const reopened = keptStore({ ethereum: CHAINS.ethereum });
+  reopened.load({ 'ethereum:ETH': { units: BigInt(saved['ethereum:ETH'].units), observedAt: saved['ethereum:ETH'].observedAt, address: '0xabc', network: 'main',
+    price: { units: BigInt(saved['ethereum:ETH'].price.units), observedAt: saved['ethereum:ETH'].price.observedAt } } });
+  const snap = portfolioSnapshot({ 'ethereum:ETH': { state: 'loading' } }, {}, now, ASSETS, reopened.visible({ ethereum: '0xabc' }));
+  assert.equal(snap.total, valued(UNITS, PRICE)); assert.equal(snap.keptCount, 1); assert.equal(snap.keptAt, now - 5000);
+  assert.equal(snap.rows.find(r => r.key === 'ethereum:ETH').keptAt, now - 1000);
+});
+
+// Proves two test networks of one chain have their own identity when the screen passes the selected network's id with the
+// definition (Solana Testnet and Devnet share the chain's mainnet definition, so endpoint and chain id cannot tell them
+// apart), and that a kept Testnet row is not shown, valued or exported after the switch to Devnet while Devnet's read is held.
+// Fails on dceb7b6d3: networkIdOf ignores `networkId`, so both give the same id and the row stays visible. Could falsely pass if
+// the row were never kept; it is asserted kept under the Testnet id first.
+test('Solana Testnet and Devnet have different identities and do not share kept rows', () => {
+  const testnet = { ...CHAINS.solana, testnet: true, networkId: 'testnet' }, devnet = { ...CHAINS.solana, testnet: true, networkId: 'devnet' };
+  assert.notEqual(P.networkIdOf(testnet), P.networkIdOf(devnet));
+  assert.equal(P.networkIdOf(CHAINS.solana), 'main'); assert.match(P.networkIdOf(devnet), /^[A-Za-z0-9:._-]{1,64}$/);
+  const networks = { solana: testnet }, store = keptStore(networks);
+  store.read('solana', readReady('solana:SOL', 4n, now - 1000), 'sol', {});
+  assert.equal(store.raw()['solana:SOL'].network, P.networkIdOf(testnet));
+  networks.solana = devnet; // Devnet selected, its read held
+  assert.deepEqual(store.visible({ solana: 'sol' }), {}); assert.deepEqual(store.out(), {});
+});

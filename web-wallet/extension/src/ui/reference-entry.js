@@ -3,6 +3,7 @@ import { mountWalletAndConnect } from './connect.js';
 import { WALLET_MARKUP } from './wallet-markup.js';
 import { mountDeleteWallet } from './wallet-page.js';
 import { showRunningVersion } from './running-version.js';
+import { approvalWindowOptions } from './close-window.js';
 
 function renderEntry({ document, root, status, state, create, restore, unlock, ui, run }) {
   const template = document.createElement('template'); template.innerHTML = WALLET_MARKUP;
@@ -22,7 +23,8 @@ function renderEntry({ document, root, status, state, create, restore, unlock, u
 
 // The existing lifecycle owns onboarding, trusted approvals, secret clearing
 // and lock. Every unlocked wallet page uses the web wallet's screen.
-export const mountReferencePage = options => mountWalletPage({ ...options, renderOpenWallet: mountWalletAndConnect, renderEntry });
+export const mountReferencePage = options => mountWalletPage({ ...options, renderOpenWallet: mountWalletAndConnect, renderEntry,
+  ...approvalWindowOptions(globalThis.location?.pathname) });
 
 if (globalThis.document && globalThis.chrome?.runtime) {
   showRunningVersion(globalThis.document, globalThis.chrome.runtime);

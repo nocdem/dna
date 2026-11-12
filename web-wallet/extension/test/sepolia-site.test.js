@@ -111,19 +111,22 @@ test('switches to 0x1 and 0x38 behave as before and unknown chains still answer 
 });
 
 // Proves a Sepolia choice is not restored after a restart (the operator's "yeniden acista mainnet", the networks.js
-// reset), the saved endpoint state keeps its two-chain shape, and the wallet's own screens refuse Sepolia.
-test('a restart returns to Ethereum; saved endpoints stay ethereum and bsc; wallet screens refuse Sepolia', async t => {
+// reset), the saved endpoint state holds one endpoint per network (the test networks included), and the wallet's own
+// screens answer for Sepolia (approved plan section 5.6: it is a listed network of the Ethereum selector).
+test('a restart returns to Ethereum; saved endpoints cover every network; wallet screens answer for Sepolia', async t => {
   const f = await setup(t);
   await f.background.evm.selectNetwork('sepolia'); await f.background.store.flush();
-  assert.deepEqual(Object.keys(f.background.store.backup().EvmController.endpoints).sort(), ['bsc', 'ethereum']);
+  assert.equal(f.background.networks.get('ethereum').id, 'sepolia', 'the site switch and the selector are one choice');
+  assert.deepEqual(Object.keys(f.background.store.backup().EvmController.endpoints).sort(), ['bsc', 'bsctestnet', 'ethereum', 'sepolia']);
   const restarted = await (async () => {
     const module = await import('../src/background/index.js');
     return module.createBackground({ ...f.fixture, runtime: { ...f.fixture.runtime, onConnect: { addListener() {}, removeListener() {} } } });
   })();
   try { assert.equal(restarted.evm.getState().selectedChain, 'ethereum'); assert.equal((await restarted.engine.getNetworkState()).chainId, '0x1'); }
   finally { await restarted.destroy(); }
-  for (const call of [() => f.background.evm.getBalances('sepolia'), () => f.background.evm.setEndpoint('sepolia', SEPOLIA.endpoint),
-    () => f.background.evm.prepareSend({ chain: 'sepolia', symbol: 'ETH', to: payTo, amount: '0.01' })]) await assert.rejects(call(), /Unsupported EVM network/);
+  assert.deepEqual(await f.background.evm.getBalances('sepolia'), [{ symbol: 'ETH', balance: '10.0' }]);
+  await f.background.evm.setEndpoint('sepolia', SEPOLIA.endpoint);
+  await assert.rejects(f.background.evm.getBalances('unknown'), /Unsupported EVM network/);
 });
 
 // Proves the permission screen understands the chain permission a Sepolia switch asks for and offers Sepolia only then:

@@ -6,7 +6,7 @@ import { CHAINS, CELLFRAME } from '../../../src/config.js';
 import { ASSETS, CPUNK_ASSET, chainBalances, portfolioSnapshot, usdText } from '../../../src/portfolio.js';
 import { NODUS_ASSET, nodusNetworkFor } from '../../../src/nodus/network.js';
 import { chainNetwork } from '../constants/networks.js';
-import { EVM_NETWORKS, EVM_CHAINS } from '../constants/evm-networks.js';
+import { EVM_NETWORKS, EVM_CHAINS, isEvmTestKey } from '../constants/evm-networks.js';
 import { NODUS_PERMISSION } from '../background/permissions.js';
 import { Caip25CaveatType, Caip25EndowmentPermissionName, getPermittedEthChainIds,
   setEthAccounts, setPermittedEthChainIds } from '@metamask/chain-agnostic-permission';
@@ -22,10 +22,10 @@ export function connectDetails(pending) {
     && JSON.stringify(request.diff.currentPermissions[key]) === JSON.stringify(request.permissions[key]));
   if (!caveat || Object.keys(request.permissions).some(key => key !== Caip25EndowmentPermissionName && !held(key))) throw new Error('Unsupported connection permissions.');
   const requested = getPermittedEthChainIds(caveat.value);
-  // A switch to Sepolia asks the site's chain permission through this screen (givens item 81), so its permission
-  // request is understood; a first connection still offers Ethereum and BNB Smart Chain only.
+  // A switch to a test network asks the site's chain permission through this screen (givens item 81), so its
+  // permission request is understood; a first connection still offers Ethereum and BNB Smart Chain only.
   const known = EVM_CHAINS.map(key => ({ key, name: EVM_NETWORKS[key].name, chainId: `0x${EVM_NETWORKS[key].chainId.toString(16)}` }));
-  const networks = known.filter(network => requested.includes(network.chainId) || network.key !== 'sepolia');
+  const networks = known.filter(network => requested.includes(network.chainId) || !isEvmTestKey(network.key));
   if (requested.some(id => !known.some(network => network.chainId === id)) ||
     [...Object.keys(caveat.value.requiredScopes), ...Object.keys(caveat.value.optionalScopes)].some(scope => scope !== 'wallet:eip155' && !scope.startsWith('eip155:'))) {
     throw new Error('Unsupported connection networks.');
@@ -49,7 +49,7 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
   async function refresh() {
     const previousNetworks = state?.networks;
     state = await client.request('getState');
-    const identity = state.isUnlocked ? JSON.stringify([state.addresses, state.pqAddresses, state.evm, state.nodus]) : null;
+    const identity = state.isUnlocked ? JSON.stringify([state.addresses, state.pqAddresses, state.evm, state.nodus, state.networks?.ethereum, state.networks?.bsc]) : null;
     if (identity !== balanceIdentity) {
       evmBalances = {}; nodusBalances = cpunkBalance = nodusHistory = null;
       solanaTronBalances = {}; solanaTronHistory = {}; solanaTronPending.clear(); solanaTronHistoryPending.clear();
@@ -79,7 +79,8 @@ export function createWalletUi(client, { generatePhrase = newPhrase } = {}) {
       ...nodus.tokens.map(token => ({ ...token, chain: 'nodus', key: `nodus:${token.symbol}` })),
       ...ASSETS.filter(asset => !state?.networks?.[asset.chain] || state.networks[asset.chain] === 'mainnet')
         .concat(ASSETS.filter(asset => state?.networks?.[asset.chain] && state.networks[asset.chain] !== 'mainnet' && asset.symbol === CHAINS[asset.chain].symbol)
-          .map(({ priceId, ...asset }) => asset)),
+          // BNB Smart Chain's test coin is tBNB (evm-networks.js), the symbol of its balance row.
+          .map(({ priceId, ...asset }) => (asset.chain === 'bsc' && state.networks.bsc === 'testnet' ? { ...asset, symbol: 'tBNB' } : asset))),
       CPUNK_ASSET,
     ];
     const balances = {};

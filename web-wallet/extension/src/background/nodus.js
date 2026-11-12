@@ -1,6 +1,7 @@
 import { createNodusClient, NODUS_CONNECT_BOUND_MS } from '../../../src/nodus/client.js';
 import { nodusSigningSeed } from '../../../src/nodus/derive.js';
 import { createSessionLog, stepLog } from '../../../src/session-log.js';
+import { debugLog, errorFields, stopwatch } from '../../../src/debug-log.js';
 import { createChainHistory } from './chain-history.js';
 import { createSharedVaults } from './shared-vaults.js';
 import { nodusSendModuleFactory } from '../../../src/nodus/send-module.js';
@@ -16,9 +17,9 @@ import { keepBusyEnvelope, canResubmit, dropSettledEnvelope, resubmitKept, NODUS
 import { recordActivity, watchActivity, terminal, evmActivityText, publicActivityRow } from '../../../src/activity.js';
 import { activityKeyFor, parseActivity, serializeActivity, serializeWithoutQuarantined, requireSavedForEvm,
   historyKeyFor, parseHistory, serializeHistory, balancesKeyFor, parseBalances, serializeBalances,
-  addressBookKeyFor, parseAddressBook, serializeAddressBook } from '../../../src/activity-storage.js';
+  addressBookKeyFor, parseAddressBook, serializeAddressBook, identityKeyFor, parseIdentity, serializeIdentity } from '../../../src/activity-storage.js';
 import { checkAddressBook } from '../../../src/address-book.js';
-import { ACTIVITY_KEY, VAULT_KEY, HISTORY_KEY, BALANCES_KEY, ADDRESS_BOOK_KEY } from '../../../src/vault.js';
+import { ACTIVITY_KEY, VAULT_KEY, HISTORY_KEY, BALANCES_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY } from '../../../src/vault.js';
 import { EvmAccount, Contract, describeArgs } from '../../../src/evm/contract.js';
 import { parseRaw, parseWei, formatRaw, formatWei } from '../../../src/evm/units.js';
 import { rpcErrors, providerErrors } from '@metamask/rpc-errors';
@@ -56,6 +57,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     previous.historyKey = null; previous.history = {};
     previous.balancesKey = null; previous.kept = {}; previous.contractAccount = null;
     previous.addressBookKey = null; previous.addressBook = [];
+    previous.identityKey = null; previous.identity = { addresses: {} };
     sharedVaults.lock(); previous.receipts?.clear();
     previous.networkActivities?.clear();
     // src/app.js:1770 clears after client shutdown logs its final state.
@@ -65,6 +67,73 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
   lockCoordinator.register('nodus', { lock });
   function current(s) {
     if (session !== s || s.abort.signal.aborted) throw new Error('Wallet is locked.');
+  }
+  // The chain name of this wallet's own account, kept only when the reverse lookup (nameOf, adapter ownChainName)
+  // confirmed it for this exact address. It lives on the session, so a lock drops it. The signature window reads it
+  // without waiting for the network; warmOwnName asks in the background so a later window has it.
+  // Returns the promise of the save of the kept record (settled when it is written or failed).
+  function keepOwnName(s, own) {
+    if (session !== s) return Promise.resolve();
+    let saved = Promise.resolve();
+    if (own?.found && typeof own.name === 'string') {
+      const had = s.identity?.name;
+      s.ownName = { address: s.addresses.nodus, name: own.name };
+      saved = noteIdentity(s, { name: own.name });
+      debugLog('identity', had === own.name ? 'kept-name-confirmed' : had ? 'kept-name-replaced' : 'name-kept');
+    } else if (own?.found === false) {
+      // The lookup answered that this wallet has no name: neither the confirmed nor the kept one stands.
+      const had = Boolean(s.identity?.name);
+      s.ownName = undefined;
+      saved = noteIdentity(s, { name: '' });
+      if (had) debugLog('identity', 'kept-name-removed');
+    }
+    return saved;
+  }
+  // The own identity of a saved wallet (decision 2026-10-02-device-cache-only-when-saved: the extension's wallet is
+  // always a saved vault wallet): the own receive addresses and the own chain name last confirmed, kept encrypted
+  // under the identity key and shown at once on the next open. A kept name is unconfirmed until a lookup answers; the
+  // signature window uses only the confirmed name. Lock drops the key and the copy.
+  function keptAddresses(addresses) {
+    const valid = ([chain, value]) => typeof value === 'string' && /^[a-z][a-z0-9]{1,15}$/.test(chain) && (chain === 'nodus' ? /^[0-9a-f]{128}$/.test(value) : /^[A-Za-z0-9]{1,128}$/.test(value));
+    return Object.fromEntries(Object.entries(addresses ?? {}).filter(valid).sort(([a], [b]) => (a === 'nodus' ? -1 : b === 'nodus' ? 1 : 0)).slice(0, 8));
+  }
+  function noteIdentity(s, change) {
+    if (session !== s || !s.identityKey) return Promise.resolve();
+    const next = { ...s.identity, ...change, addresses: { ...s.identity.addresses, ...keptAddresses(change.addresses) } };
+    if (!next.name) delete next.name;
+    // The same change again: nothing new to write, but the save of the earlier identical change may still be running,
+    // so the caller waits for that one.
+    if (JSON.stringify(next) === JSON.stringify(s.identity)) return s.identitySave ?? Promise.resolve();
+    s.identity = next;
+    const job = writes.catch(() => {}).then(async () => {
+      current(s);
+      const value = await serializeIdentity(s.id, next, s.identityKey); current(s);
+      const saved = await storage.get(VAULT_KEY); current(s);
+      if (saved[VAULT_KEY] !== s.vault) return;
+      await storage.set({ [IDENTITY_KEY]: value });
+    }).catch(error => { debugLog('identity', 'save-failed', errorFields(error)); /* kept again at the next change */ });
+    writes = job; s.identitySave = job;
+    return job;
+  }
+  function keptOwnNameOf(s) {
+    const name = s?.identity?.name;
+    return name && (!s.identity.addresses?.nodus || s.identity.addresses.nodus === s.addresses?.nodus) ? name : '';
+  }
+  function confirmedOwnName(s, account) { return s.ownName?.address === account ? s.ownName.name : ''; }
+  function warmOwnName(s) {
+    if (s.ownName || s.ownNameAsked || !s.client?.nameable) return;
+    s.ownNameAsked = true;
+    adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal })
+      .then(own => { void keepOwnName(s, own); }, () => { s.ownNameAsked = false; });
+  }
+  // Re-reads the kept name from the network without making the caller wait; one read at a time, and a failed read
+  // leaves the kept name as it is (an answer of not-found removes it). The one-at-a-time flag covers the network read
+  // only: it is cleared when the answer or the failure arrives, and the save of the record runs without holding it.
+  function refreshOwnName(s) {
+    if (s.ownNameRefreshing || !s.client?.nameable) return;
+    s.ownNameRefreshing = true;
+    adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal })
+      .then(own => { s.ownNameRefreshing = false; void keepOwnName(s, own); }, () => { s.ownNameRefreshing = false; });
   }
   function active() {
     lockCoordinator.assertUnlocked();
@@ -139,6 +208,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
   }
   async function reconnect(s) {
     let seed;
+    const elapsed = stopwatch();
+    debugLog('nodus', 'reconnect-started');
     try {
       current(s); lockCoordinator.assertUnlocked();
       const previous = s.client;
@@ -152,14 +223,17 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       await client.identify({ seed, fingerprint: s.addresses.nodus }); current(s);
       await onIdentified?.({ client, phrase: getWords(), vaultId: s.id, fresh: false }); current(s);
       await connectIdentified(s, client);
-    } catch (error) { if (session === s && !s.abort.signal.aborted) { log.log('net', error, { error: true }); scheduleRetry(s); } }
+      debugLog('nodus', 'reconnect-finished', { ms: elapsed(), outcome: 'ok' });
+    } catch (error) {
+      debugLog('nodus', 'reconnect-finished', { ms: elapsed(), ...errorFields(error) });
+      if (session === s && !s.abort.signal.aborted) { log.log('net', error, { error: true }); scheduleRetry(s); } }
     finally { seed?.fill(0); }
   }
   async function consumeNodusSeed(seed, { phrase, id, addresses, nodusWasmBytes, signal, assertReady } = {}) {
     lock();
     if (typeof factory !== 'function') throw new Error('Nodus sending is not available in this wallet build.');
     const s = { abort: new AbortController(), rows: [], quarantined: [], activityBlocked: false, retries: 0,
-      releasedQuarantine: new Set(), quarantineReadAt: -Infinity, reviews: new Map(), networkActivities: new Map(), assertReady, id };
+      releasedQuarantine: new Set(), quarantineReadAt: -Infinity, reviews: new Map(), networkActivities: new Map(), assertReady, id, identity: { addresses: {} } };
     session = s;
     s.client = newClient(s);
     try {
@@ -174,9 +248,16 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       s.historyKey = await historyKeyFor(phrase, id);
       s.balancesKey = await balancesKeyFor(phrase, id);
       s.addressBookKey = await addressBookKeyFor(phrase, id);
+      s.identityKey = await identityKeyFor(phrase, id);
       current(s); combined.throwIfAborted();
-      const saved = await storage.get([VAULT_KEY, ACTIVITY_KEY, HISTORY_KEY, BALANCES_KEY, ADDRESS_BOOK_KEY]); current(s);
+      const saved = await storage.get([VAULT_KEY, ACTIVITY_KEY, HISTORY_KEY, BALANCES_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY]); current(s);
       s.vault = saved[VAULT_KEY];
+      // The kept own identity (name and addresses) of the last use; nothing readable keeps the empty one.
+      try { s.identity = await parseIdentity(saved[IDENTITY_KEY], id, s.identityKey); }
+      catch { s.identity = { addresses: {} }; }
+      current(s);
+      if (s.identity.name) debugLog('identity', 'kept-name-loaded');
+      noteIdentity(s, { addresses: s.addresses });
       try { s.history = await parseHistory(saved[HISTORY_KEY], id, s.historyKey); }
       catch { s.history = {}; }
       try { s.kept = await parseBalances(saved[BALANCES_KEY], id, s.balancesKey); }
@@ -425,7 +506,15 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       await releaseExpiredHolds(s);
       return rememberReview(s, await adapter.prepareStake({ ...params, kind, client: s.client, from: s.addresses.nodus, locked: heldInputs(s) }));
     },
-    async getOwnName() { const s = active(); const own = await adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal }); current(s); return own; },
+    async getOwnName() {
+      // A name this session already confirmed for this address is answered at once; the network read runs in the
+      // background and refreshes the kept name. Without a kept name the read below waits for the network as before.
+      lockCoordinator.assertUnlocked();
+      if (session) { current(session); const kept = confirmedOwnName(session, session.addresses.nodus); if (kept) { refreshOwnName(session); return { found: true, name: kept }; } }
+      const s = active(); const own = await adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal }); current(s);
+      // The answer is saved (or the kept name removed) before it is returned, so the record already holds it when the page sees it.
+      await keepOwnName(s, own); return own;
+    },
     async getNamePrices() { const s = active(); const value = adapter.parseNamePrices(await s.client.namePrices()); current(s); return { ...value, text: adapter.namePriceList(value.prices) }; },
     async quoteName(name) { const s = active(); const value = await adapter.nameQuote({ client: s.client, from: s.addresses.nodus, name, signal: s.abort.signal }); current(s); return value; },
     async prepareName(name) { const s = active(); assertActivity(s); await releaseExpiredHolds(s); return rememberReview(s, await adapter.prepareName({ client: s.client, from: s.addresses.nodus, name, locked: heldInputs(s) })); },
@@ -448,7 +537,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     getSessionLog() { return { entries: log.entries(), running: log.running(), startedAt: log.startedAt }; },
     getKeptBalances() {
       const s = active();
-      return Object.fromEntries(Object.entries(s.kept).map(([key, value]) => [key, { ...value, units: value.units.toString() }]));
+      return Object.fromEntries(Object.entries(s.kept).map(([key, value]) => [key, { ...value, units: value.units.toString(),
+        ...(value.price ? { price: { units: value.price.units.toString(), observedAt: value.price.observedAt } } : {}) }]));
     },
     keepBalances(entries) {
       const s = active();
@@ -517,13 +607,16 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       // personal-sign.tsx:45-50, 139-164 + ui/helpers/utils/util.js:707-719,
       // 825-836: textContent-equivalent text, format characters escaped,
       // 32-byte values shown as hex. Buffer replaces malformed UTF-8, as
-      // hexToText does in the reference. Full bytes remain visible too.
+      // hexToText does in the reference. The window shows this text only; the bytes
+      // that are signed stay in requestData.data and are not displayed.
       const text = message.length === 32 ? hex : Buffer.from(message).toString('utf8').replace(/\p{Cf}/gu,
         char => `\\u${char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`);
+      const accountName = confirmedOwnName(s, account);
+      if (!accountName) warmOwnName(s);
       try {
         // Same locked refusal as evm.js capture()/approved(): assert before
         // approval and after each await; client.lock rejects queued/in-flight work.
-        await approvals.controller.addAndShowApprovalRequest({ origin, type: 'nodus_signMessage', requestData: { account, data: hex, text } });
+        await approvals.controller.addAndShowApprovalRequest({ origin, type: 'nodus_signMessage', requestData: { account, accountName, data: hex, text } });
         assertCurrent();
         const signature = await s.client.siteSignMessage({ origin, message }, { signal: s.abort.signal, assertCurrent });
         try {
@@ -565,6 +658,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       // dropped only when the new one is stored, so two calls can never both be stored for one site.
       if (s.holding) throw rpcErrors.internal('A hold is already being made. Finish or reject it first.');
       s.holding = true;
+      const holdElapsed = stopwatch();
+      debugLog('nodus-hold', 'started', { origin });
       try {
       await releaseExpiredHolds(s);
       // The builder's own answer carries the wire id and the chain id; prepare() keeps them inside, so the
@@ -583,9 +678,14 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
         !Array.isArray(built.decoded.inputs)) throw new Error('The Nodus module gave no transfer id. Nothing was held.');
       const expiryHeight = BigInt(prepared.expiryHeight);
       // prepare() decoded the signed bytes and refused any difference from the request (recipient, amount, token).
-      await approvals.controller.addAndShowApprovalRequest({ origin, type: SWAP_PAYMENT_APPROVAL, requestData: { account, title: 'Hold a NODUS payment for a swap',
-        rows: [...prepared.review, ['Transfer ID', wireId]],
-        note: 'Signing this payment does not send it. It is sent only after the bot has received your signed request.' } });
+      debugLog('nodus-hold', 'approval-shown', { origin, transfer: wireId, ms: holdElapsed() });
+      const approvalElapsed = stopwatch();
+      try {
+        await approvals.controller.addAndShowApprovalRequest({ origin, type: SWAP_PAYMENT_APPROVAL, requestData: { account, title: 'Hold a NODUS payment for a swap',
+          rows: [...prepared.review, ['Transfer ID', wireId]],
+          note: 'Signing this payment does not send it. It is sent only after the bot has received your signed request.' } });
+      } catch (error) { debugLog('nodus-hold', 'approval-rejected', { origin, transfer: wireId, ms: approvalElapsed(), ...errorFields(error) }); throw error; }
+      debugLog('nodus-hold', 'approval-approved', { origin, transfer: wireId, ms: approvalElapsed() });
       assertCurrent();
       // Coins another hold or a send took while the user decided make this transfer unusable.
       const takenMeanwhile = heldInputs(s, origin);
@@ -602,7 +702,9 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
           try { return await prepared.send(async details => { await onBroadcast(details); reached = true; }); }
           catch (error) { if (reached && error && typeof error === 'object') error.broadcastReached = true; throw error; }
         } });
+      debugLog('nodus-hold', 'stored', { origin, hold: id, transfer: wireId, ms: holdElapsed() });
       return { holdId: id, transferId: wireId, chainId, expiryHeight: expiryHeight.toString(), account };
+      } catch (error) { debugLog('nodus-hold', 'failed', { origin, ms: holdElapsed(), ...errorFields(error) }); throw error;
       } finally { s.holding = false; }
     },
     // What swap.js checks a request text against: the hold's own values, never the site's.
@@ -655,7 +757,10 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       evmBuildable: session?.client.evmBuildable ?? false, evmReadable: session?.client.evmReadable ?? false,
       publicKey: session?.client.publicKey ? `0x${session.client.publicKey}` : undefined,
       // src/app.js:2559: recovery is offered only for the unlock-time read problem or quarantine.
-      activityError: session?.activityBlocked ? session.activityError : [...(session?.networkActivities.values() ?? [])].find(activity => activity.blocked)?.error() ?? '', quarantinedCount: session?.quarantined.length ?? 0 }; },
+      activityError: session?.activityBlocked ? session.activityError : [...(session?.networkActivities.values() ?? [])].find(activity => activity.blocked)?.error() ?? '', quarantinedCount: session?.quarantined.length ?? 0,
+      // The own chain name kept from the last use, shown at once as an unconfirmed name until a lookup answers (the
+      // signature window never uses it: confirmedOwnName). Empty while locked.
+      keptOwnName: keptOwnNameOf(session) }; },
     async getBalances() {
       const s = active(); track(s);
       const rows = await adapter.balances('nodus', s.addresses.nodus, undefined, { client: s.client, signal: s.abort.signal });

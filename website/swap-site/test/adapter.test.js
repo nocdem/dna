@@ -204,3 +204,59 @@ test('no extension: no_extension, nothing sent', async () => {
   await assert.rejects(adapter.usdtToNodus(USDT_INPUT), e => e.code === 'no_extension');
   await assert.rejects(adapter.nodusToUsdt(NODUS_INPUT), e => e.code === 'no_extension');
 });
+
+// PROVES (operator 2026-11-12, givens item 111: the page said only "approve" for the whole sequence): each adapter
+// call reports the step it is about to take through the optional second argument { onStep }, BEFORE the extension
+// call it describes, so the page can name the window the user is waiting for. The report and the extension calls are
+// interleaved in one log, so the order is the real order: USDT -> NODUS switch, then one call; NODUS -> USDT hold
+// (step 1 of 2), then the send call (step 2 of 2); liquidity add switch, hold (1 of 2), then the add call (2 of 2).
+// Also proves: the calls, their parameters and their order are the same with and without the callback, the callback
+// is optional (the tests above never pass it), and a callback that throws changes nothing.
+// FALSE PASS: the log is made by the stub provider and the test callback; the step names are the ones this module
+// emits, not checked against what the extension really opens (the extension's windows are read from its source).
+function logged(provider) {
+  const log = [];
+  const request = provider.request;
+  provider.request = async arg => { log.push(`call:${arg.method}`); return request(arg); };
+  return { log, onStep: step => log.push(`step:${step.id}${step.n ? `:${step.n}/${step.of}` : ''}`) };
+}
+
+test('step reports: USDT -> NODUS announces the chain switch, then the one call with its two windows', async () => {
+  const provider = stubProvider({ nodus_swapSendUsdtToNodus: { delivered: true, paid: true } });
+  const { log, onStep } = logged(provider);
+  await createAdapter({ getProvider: withProvider(provider) }).usdtToNodus(USDT_INPUT, { onStep });
+  assert.deepEqual(log, ['step:switch', 'call:wallet_switchEthereumChain', 'step:usdt_windows', 'call:nodus_swapSendUsdtToNodus']);
+});
+
+test('step reports: NODUS -> USDT announces the hold as step 1 of 2, then the signature and send as step 2 of 2', async () => {
+  const provider = stubProvider({ nodus_swapHoldTransfer: HOLD, nodus_swapSendNodusToUsdt: { delivered: true, paid: true } });
+  const { log, onStep } = logged(provider);
+  await createAdapter({ getProvider: withProvider(provider) }).nodusToUsdt(NODUS_INPUT, { onStep });
+  assert.deepEqual(log, ['step:hold:1/2', 'call:nodus_swapHoldTransfer', 'step:sign_send:2/2', 'call:nodus_swapSendNodusToUsdt']);
+});
+
+test('step reports: liquidity add announces switch, hold (1 of 2), then the add call with its three windows (2 of 2)', async () => {
+  const provider = stubProvider({ nodus_swapHoldTransfer: HOLD, nodus_swapSendLiquidityAdd: { delivered: true } });
+  const { log, onStep } = logged(provider);
+  await createAdapter({ getProvider: withProvider(provider) }).liquidityAdd(ADD_INPUT, { onStep });
+  assert.deepEqual(log, ['step:switch', 'call:wallet_switchEthereumChain', 'step:hold:1/2', 'call:nodus_swapHoldTransfer',
+    'step:add_windows:2/2', 'call:nodus_swapSendLiquidityAdd']);
+});
+
+test('step reports: the extension calls are identical with and without the callback, and a throwing callback changes nothing', async () => {
+  const answers = { nodus_swapHoldTransfer: HOLD, nodus_swapSendNodusToUsdt: { delivered: true, paid: true } };
+  const plain = stubProvider(answers), watched = stubProvider(answers), thrower = stubProvider(answers);
+  await createAdapter({ getProvider: withProvider(plain) }).nodusToUsdt(NODUS_INPUT);
+  await createAdapter({ getProvider: withProvider(watched) }).nodusToUsdt(NODUS_INPUT, { onStep: () => {} });
+  const r = await createAdapter({ getProvider: withProvider(thrower) }).nodusToUsdt(NODUS_INPUT, { onStep: () => { throw new Error('page bug'); } });
+  assert.equal(r.delivered, true);
+  assert.deepEqual(watched.calls, plain.calls);
+  assert.deepEqual(thrower.calls, plain.calls);
+});
+
+test('step reports: a refused configuration or token reports no step and sends nothing', async () => {
+  const provider = stubProvider();
+  const { log, onStep } = logged(provider);
+  await assert.rejects(createAdapter({ getProvider: withProvider(provider) }).usdtToNodus({ ...USDT_INPUT, token: undefined }, { onStep }), e => e.code === 'no_token');
+  assert.deepEqual(log, []);   // no window opened, so no step announced
+});

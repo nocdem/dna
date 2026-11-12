@@ -4044,7 +4044,9 @@ if(AMM_CURL_FOUND)
     # only where libcurl is. test_amm_price injects stub sources and needs no
     # network.
     add_executable(test_amm_price tests/test_amm_price.c tools/amm/amm_price.c)
-    target_link_libraries(test_amm_price PRIVATE Threads::Threads PkgConfig::AMM_CURL)
+    # nodus: the adapter writes QGP_LOG_* lines (the logger shim lives there)
+    target_link_libraries(test_amm_price PRIVATE nodus dsa nodus Threads::Threads
+        PkgConfig::AMM_CURL)
     target_compile_options(test_amm_price PRIVATE -Wall -Wextra -Wno-unused-parameter)
     target_include_directories(test_amm_price PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/tools/amm)

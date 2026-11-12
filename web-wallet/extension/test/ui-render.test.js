@@ -1,7 +1,10 @@
 // Proves the extension's page renderers and the mounted wallet page: home,
 // receive QR, connect, sites, settings, reveal phrase, import, create, send,
 // approvals and balances, plus one Chromium check of the status bar wording,
-// RPC provider choices and welcome text.
+// RPC provider choices and welcome text. It also proves that an approval arriving
+// at an open popup replaces the open-wallet screen from the background
+// notification alone, and that only the approval window closes itself once no
+// approval is left (the closer is a counter or fake browser here).
 // Needs: Node >=22.14 for the in-memory tests. The Chromium test also needs
 // CHROMIUM_PATH or /usr/bin/chromium and a loopback Vite server (through
 // portfolio-page-checks.js). No flags, network, wallet artifacts or ports
@@ -18,6 +21,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderHome, renderReceive, renderConnect, renderSites, renderSettings } from '../src/ui/views.js';
 import { mountWalletPage } from '../src/ui/app.js';
+import { closeApprovalWindow, approvalWindowOptions } from '../src/ui/close-window.js';
 import { Caip25EndowmentPermissionName, getCaip25PermissionFromLegacyPermissions, setEthAccounts } from '@metamask/chain-agnostic-permission';
 import { netLevelFor, netStatusView } from '../../src/net-status.js';
 import { autoLockBarText } from '../../src/auto-lock.js';
@@ -174,7 +178,7 @@ test('settings persist selected minutes and authenticate phrase reveal', async (
   assert.doesNotMatch(root.textContent, /closing.*always locks/i);
 });
 
-async function pageFixture(t, initialized = true) {
+async function pageFixture(t, initialized = true, options = {}) {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const saved = Object.getOwnPropertyDescriptor(globalThis, 'document'); globalThis.document = document;
   const root = new Node('section'), navigation = new Node('nav'), status = new Node('p');
@@ -196,7 +200,7 @@ async function pageFixture(t, initialized = true) {
     if (method === 'getEvmBalances') return [{ symbol: params[0] === 'ethereum' ? 'ETH' : 'BNB', balance: '12.34' }];
     return null;
   } };
-  const page = await mountWalletPage({ document, window, client });
+  const page = await mountWalletPage({ document, window, client, ...options });
   t.after(() => { page.dispose(); if (saved) Object.defineProperty(globalThis, 'document', saved); else delete globalThis.document; });
   return { root, navigation, status, calls, state, page, phrase, clipboardWrites, notify: () => notification?.({ method: 'messengerSubscription' }) };
 }
@@ -292,6 +296,106 @@ test('mounted page presents incoming permission requests', async t => {
   const { root, state, page, notify } = await pageFixture(t);
   state.pendingApprovals.request = pending(); notify(); await page.refresh();
   assert.ok(button(root, 'Connect')); assert.ok(button(root, 'Reject')); assert.match(root.textContent, /site\.example/);
+});
+
+const settle = async predicate => {
+  for (let turn = 0; turn < 100; turn++) { if (predicate()) return; await new Promise(resolve => setImmediate(resolve)); }
+  assert.fail('Expected page update did not arrive.');
+};
+
+// Proves the open toolbar popup (the open-wallet screen is mounted) shows an approval that arrives afterwards from the
+// background notification alone, with no explicit refresh and no click: the open-wallet screen is disposed and the approval
+// screen replaces it. A test that calls page.refresh() itself (as the one above does) would hide a missing notification wiring.
+test('an approval arriving while the open-wallet screen is shown replaces it on the background notification', async t => {
+  let disposed = 0;
+  const renderOpenWallet = ({ root }) => { root.replaceChildren(new Node('div')); return { update() {}, dispose() { disposed++; } }; };
+  const { root, state, notify } = await pageFixture(t, true, { renderOpenWallet });
+  assert.equal(button(root, 'Connect'), undefined);
+  state.pendingApprovals.request = pending(); notify();
+  await settle(() => button(root, 'Connect'));
+  assert.ok(button(root, 'Reject')); assert.equal(disposed, 1); assert.match(root.textContent, /site\.example/);
+});
+
+// Proves the approval window does not close while the recovery-phrase step is open, even with nothing pending, and
+// closes once, after the step is left. The wallet is uninitialized so the start screen is shown while an approval is
+// pending; the import form is then opened, the approval goes away, and only the completed import ends the step.
+test('the approval window does not close during the recovery-phrase step', async t => {
+  let closed = 0;
+  const { root, state, notify, phrase } = await pageFixture(t, false, { closeWhenNothingPending: () => { closed++; } });
+  await settle(() => closed === 1);
+  state.pendingApprovals.request = pending(); notify();
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  button(root, 'Import phrase').onclick();
+  state.pendingApprovals = {}; notify();
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closed, 1, 'no close request while the phrase step is open');
+  const words = root.querySelectorAll('input').filter(input => input.type === 'text');
+  phrase.split(' ').forEach((word, index) => { words[index].value = word; });
+  for (const input of root.querySelectorAll('input[type="password"]')) input.value = 'public-test-password-123';
+  await descendants(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
+  await settle(() => closed === 2);
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closed, 2, 'exactly one close request after the step is left');
+});
+
+// Proves the approval window closes itself once the last approval is gone, once per empty spell, and again after a new
+// approval has come and gone; and that a page mounted without the close option (toolbar popup, full page) never asks.
+// The closer is a counter: the real window closing is in close-window checks below and the Chromium measurement.
+test('the approval window asks to close when no approval is left, and other pages never do', async t => {
+  let closed = 0;
+  const { root, state, notify } = await pageFixture(t, true, { closeWhenNothingPending: () => { closed++; } });
+  await settle(() => closed === 1);
+  state.pendingApprovals.request = pending(); notify();
+  await settle(() => button(root, 'Connect')); assert.equal(closed, 1);
+  state.pendingApprovals = {}; notify();
+  await settle(() => closed === 2 && !button(root, 'Connect'));
+  state.preferences.autoLockTimeLimit = 5; notify();
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(closed, 2);
+});
+
+// Proves only notification.html is given the closer, so the toolbar popup and the full page can never close themselves.
+test('only the approval window page receives the closer', () => {
+  let received;
+  const close = options => { received = options; };
+  assert.deepEqual(Object.keys(approvalWindowOptions('/notification.html', close)), ['closeWhenNothingPending']);
+  const client = {}; approvalWindowOptions('/notification.html', close).closeWhenNothingPending(client);
+  assert.equal(received.client, client, 'the closer gets the page\'s trusted client to tell the background');
+  assert.deepEqual(approvalWindowOptions('/popup.html', close), {});
+  assert.deepEqual(approvalWindowOptions('/home.html', close), {});
+  assert.deepEqual(approvalWindowOptions(undefined, close), {});
+});
+
+// Proves the window closer: it closes a popup window (window.close, then the tab removal), leaves a normal browser
+// window or tab alone, and still tries when the window type cannot be read. Fake browser and window objects only.
+test('closeApprovalWindow closes only a popup window', async () => {
+  const run = async windowsGetCurrent => {
+    const log = [];
+    const client = { async request(method) { log.push(method); } };
+    const browser = { windows: { getCurrent: windowsGetCurrent }, tabs: { async getCurrent() { return { id: 7 }; }, async remove(id) { log.push(`remove ${id}`); } } };
+    const result = await closeApprovalWindow({ client, browser, window: { close() { log.push('close'); } } });
+    return { result, log };
+  };
+  const closed = ['markNotificationPopupAsAutomaticallyClosed', 'close', 'remove 7'];
+  assert.deepEqual(await run(async () => ({ type: 'popup' })), { result: true, log: closed });
+  assert.deepEqual(await run(async () => ({ type: 'normal' })), { result: false, log: [] });
+  assert.deepEqual(await run(async () => { throw new Error('unreadable'); }), { result: true, log: closed });
+});
+
+// Proves the background is told the close is automatic before window.close() runs (the order is what keeps the removal
+// from being read as the user closing the window), that nothing is sent to the background after the close attempts (a
+// later message could reach it before the removal), and that a failing mark stops the close. Fakes record one shared log,
+// so a call made in the wrong order or after the close shows in the list.
+test('closeApprovalWindow marks the close as automatic first and sends nothing after the close', async () => {
+  const log = [];
+  const client = { async request(method) { log.push(method); } };
+  const browser = { windows: { async getCurrent() { return { type: 'popup' }; } }, tabs: { async getCurrent() { return { id: 7 }; }, async remove() { log.push('remove'); } } };
+  await closeApprovalWindow({ client, browser, window: { close() { log.push('close'); } } });
+  assert.deepEqual(log, ['markNotificationPopupAsAutomaticallyClosed', 'close', 'remove']);
+  // A background that cannot take the mark stops the close: nothing is closed.
+  const failing = [];
+  const refusing = { async request(method) { failing.push(method); throw new Error('background gone'); } };
+  await assert.rejects(closeApprovalWindow({ client: refusing, browser, window: { close() { failing.push('close'); } } }), /background gone/u);
+  assert.deepEqual(failing, ['markNotificationPopupAsAutomaticallyClosed']);
 });
 
 // Proves activity reconciles another window's lock without erasing password entry on the locked screen; directly refreshing in the assertion would bypass the event wiring.

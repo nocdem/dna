@@ -44,12 +44,18 @@
  *       the slot is already answered, is dropped — the first answer's
  *       raw buffer and decoded message are neither freed nor replaced
  *       (driven through the real client_on_frame via tcp->on_frame).
+ *   (8) The pong answering the keepalive ping (sent with no pending slot)
+ *       is not written as a late reply; a second pong for it, or a pong
+ *       for another id, still is (the shim's log file in a temporary
+ *       directory is read and removed; the case passes falsely only if the
+ *       warning text changes, which T8 names).
  */
 
 #include "nodus/nodus.h"
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_tier2.h"
 #include "crypto/nodus_identity.h"
+#include "nodus_log_shim.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -57,6 +63,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define CHECK(cond) do { \
     if (!(cond)) { \
@@ -84,6 +91,17 @@ static void occupy(nodus_client_t *c, int i, uint32_t txn) {
  * That residue is the interesting part — the matcher must not honour it. */
 static void release(nodus_client_t *c, int i) {
     c->pending[i].in_use = false;
+}
+
+/* T8: does the bot's log file hold `needle`? (the shim's file sink) */
+static int log_has(const char *path, const char *needle) {
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    static char buf[16384];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    return strstr(buf, needle) != NULL;
 }
 
 int main(void) {
@@ -217,6 +235,68 @@ int main(void) {
         free(dc);
         free(id);
         printf("[ok] T7 duplicate response cannot replace an answered slot\n");
+    }
+
+    /* ── T8: the keepalive pong is expected, not a late reply ──────── */
+    {
+        /* keepalive_if_due sends its ping with no pending slot; the pong
+         * that answers it must not be written as "late reply to a request
+         * we already abandoned" (it was, once a minute, on the live swap
+         * bot, 2026-11-12). A second pong for that id, or a pong for any
+         * other id, still is. */
+        nodus_client_t *dc = calloc(1, sizeof(*dc));
+        nodus_identity_t *id = calloc(1, sizeof(*id));
+        nodus_client_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.server_count = 1;
+        snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "127.0.0.1");
+        cfg.servers[0].port = 1;
+        static const nodus_key_t k_unused_pin8 = {{0x01}};
+        cfg.pinned_server_fps = &k_unused_pin8;
+        cfg.pinned_server_fp_count = 1;
+        cfg.has_chain_id = true;
+        CHECK(dc && id);
+        CHECK_EQ(nodus_client_init(dc, &cfg, id), 0);
+        nodus_tcp_t *tcp = (nodus_tcp_t *)dc->tcp;
+        CHECK(tcp && tcp->on_frame);
+
+        /* the state keepalive_if_due leaves after sending ping txn 900 */
+        atomic_store(&dc->next_txn, 901);
+        dc->keepalive_txn = 900;
+        dc->keepalive_open = true;
+
+        uint8_t f[256];
+        size_t l = 0;
+        char dir[] = "/tmp/test_client_corr_XXXXXX";
+        CHECK(mkdtemp(dir) != NULL);
+        char path[128];
+        snprintf(path, sizeof(path), "%s/nodus-amm.log", dir);
+        CHECK_EQ(nodus_log_file_open(dir, 1 << 20, 1), 0);
+
+        CHECK_EQ(nodus_t2_pong(900, f, sizeof(f), &l), 0);
+        tcp->on_frame(NULL, f, l, tcp->cb_ctx);
+        CHECK(!log_has(path, "unknown txn"));
+        CHECK(!dc->keepalive_open);
+
+        /* the same id again: not expected any more */
+        tcp->on_frame(NULL, f, l, tcp->cb_ctx);
+        CHECK(log_has(path, "unknown txn 900"));
+
+        /* a pong for another id while a keepalive is open: still written */
+        dc->keepalive_txn = 900;
+        dc->keepalive_open = true;
+        CHECK_EQ(nodus_t2_pong(899, f, sizeof(f), &l), 0);
+        tcp->on_frame(NULL, f, l, tcp->cb_ctx);
+        CHECK(log_has(path, "unknown txn 899"));
+        CHECK(dc->keepalive_open);
+
+        nodus_log_file_close();
+        unlink(path);
+        rmdir(dir);
+        nodus_client_close(dc);
+        free(dc);
+        free(id);
+        printf("[ok] T8 the keepalive pong is not written as a late reply\n");
     }
 
     free(c);

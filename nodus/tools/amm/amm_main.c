@@ -225,6 +225,9 @@ static void route_cb(void *ctx, const amm_http_req_t *req, uint64_t deadline_ms,
 
 /* ── the worker ───────────────────────────────────────────────────────── */
 
+/* A part of a worker round that takes this long is written to the log. */
+#define WORKER_SLOW_MS 5000
+
 typedef struct {
     app_t *app;
     amm_price_t *price;
@@ -234,12 +237,25 @@ typedef struct {
 static void *worker_main(void *arg) {
     worker_t *w = arg;
     while (!atomic_load(&g_stop)) {
-        (void)amm_price_poll(w->price, 0);
+        uint64_t t0 = amm_now_ms();
+        int fresh = amm_price_poll(w->price, 0);
+        uint64_t t1 = amm_now_ms();
         pthread_mutex_lock(&g_eng_mu);
+        uint64_t t2 = amm_now_ms();
         amm_engine_step_t st;
         int rc = amm_engine_step(w->app->eng, 0, &st);
         pthread_mutex_unlock(&g_eng_mu);
+        uint64_t t3 = amm_now_ms();
         if (rc != 0) QGP_LOG_ERROR(LOG_TAG, "the engine round reported a journal fault");
+        /* a slow part of the round, for the log (each part waits on networks) */
+        if (t1 - t0 >= WORKER_SLOW_MS)
+            QGP_LOG_WARN(LOG_TAG, "the price reading took %llu ms (%d sources fresh)",
+                         (unsigned long long)(t1 - t0), fresh);
+        if (t2 - t1 >= WORKER_SLOW_MS)
+            QGP_LOG_WARN(LOG_TAG, "the engine lock was held by a request for %llu ms",
+                         (unsigned long long)(t2 - t1));
+        if (t3 - t2 >= WORKER_SLOW_MS)
+            QGP_LOG_WARN(LOG_TAG, "the engine round took %llu ms", (unsigned long long)(t3 - t2));
         struct timespec ts = { (time_t)(w->interval_ms / 1000),
                                (long)((w->interval_ms % 1000) * 1000000L) };
         nanosleep(&ts, NULL);
@@ -306,6 +322,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (cfg.log_dir[0] != '\0' && setup_log_file(cfg.log_dir) != 0) return 1;
+    QGP_LOG_INFO(LOG_TAG, "nodus-amm starting with the config %s", cfg_path);
+    amm_cfg_log(&cfg);
 
     int rc = 1, lock_fd = -1;
     uint8_t sk[32];

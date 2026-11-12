@@ -12,6 +12,9 @@
 #include "crypto/hash/keccak256.h"
 #include "crypto/hash/qgp_sha3.h"
 #include "crypto/nodus_sign.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "AMM_REQ"
 
 /* ── small helpers ────────────────────────────────────────────────────── */
 
@@ -497,8 +500,8 @@ static int text_check(const amm_cfg_t *cfg, const tspec_t *sp,
 
 /* ── public verify functions ──────────────────────────────────────────── */
 
-int amm_req_usdt_verify(const amm_cfg_t *cfg, amm_journal_t *j,
-                        const amm_req_usdt_in_t *in, amm_req_usdt_t *out) {
+static int usdt_verify(const amm_cfg_t *cfg, amm_journal_t *j,
+                       const amm_req_usdt_in_t *in, amm_req_usdt_t *out) {
     if (out) memset(out, 0, sizeof(*out));
     if (!cfg || !j || !in || !out) return AMM_REQ_ERR;
     int rc = usdt_check(cfg, in, out);
@@ -507,9 +510,9 @@ int amm_req_usdt_verify(const amm_cfg_t *cfg, amm_journal_t *j,
     return rc;
 }
 
-int amm_req_nodus_to_usdt_verify(const amm_cfg_t *cfg, amm_journal_t *j,
-                                 const amm_req_nodus_in_t *in,
-                                 amm_req_nodus_to_usdt_t *out) {
+static int nodus_to_usdt_verify(const amm_cfg_t *cfg, amm_journal_t *j,
+                                const amm_req_nodus_in_t *in,
+                                amm_req_nodus_to_usdt_t *out) {
     if (out) memset(out, 0, sizeof(*out));
     if (!cfg || !j || !in || !out) return AMM_REQ_ERR;
     fval_t v[MAX_FIELDS];
@@ -527,10 +530,10 @@ int amm_req_nodus_to_usdt_verify(const amm_cfg_t *cfg, amm_journal_t *j,
     return rc;
 }
 
-int amm_req_liquidity_add_verify(const amm_cfg_t *cfg, amm_journal_t *j,
-                                 const amm_req_liq_eth_in_t *eth,
-                                 const amm_req_nodus_in_t *nodus,
-                                 amm_req_liq_add_t *out) {
+static int liquidity_add_verify(const amm_cfg_t *cfg, amm_journal_t *j,
+                                const amm_req_liq_eth_in_t *eth,
+                                const amm_req_nodus_in_t *nodus,
+                                amm_req_liq_add_t *out) {
     if (out) memset(out, 0, sizeof(*out));
     if (!cfg || !j || !eth || !nodus || !out) return AMM_REQ_ERR;
     amm_req_liq_add_t e;
@@ -555,9 +558,9 @@ int amm_req_liquidity_add_verify(const amm_cfg_t *cfg, amm_journal_t *j,
     return AMM_REQ_OK;
 }
 
-int amm_req_liquidity_withdraw_verify(const amm_cfg_t *cfg, amm_journal_t *j,
-                                      const amm_req_nodus_in_t *in,
-                                      amm_req_liq_withdraw_t *out) {
+static int liquidity_withdraw_verify(const amm_cfg_t *cfg, amm_journal_t *j,
+                                     const amm_req_nodus_in_t *in,
+                                     amm_req_liq_withdraw_t *out) {
     if (out) memset(out, 0, sizeof(*out));
     if (!cfg || !j || !in || !out) return AMM_REQ_ERR;
     fval_t v[MAX_FIELDS];
@@ -570,5 +573,91 @@ int amm_req_liquidity_withdraw_verify(const amm_cfg_t *cfg, amm_journal_t *j,
     req_no_bytes(out->request_number, out->req_no);
     rc = req_reuse(j, out->nodus_address, out->req_no);
     if (rc != AMM_REQ_OK) memset(out, 0, sizeof(*out));
+    return rc;
+}
+
+/* ── the public entry points: each writes one decision line ──────────────
+ * (operator order 2026-11-12: full diagnostic log). The signed text, the
+ * signatures and the public keys are never written; the sender's address and
+ * the numbers are. */
+
+static const char *req_word(int rc) {
+    switch (rc) {
+    case AMM_REQ_OK:        return "accepted";
+    case AMM_REQ_FORMAT:    return "refused: a byte or value rule is broken";
+    case AMM_REQ_CHAIN:     return "refused: the chain id is not the node's";
+    case AMM_REQ_ADDRESS:   return "refused: the Nodus address is not the hash of the key";
+    case AMM_REQ_SIGNATURE: return "refused: the signature does not verify";
+    case AMM_REQ_PAIR:      return "refused: the two halves differ";
+    case AMM_REQ_REUSED:    return "refused: the request number was already accepted";
+    default:                return "failed: a journal or crypto fault";
+    }
+}
+
+int amm_req_usdt_verify(const amm_cfg_t *cfg, amm_journal_t *j,
+                        const amm_req_usdt_in_t *in, amm_req_usdt_t *out) {
+    int rc = usdt_verify(cfg, j, in, out);
+    if (rc == AMM_REQ_OK)
+        QGP_LOG_INFO(LOG_TAG, "usdt_to_nodus request: accepted, sender 0x%s, amount %llu, "
+                     "minimum %llu, request number %llu", out->sender,
+                     (unsigned long long)out->amount, (unsigned long long)out->minimum,
+                     (unsigned long long)out->request_number);
+    else {
+        /* the request number is client text: written only when it is all
+         * decimal digits (at most 20, the http layer's bound) */
+        const char *rn = in ? in->request_number : NULL;
+        size_t rl = rn ? strlen(rn) : 0;
+        int digits = rl > 0 && rl <= 20;
+        for (size_t i = 0; digits && i < rl; i++) digits = rn[i] >= '0' && rn[i] <= '9';
+        if (digits)
+            QGP_LOG_INFO(LOG_TAG, "usdt_to_nodus request %s: %s (code %d)", rn, req_word(rc), rc);
+        else
+            QGP_LOG_INFO(LOG_TAG, "usdt_to_nodus request (the number is not a decimal number, "
+                         "%zu bytes): %s (code %d)", rl, req_word(rc), rc);
+    }
+    return rc;
+}
+
+int amm_req_nodus_to_usdt_verify(const amm_cfg_t *cfg, amm_journal_t *j,
+                                 const amm_req_nodus_in_t *in,
+                                 amm_req_nodus_to_usdt_t *out) {
+    int rc = nodus_to_usdt_verify(cfg, j, in, out);
+    if (rc == AMM_REQ_OK)
+        QGP_LOG_INFO(LOG_TAG, "nodus_to_usdt request: accepted, sender %.16s..., amount %llu, "
+                     "minimum %llu, request number %llu, transfer id %.16s...", out->sender,
+                     (unsigned long long)out->amount, (unsigned long long)out->minimum,
+                     (unsigned long long)out->request_number, out->transfer_id);
+    else
+        QGP_LOG_INFO(LOG_TAG, "nodus_to_usdt request: %s (code %d)", req_word(rc), rc);
+    return rc;
+}
+
+int amm_req_liquidity_add_verify(const amm_cfg_t *cfg, amm_journal_t *j,
+                                 const amm_req_liq_eth_in_t *eth,
+                                 const amm_req_nodus_in_t *nodus,
+                                 amm_req_liq_add_t *out) {
+    int rc = liquidity_add_verify(cfg, j, eth, nodus, out);
+    if (rc == AMM_REQ_OK)
+        QGP_LOG_INFO(LOG_TAG, "liquidity add request: accepted, Ethereum address 0x%s, Nodus "
+                     "address %.16s..., USDT %llu, NODUS %llu, request number %llu, transfer id "
+                     "%.16s...", out->ethereum_address, out->nodus_address,
+                     (unsigned long long)out->usdt_amount, (unsigned long long)out->nodus_amount,
+                     (unsigned long long)out->request_number, out->transfer_id);
+    else
+        QGP_LOG_INFO(LOG_TAG, "liquidity add request: %s (code %d)", req_word(rc), rc);
+    return rc;
+}
+
+int amm_req_liquidity_withdraw_verify(const amm_cfg_t *cfg, amm_journal_t *j,
+                                      const amm_req_nodus_in_t *in,
+                                      amm_req_liq_withdraw_t *out) {
+    int rc = liquidity_withdraw_verify(cfg, j, in, out);
+    if (rc == AMM_REQ_OK)
+        QGP_LOG_INFO(LOG_TAG, "liquidity withdraw request: accepted, Ethereum address 0x%s, "
+                     "Nodus address %.16s..., %u basis points, request number %llu",
+                     out->ethereum_address, out->nodus_address, (unsigned)out->basis_points,
+                     (unsigned long long)out->request_number);
+    else
+        QGP_LOG_INFO(LOG_TAG, "liquidity withdraw request: %s (code %d)", req_word(rc), rc);
     return rc;
 }
