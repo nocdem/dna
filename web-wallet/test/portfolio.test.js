@@ -347,3 +347,19 @@ test('a same-network kept mainnet value still shows at once and counts while its
   assert.equal(snap.total, valued(UNITS, PRICE)); assert.equal(snap.keptCount, 1); assert.equal(snap.keptAt, now - 5000);
   assert.equal(snap.rows.find(r => r.key === 'ethereum:ETH').keptAt, now - 1000);
 });
+
+// Proves two test networks of one chain have their own identity when the screen passes the selected network's id with the
+// definition (Solana Testnet and Devnet share the chain's mainnet definition, so endpoint and chain id cannot tell them
+// apart), and that a kept Testnet row is not shown, valued or exported after the switch to Devnet while Devnet's read is held.
+// Fails on dceb7b6d3: networkIdOf ignores `networkId`, so both give the same id and the row stays visible. Could falsely pass if
+// the row were never kept; it is asserted kept under the Testnet id first.
+test('Solana Testnet and Devnet have different identities and do not share kept rows', () => {
+  const testnet = { ...CHAINS.solana, testnet: true, networkId: 'testnet' }, devnet = { ...CHAINS.solana, testnet: true, networkId: 'devnet' };
+  assert.notEqual(P.networkIdOf(testnet), P.networkIdOf(devnet));
+  assert.equal(P.networkIdOf(CHAINS.solana), 'main'); assert.match(P.networkIdOf(devnet), /^[A-Za-z0-9:._-]{1,64}$/);
+  const networks = { solana: testnet }, store = keptStore(networks);
+  store.read('solana', readReady('solana:SOL', 4n, now - 1000), 'sol', {});
+  assert.equal(store.raw()['solana:SOL'].network, P.networkIdOf(testnet));
+  networks.solana = devnet; // Devnet selected, its read held
+  assert.deepEqual(store.visible({ solana: 'sol' }), {}); assert.deepEqual(store.out(), {});
+});

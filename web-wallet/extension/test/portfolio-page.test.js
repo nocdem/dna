@@ -97,3 +97,37 @@ test('portfolio and transfers open pages with Back to wallet and a home-only gre
     await back('vaults');
   });
 });
+
+// Wiring test through the real mounted wallet screen (portfolio-view, wallet-screen, the fixture's saved-record calls).
+// Proves: (1) Ethereum read on Sepolia (5 ETH, kept under the test network), then the switch to Ethereum mainnet with the
+// mainnet read HELD: the label is not a kept total, the total is not the 5 ETH valued at the mainnet price ($10.00), and no
+// record saved after the switch holds a Sepolia value under a mainnet row; once released, the mainnet read (1 ETH) is what is
+// saved under mainnet. Fails on dceb7b6d3 where the Sepolia row was shown and counted as the mainnet balance and saved.
+// (2) With a saved MAINNET row (3 ETH and its price) and the reads held, the page shows the kept total at once with its read
+// label and counts it ($6.00). Could falsely pass: the fixture is a fake background (no real storage or Sepolia RPC), the
+// Sepolia balance is the fixture's own 5; if update() did not switch the network at all, step (1)'s first wait (a record
+// saved under a test network) would never be met and the test would time out instead of passing. Not run by the builder.
+test('a Sepolia balance is not shown or saved as the mainnet balance, and a mainnet kept value shows at once', { timeout: 90_000 }, async () => {
+  const { withPortfolioPage } = await import('./fixtures/portfolio-page-checks.js');
+  await withPortfolioPage(async (page, origin) => {
+    await page.goto(`${origin}/test/fixtures/functions.html`);
+    await page.waitForFunction(() => window.fixture?.ready);
+    const savedAfter = marker => page.evaluate(from => window.fixture.calls.slice(from).filter(call => call[0] === 'keepBalances').map(call => call[1][0]), marker);
+    await page.evaluate(() => { window.fixture.state.networks.ethereum = 'sepolia'; window.fixture.screen.update(); });
+    await page.waitForFunction(() => window.fixture.calls.some(call => call[0] === 'keepBalances' && call[1][0]['ethereum:ETH']?.network?.startsWith('test:') && call[1][0]['ethereum:ETH'].units === '5000000000000000000'));
+    await page.evaluate(() => { window.fixture.holdEvm(true); window.fixture.state.networks.ethereum = 'mainnet'; window.fixture.screen.update(); });
+    const marker = await page.evaluate(() => window.fixture.calls.length);
+    await page.waitForFunction(from => window.fixture.calls.slice(from - 1).some(call => call[0] === 'getEvmBalances' && call[1][0] === 'ethereum'), marker);
+    assert.doesNotMatch(await page.locator('#portfolio-label').textContent(), /^Last read/);
+    assert.notEqual(await page.locator('#portfolio-total').textContent(), '$10.00');
+    for (const saved of await savedAfter(marker)) assert.ok(!(saved['ethereum:ETH']?.network === 'main' && saved['ethereum:ETH'].units === '5000000000000000000'), 'a Sepolia value was saved under mainnet');
+    await page.evaluate(() => window.fixture.releaseEvm());
+    await page.waitForFunction(from => window.fixture.calls.slice(from).some(call => call[0] === 'keepBalances' && call[1][0]['ethereum:ETH']?.network === 'main' && call[1][0]['ethereum:ETH'].units === '1000000000000000000'), marker);
+  });
+  await withPortfolioPage(async (page, origin) => {
+    await page.goto(`${origin}/test/fixtures/functions.html?kept&holdevm`);
+    await page.waitForFunction(() => /^Last read .+ · updating$/.test(document.getElementById('portfolio-label')?.textContent ?? ''));
+    assert.equal(await page.locator('#portfolio-total').textContent(), '$6.00');
+    await page.evaluate(() => window.fixture.releaseEvm());
+  });
+});
