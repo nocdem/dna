@@ -8,6 +8,12 @@
 // (UI pack 2026-11-03), lock cancelling late replies, reopening refreshing, coin icons, and that
 // Ixios is always listed and read (no build switch; plan 2026-11-03-pq-native section 5.2). Falsely
 // passes if the Ixios RPC mock answers a request the page should not make (the mock is the only answer).
+// Also (last block): a failed balance read writes one "<Chain> <Network>: balance read failed: <label>" line to the session log
+// (Logs page), not a second one for the same failure, and, after lock and a reopen in the same page, again once in the new
+// session (portfolio clear() resets the remembered failure; without that call the reopened session would have no line and the
+// wait for it would time out). It leaves nothing behind but the page's own session log, cleared by the final lock. It could
+// falsely pass if the Ethereum failure never reached the page's read (the line is then never found, so it fails, not passes), or
+// if the Logs page showed a line from another source with the same text (the text is the one portfolio-view.js writes).
 // Needs the built page (dist, served by vite preview on 127.0.0.1 port 4192 with
 // --strictPort; run from web-wallet/) and Chromium (CHROMIUM_PATH, otherwise
 // Playwright's own). WALLET_URL replaces the server: nothing is started and
@@ -405,6 +411,28 @@ try {
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   priceMode = 'valid'; await restore(); await done();
   assert.equal(await page.locator('#portfolio-total').innerText(), '$28.00');
+  // A failed balance read leaves one session-log line per wallet session (src/portfolio-view.js readFailures). Ethereum's read
+  // fails; the Logs page names it once; the same failure again adds none; after lock and a reopen in the same page (no reload) with
+  // the failure still answered, the NEW session's log has the line again (clear() resets the remembered failure), once.
+  const failedLine = 'Ethereum Mainnet: balance read failed: ';
+  const failedLines = async () => {
+    await rail('settings').click(); await page.locator('#page-settings').waitFor({ state: 'visible' });
+    await page.locator('#device-panel a[href="#logs"]').click(); await page.locator('#page-logs').waitFor({ state: 'visible' });
+    await page.waitForFunction(line => document.querySelector('#session-log-text').textContent.includes(line), failedLine);
+    const text = await page.locator('#session-log-text').textContent();
+    await page.locator('#page-logs .page-back').click(); await page.locator('#wallet-home').waitFor({ state: 'visible' });
+    return text.split(failedLine).length - 1;
+  };
+  failures = ['ethereum:USDT']; await refresh();
+  assert.equal(await failedLines(), 1, 'the first failure is in the session log once');
+  await refresh();
+  assert.equal(await failedLines(), 1, 'the same failure again writes no second line');
+  await page.locator('#lock').click(); await page.locator('#wallet-open').waitFor({ state: 'hidden' });
+  await restore(); await done();
+  assert.equal(await failedLines(), 1, 'the reopened wallet session logs its first failure again, once');
+  await refresh();
+  assert.equal(await failedLines(), 1, 'and still not twice');
+  failures = [];
   await page.locator('#lock').click();
   assert.deepEqual(unexpected, []); assert.deepEqual(errors, []);
   console.log('Portfolio browser checks passed: automatic four-network reads; exact grouped holdings/total; filters; hide; per-network send/receive; 320–1440px layout; partial RPC failure; wrong network; failed/stale quotes; balance expiry; lock cancels late replies; reopening refreshes; no persistence or unmocked external requests; CPUNK/Cellframe/ETH coin icons resolve to their own files and decode.');
