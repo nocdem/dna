@@ -100,13 +100,21 @@ test('portfolio and transfers open pages with Back to wallet and a home-only gre
 
 // Wiring test through the real mounted wallet screen (portfolio-view, wallet-screen, the fixture's saved-record calls).
 // Proves: (1) Ethereum read on Sepolia (5 ETH, kept under the test network), then the switch to Ethereum mainnet with the
-// mainnet read HELD: the label is not a kept total, the total is not the 5 ETH valued at the mainnet price ($10.00), and no
-// record saved after the switch holds a Sepolia value under a mainnet row; once released, the mainnet read (1 ETH) is what is
-// saved under mainnet. Fails on dceb7b6d3 where the Sepolia row was shown and counted as the mainnet balance and saved.
-// (2) With a saved MAINNET row (3 ETH and its price) and the reads held, the page shows the kept total at once with its read
-// label and counts it ($6.00). Could falsely pass: the fixture is a fake background (no real storage or Sepolia RPC), the
-// Sepolia balance is the fixture's own 5; if update() did not switch the network at all, step (1)'s first wait (a record
-// saved under a test network) would never be met and the test would time out instead of passing. Not run by the builder.
+// mainnet read HELD: no amount element of the Ethereum asset group reads 5 ETH (the group's own `.holding-value strong`
+// elements, so a row that is absent also passes), the total is exactly the kept same-network values (the dash, see below),
+// and no record saved after the switch holds the Sepolia units under a mainnet row; once released, the mainnet read (1 ETH)
+// is what is saved under mainnet. (2) With a saved MAINNET row (3 ETH and its price) and the reads held, the page shows the
+// kept total at once with its read label and counts it ($6.00).
+// Negative controls measured by the orchestrator: with `visible()` in src/portfolio.js changed to ignore the row's network
+// the Sepolia 5 ETH IS displayed on mainnet (and the old assertion on the concatenated #balances text did not see it, which
+// is why the amount element is read now); before network binding (1a4b75b32) the first wait for a record saved under a
+// `test:` network is never met, so the test times out. NOT a control: dceb7b6d3 already binds rows to the network, so this
+// test passes there (49dfadffa only added the selected network id).
+// How it can still falsely pass: the fixture is a fake background (no real storage or Sepolia RPC) and the Sepolia balance
+// is the fixture's own 5; an unpriced Sepolia row leaves the total at the dash, so the total assertion alone would not catch
+// a shown row (the amount-element assertion does); if the Ethereum group's markup changed (class or attribute names) the
+// amount list would be empty and the assertion vacuous, which is why the list's length is also reported in the message.
+// Not run by the builder.
 test('a Sepolia balance is not shown or saved as the mainnet balance, and a mainnet kept value shows at once', { timeout: 90_000 }, async () => {
   const { withPortfolioPage } = await import('./fixtures/portfolio-page-checks.js');
   await withPortfolioPage(async (page, origin) => {
@@ -124,7 +132,10 @@ test('a Sepolia balance is not shown or saved as the mainnet balance, and a main
     // the kept same-network values. Those are zero-unit token rows valued at $0 with no fresh priced balance and the other
     // priced rows unknown (BNB read failed), so the total is 0 and incomplete, which the page shows as the dash; with the
     // Sepolia 5 ETH wrongly counted it would be $10.00 (5 ETH at the fixture's $2).
-    assert.doesNotMatch(await page.locator('#balances').textContent(), /(^|[^\d.])5(\.0+)? ETH\b/, 'a Sepolia balance is shown as the mainnet ETH balance');
+    // The Ethereum group's own amount elements (`${amount} ${symbol}`), not the concatenated list text: the row's "Last read"
+    // small text follows the amount without a separator. A hidden or absent row gives no element, which also passes.
+    const ethereumAmounts = await page.locator('.asset-group[data-chain="ethereum"] .holding-value strong').allTextContents();
+    assert.ok(!ethereumAmounts.some(text => /^5(\.0+)? ETH$/.test(text.trim())), `a Sepolia balance is shown as the mainnet ETH balance (${ethereumAmounts.length} amounts: ${ethereumAmounts.join(' | ')})`);
     assert.equal(await page.locator('#portfolio-total').textContent(), '—');
     for (const saved of await savedAfter(marker)) assert.ok(!(saved['ethereum:ETH']?.network === 'main' && saved['ethereum:ETH'].units === '5000000000000000000'), 'a Sepolia value was saved under mainnet');
     await page.evaluate(() => window.fixture.releaseEvm());
