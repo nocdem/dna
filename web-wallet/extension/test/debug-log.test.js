@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { setup, phrase, password, account, token, payTo, BOT, foundationNodus, nodusSignature } from './swap-fixture.js';
 import { nodusToUsdtText } from '../src/background/swap-texts.js';
 import { SWAP_METHODS } from '../src/constants/swap.js';
-import { DEBUG_LOG_PREFIX, debugLog, errorFields, hostOf, setDebugLogSink, timed } from '../../src/debug-log.js';
+import { DEBUG_LOG_PREFIX, debugLog, errorFields, hostOf, onDebugLine, setDebugLogSink, timed } from '../../src/debug-log.js';
+import { rpcFetch } from '../../src/rpc-transport.js';
 
 // Environment: Node >=22.14, the swap fixture (stub Ethereum RPC, stub bot, mock Nodus module); no flags, no network,
 // no files. The sink of the debug logger is replaced by a list for the test and put back afterwards.
@@ -104,3 +105,47 @@ test('a throwing field getter does not change what timed returns or rethrows', a
   assert.equal(reads, 2);
 });
 
+
+// Proves the listener hook of the debug logger: a listener is called with the area, the event and the finished line AFTER the
+// sink has taken it (so the console output is unchanged), a listener that throws changes nothing for the caller or the other
+// listeners, and the returned remover stops it. Could falsely pass if the listener were called before the sink: the order is
+// asserted from one shared list.
+test('a debug-line listener is called after the sink, a throwing listener changes nothing, and it can be removed', () => {
+  const order = []; const restore = setDebugLogSink(line => order.push(['sink', line]));
+  const stopBad = onDebugLine(() => { throw new Error('listener broke'); });
+  const stop = onDebugLine(({ area, event, line }) => order.push(['listener', area, event, line]));
+  try {
+    debugLog('area', 'one', { id: 1 });
+    stop(); stopBad(); debugLog('area', 'two', { id: 2 });
+  } finally { restore(); }
+  assert.equal(order.length, 3);
+  assert.equal(order[0][0], 'sink'); assert.deepEqual(order[1].slice(0, 3), ['listener', 'area', 'one']); assert.equal(order[1][3], order[0][1]);
+  assert.equal(order[2][0], 'sink', 'after removal only the sink sees the next line');
+});
+
+// Proves, through the real background and the real rpcFetch: a FAILED RPC call (a refused connection, and an HTTP 503) adds exactly
+// one 'net' error line to the background session log (the log the extension's copied log merges) with the host, the method, the
+// duration and the error name or HTTP status exactly as the debug line has them; a successful call adds nothing; the debug line
+// still reaches the sink; no logged line holds "https://", the URL path, the address or any parameter of the call; the session
+// log is empty after lock. The line text is the debug line without its "nodus-debug <time>" prefix, so no second formatter exists.
+// Note: the session log's scrubbing turns digits-dot-digits into '#', so an IP-literal host would be shown scrubbed; all our RPC
+// hosts are domain names. Could falsely pass if the fixture's own calls wrote 'net' rpc lines: the test counts only lines of the
+// test host, and the success case asserts the count stays 1.
+test('a failed RPC call writes one net line to the background session log; a success writes none', async t => {
+  const lines = []; const restore = setDebugLogSink(line => lines.push(line)); t.after(restore);
+  const f = await setup(t), address = '0x' + '11'.repeat(20);
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getBalance', params: [address, 'latest'] });
+  const call = fetcher => rpcFetch('https://rpc.example.test/v1/pathleak', { method: 'POST', body }, { fetcher });
+  const netLines = () => f.background.nodus.getSessionLog().entries.filter(line => line.category === 'net' && line.text.includes('rpc.example.test'));
+  await call(async () => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x0' })));
+  assert.deepEqual(netLines(), [], 'a successful call writes nothing');
+  await assert.rejects(call(async () => { throw new TypeError('fetch failed'); }));
+  assert.equal(netLines().length, 1); assert.equal(netLines()[0].error, true);
+  assert.match(netLines()[0].text, /^rpc call host=rpc\.example\.test method=eth_getBalance ms=\d+ outcome=error name=TypeError$/);
+  await call(async () => new Response('{}', { status: 503 }));
+  assert.equal(netLines().length, 2); assert.match(netLines()[1].text, /^rpc call host=rpc\.example\.test method=eth_getBalance ms=\d+ status=503 outcome=error$/);
+  assert.equal(lines.filter(line => line.includes('rpc call host=rpc.example.test')).length, 3, 'the sink still gets every line');
+  for (const entry of f.background.nodus.getSessionLog().entries) for (const secret of ['https://', 'pathleak', address, 'latest', 'fetch failed']) assert.ok(!entry.text.includes(secret), `${secret} in ${entry.text}`);
+  await f.background.lock();
+  assert.deepEqual(f.background.nodus.getSessionLog().entries, [], 'cleared on lock');
+});

@@ -11,6 +11,7 @@ import { AUTO_LOCK_TIMEOUT_ALARM } from '../src/background/auto-lock-alarm.js';
 import { chainNetwork } from '../src/constants/networks.js';
 import { connectTrusted } from '../src/ui/trusted-port.js';
 import { createWalletUi } from '../src/ui/wallet-ui.js';
+import { rpcFetch } from '../../src/rpc-transport.js';
 
 // Public web-wallet vector and fake module replies; no live transport is used.
 const { phrase, address } = JSON.parse(readFileSync(new URL('../../test/fixtures/nodus-addresses.json', import.meta.url))).vectors[0];
@@ -937,4 +938,23 @@ test('a listing answer arriving after lock writes nothing', async t => {
   answer.resolve(); await locking; await settle();
   assert.equal(JSON.stringify(values[ACTIVITY_KEY]), stored, 'the late answer wrote nothing');
   assert.deepEqual(problems, []);
+});
+
+// Proves the background session log (the one getSessionLog hands to the extension's copied log) takes a failed RPC call made by
+// the shared transport as one 'net' error line built from the debug line (host, method, duration, error name), takes nothing for a
+// successful call, and is emptied by lock like every other line. Could falsely pass if another 'net' line contained the test
+// host: only lines naming it are counted. The unit-level and no-secret checks are in test/debug-log.test.js.
+test('a failed RPC call appears in the background session log and is cleared on lock', async t => {
+  const { background } = await setup(t);
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] });
+  const call = fetcher => rpcFetch('https://rpc.background-test.example/', { method: 'POST', body }, { fetcher });
+  const mine = () => background.nodus.getSessionLog().entries.filter(line => line.text.includes('rpc.background-test.example'));
+  await call(async () => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x1' })));
+  assert.deepEqual(mine(), []);
+  await assert.rejects(call(async () => { throw Object.assign(new Error('timed out'), { name: 'TimeoutError' }); }));
+  assert.equal(mine().length, 1);
+  assert.equal(mine()[0].category, 'net'); assert.equal(mine()[0].error, true);
+  assert.match(mine()[0].text, /^rpc call host=rpc\.background-test\.example method=eth_chainId ms=\d+ outcome=error name=TimeoutError$/);
+  await background.lock();
+  assert.deepEqual(mine(), []);
 });
