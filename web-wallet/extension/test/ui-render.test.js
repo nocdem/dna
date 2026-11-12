@@ -375,24 +375,23 @@ test('closeApprovalWindow closes only a popup window', async () => {
     const result = await closeApprovalWindow({ client, browser, window: { close() { log.push('close'); } } });
     return { result, log };
   };
-  // The page is still running after both close attempts here (the fakes do not end it), so the mark is withdrawn.
-  const closed = ['markNotificationPopupAsAutomaticallyClosed', 'close', 'remove 7', 'clearNotificationPopupAutomaticClose'];
+  const closed = ['markNotificationPopupAsAutomaticallyClosed', 'close', 'remove 7'];
   assert.deepEqual(await run(async () => ({ type: 'popup' })), { result: true, log: closed });
   assert.deepEqual(await run(async () => ({ type: 'normal' })), { result: false, log: [] });
   assert.deepEqual(await run(async () => { throw new Error('unreadable'); }), { result: true, log: closed });
 });
 
 // Proves the background is told the close is automatic before window.close() runs (the order is what keeps the removal
-// from being read as the user closing the window), that a failing mark stops the close, and that the mark is withdrawn
-// only when the page is still running after both close attempts. Fakes record one shared log, so a call made in the
-// wrong order shows in the list; it could falsely pass only if a fake ended the page, which these do not.
-test('closeApprovalWindow marks the close as automatic first and withdraws the mark when the close fails', async () => {
+// from being read as the user closing the window), that nothing is sent to the background after the close attempts (a
+// later message could reach it before the removal), and that a failing mark stops the close. Fakes record one shared log,
+// so a call made in the wrong order or after the close shows in the list.
+test('closeApprovalWindow marks the close as automatic first and sends nothing after the close', async () => {
   const log = [];
   const client = { async request(method) { log.push(method); } };
   const browser = { windows: { async getCurrent() { return { type: 'popup' }; } }, tabs: { async getCurrent() { return { id: 7 }; }, async remove() { log.push('remove'); } } };
   await closeApprovalWindow({ client, browser, window: { close() { log.push('close'); } } });
-  assert.deepEqual(log, ['markNotificationPopupAsAutomaticallyClosed', 'close', 'remove', 'clearNotificationPopupAutomaticClose']);
-  // A background that cannot take the mark stops the close: nothing is closed, and nothing is withdrawn.
+  assert.deepEqual(log, ['markNotificationPopupAsAutomaticallyClosed', 'close', 'remove']);
+  // A background that cannot take the mark stops the close: nothing is closed.
   const failing = [];
   const refusing = { async request(method) { failing.push(method); throw new Error('background gone'); } };
   await assert.rejects(closeApprovalWindow({ client: refusing, browser, window: { close() { failing.push('close'); } } }), /background gone/u);

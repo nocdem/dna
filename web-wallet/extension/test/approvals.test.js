@@ -191,7 +191,7 @@ async function windowWithSecondWaiting() {
 // window for the first approval too; the setup asserts a single window before the removal.
 test('an automatic close with an approval still pending opens a new window', async () => {
   const { fixture, approvals, outcome } = await windowWithSecondWaiting();
-  approvals.setAutomaticClose(true); closeWindow(fixture, 1); await idle();
+  approvals.markAutomaticClose(); closeWindow(fixture, 1); await idle();
   assert.equal(fixture.created.length, 2); assert.deepEqual(fixture.created[1], fixture.created[0]);
   assert.equal(approvals.controller.state.pendingApprovalCount, 1, 'the approval is still waiting, not rejected');
   approvals.reject('second'); assert.equal(await outcome, 4001); approvals.destroy();
@@ -203,7 +203,7 @@ test('an automatic close with no approval pending opens no window and rejects no
   const fixture = approvalFixture(), approvals = createApprovals({ ...fixture, messenger: new Messenger({ namespace: 'Background' }) });
   const only = approvals.controller.addAndShowApprovalRequest({ id: 'only', origin: 'https://site.example', type: 'wallet_requestPermissions' });
   await approvals.whenUiSettled(); approvals.controller.acceptRequest('only', 'answered'); assert.equal(await only, 'answered');
-  approvals.setAutomaticClose(true); closeWindow(fixture, 1); await idle();
+  approvals.markAutomaticClose(); closeWindow(fixture, 1); await idle();
   assert.equal(fixture.created.length, 1); assert.equal(approvals.controller.state.pendingApprovalCount, 0);
   approvals.destroy();
 });
@@ -226,7 +226,7 @@ test('closing the approval window by hand rejects every pending approval and ope
 // Could falsely pass if the second window's removal were not heard; the first removal reopens, so window 2 exists.
 test('the automatic-close mark applies to one removal only', async () => {
   const { fixture, approvals, outcome } = await windowWithSecondWaiting();
-  approvals.setAutomaticClose(true); closeWindow(fixture, 1); await idle(); assert.equal(fixture.created.length, 2);
+  approvals.markAutomaticClose(); closeWindow(fixture, 1); await idle(); assert.equal(fixture.created.length, 2);
   closeWindow(fixture, 2); assert.equal(await outcome, 4001); await idle(); assert.equal(fixture.created.length, 2);
   approvals.destroy();
 });
@@ -244,19 +244,44 @@ test('a removal while an opening is in flight is followed by a new window', asyn
   const second = approvals.controller.addAndShowApprovalRequest({ id: 'second', origin: 'https://site.example', type: 'personal_sign' });
   const outcome = second.then(() => 'accepted', error => error.code);
   await idle(); assert.equal(fixture.focused.length, 1, 'the opening is focusing the closing window');
-  approvals.setAutomaticClose(true); closeWindow(fixture, 1); await idle();
+  approvals.markAutomaticClose(); closeWindow(fixture, 1); await idle();
   assert.equal(fixture.created.length, 1, 'recovery waits for the opening in flight');
   release(); await idle();
   assert.equal(fixture.created.length, 2); assert.equal(approvals.controller.state.pendingApprovalCount, 1);
   approvals.reject('second'); assert.equal(await outcome, 4001); approvals.destroy();
 });
 
-// Proves a withdrawn mark (the page could not close) makes the next removal a user close: approvals are rejected and no
-// window opens. Could falsely pass if the mark were never set; the same removal with the mark kept is the first test above.
-test('a withdrawn automatic-close mark leaves a later close to count as the user close', async () => {
+// Proves a close by the user that rejects three pending approvals of one origin does not count toward that origin's spam
+// block: after it, the origin's next request is let through to the approval (pending, then rejected by the user with 4001),
+// not answered with the block error 4100. Could falsely pass if the three approvals were answered one at a time; the
+// three are pending together before the removal.
+test('a user close with three pending approvals of one origin does not block that origin', async () => {
+  const fixture = approvalFixture(), approvals = createApprovals({ ...fixture, messenger: new Messenger({ namespace: 'Background' }) });
+  const engine = new JsonRpcEngine(); engine.push(approvals.createOriginThrottlingMiddleware());
+  engine.push((req, res, _next, end) => {
+    approvals.controller.addAndShowApprovalRequest({ id: `r${req.id}`, origin: req.origin, type: 'personal_sign' }).then(value => { res.result = value; end(); }, end);
+  });
+  const ask = id => engine.handle({ id, jsonrpc: '2.0', origin: 'https://site.example', method: 'personal_sign' });
+  const first = [1, 2, 3].map(ask);
+  await idle(); assert.equal(approvals.controller.state.pendingApprovalCount, 3);
+  closeWindow(fixture, 1);
+  assert.deepEqual((await Promise.all(first)).map(response => response.error.code), [4001, 4001, 4001]);
+  const next = ask(4); await idle();
+  assert.equal(approvals.controller.state.pendingApprovalCount, 1, 'the next request reached its approval, it was not blocked');
+  approvals.reject('r4'); assert.equal((await next).error.code, 4001);
+  engine.destroy(); approvals.destroy();
+});
+
+// Proves the mark is kept until that window's removal: another window's removal and the passing of time between the mark
+// and the removal leave it set, so the removal still reopens and rejects nothing. Could falsely pass if the removal were
+// delivered before the mark; the mark is set first and the approval is shown pending afterwards.
+test('the automatic-close mark survives until the approval window is removed', async () => {
   const { fixture, approvals, outcome } = await windowWithSecondWaiting();
-  approvals.setAutomaticClose(true); approvals.setAutomaticClose(false); closeWindow(fixture, 1);
-  assert.equal(await outcome, 4001); await idle(); assert.equal(fixture.created.length, 1); approvals.destroy();
+  approvals.markAutomaticClose(); await idle(); await idle();
+  assert.equal(approvals.controller.state.pendingApprovalCount, 1);
+  closeWindow(fixture, 1); await idle();
+  assert.equal(fixture.created.length, 2); assert.equal(approvals.controller.state.pendingApprovalCount, 1);
+  approvals.reject('second'); assert.equal(await outcome, 4001); approvals.destroy();
 });
 
 // Proves the removal of any other window (toolbar popup, a tab) changes nothing and keeps the mark: no rejection, no
@@ -264,7 +289,7 @@ test('a withdrawn automatic-close mark leaves a later close to count as the user
 // coincided with the approval window's; id 99 is not any created window.
 test('the removal of another window changes nothing', async () => {
   const { fixture, approvals, outcome } = await windowWithSecondWaiting();
-  approvals.setAutomaticClose(true); for (const listener of [...fixture.removed]) listener(99); await idle();
+  approvals.markAutomaticClose(); for (const listener of [...fixture.removed]) listener(99); await idle();
   assert.equal(fixture.created.length, 1); assert.equal(approvals.controller.state.pendingApprovalCount, 1);
   closeWindow(fixture, 1); await idle(); assert.equal(fixture.created.length, 2, 'the mark survived the other removal');
   approvals.reject('second'); assert.equal(await outcome, 4001); approvals.destroy();

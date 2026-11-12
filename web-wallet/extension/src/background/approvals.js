@@ -101,8 +101,8 @@ export function createApprovals({ messenger, runtime, windows, tabs, action, pla
   messenger.subscribe('ApprovalController:stateChange', updateBadge);
   updateBadge();
   const pendingCount = () => Object.keys(controller.state.pendingApprovals ?? {}).length;
-  // Set by the approval window page just before it closes itself (and cleared by it if the close did not happen), so
-  // the removal of that window can be told from the user closing it.
+  // Set by the approval window page just before it closes itself and consumed by the next removal of that window, so
+  // the removal can be told from the user closing it.
   let automaticClose = false;
   // Opens the window again for approvals still waiting. An opening in flight may have just focused the window that is
   // closing, so it is waited for first; the new run then sees the cleared window id and opens a new window.
@@ -122,8 +122,11 @@ export function createApprovals({ messenger, runtime, windows, tabs, action, pla
   windows.onRemoved.addListener(onRemoved);
 
   function reject(id) { controller.rejectRequest(id, providerErrors.userRejectedRequest()); }
+  // The cause keeps these rejections out of the per-origin spam count: the site did not ask for them.
   function rejectAll() {
-    for (const approval of Object.values(controller.state.pendingApprovals ?? {})) reject(approval.id);
+    for (const approval of Object.values(controller.state.pendingApprovals ?? {})) {
+      controller.rejectRequest(approval.id, providerErrors.userRejectedRequest({ data: { cause: 'rejectAllApprovals' } }));
+    }
   }
   function rejectOrigin(origin) {
     for (const approval of Object.values(controller.state.pendingApprovals)) {
@@ -155,6 +158,6 @@ export function createApprovals({ messenger, runtime, windows, tabs, action, pla
 
   return { controller, triggerUi, reject, rejectOrigin, createOriginThrottlingMiddleware,
     whenUiSettled: () => uiOpening ?? Promise.resolve(),
-    setAutomaticClose: marked => { automaticClose = marked === true; },
+    markAutomaticClose: () => { automaticClose = true; },
     destroy() { windows.onRemoved.removeListener(onRemoved); controller.clearRequests(providerErrors.userRejectedRequest()); messenger.unsubscribe('ApprovalController:stateChange', updateBadge); controller.destroy(); } };
 }

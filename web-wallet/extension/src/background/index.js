@@ -284,10 +284,9 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     rejectPermissionsRequest: id => permissions.controller.rejectPermissionsRequest(id),
     resolvePendingApproval: (id, value) => approvals.controller.acceptRequest(id, value),
     rejectPendingApproval: id => approvals.reject(id),
-    // The approval window page marks its own close as automatic just before closing, and clears the mark if the
-    // close did not happen; without the mark, a removed approval window rejects every pending approval.
-    markNotificationPopupAsAutomaticallyClosed: () => approvals.setAutomaticClose(true),
-    clearNotificationPopupAutomaticClose: () => approvals.setAutomaticClose(false),
+    // The approval window page marks its own close as automatic just before closing; without the mark, a removed
+    // approval window rejects every pending approval.
+    markNotificationPopupAsAutomaticallyClosed: () => approvals.markAutomaticClose(),
     getEvmBalances: chain => evm.getBalances(chain),
     // Design r3 §2.4a: the web-wallet reader owns price validation; only public
     // decimal strings cross the UI stream, whose state comparison uses JSON.
