@@ -256,7 +256,7 @@ export async function mountWalletPage({ document = globalThis.document, window =
     // empty spell: a new approval arms it again.
     if (pending) closeAsked = false;
     else if (closeWhenNothingPending && !closeAsked && !(page === 'phrase' && ui.phraseStep)) {
-      closeAsked = true; void Promise.resolve().then(closeWhenNothingPending).catch(() => {});
+      closeAsked = true; void Promise.resolve().then(() => closeWhenNothingPending(client)).catch(() => {});
     }
     if (renderOpenWallet && state.isUnlocked && !pending && !(page === 'phrase' && ui.phraseStep)) {
       if (openScreen) { openScreen.update(); return; }

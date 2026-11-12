@@ -100,10 +100,31 @@ export function createApprovals({ messenger, runtime, windows, tabs, action, pla
   }
   messenger.subscribe('ApprovalController:stateChange', updateBadge);
   updateBadge();
-  const onRemoved = id => { if (id === popupId) popupId = undefined; };
+  const pendingCount = () => Object.keys(controller.state.pendingApprovals ?? {}).length;
+  // Set by the approval window page just before it closes itself (and cleared by it if the close did not happen), so
+  // the removal of that window can be told from the user closing it.
+  let automaticClose = false;
+  // Opens the window again for approvals still waiting. An opening in flight may have just focused the window that is
+  // closing, so it is waited for first; the new run then sees the cleared window id and opens a new window.
+  async function reopenForPending() {
+    if (uiOpening) { try { await uiOpening; } catch { /* its failure was already observed by the caller that started it */ } }
+    if (pendingCount() > 0) await triggerUi();
+  }
+  const onRemoved = id => {
+    if (id !== popupId) return;
+    popupId = undefined;
+    const automatic = automaticClose; automaticClose = false;
+    // A window the user closed answers every approval waiting in it; a window that closed itself leaves any approval
+    // that arrived meanwhile to a new window.
+    if (!automatic) { rejectAll(); return; }
+    if (pendingCount() > 0) void reopenForPending().catch(() => {});
+  };
   windows.onRemoved.addListener(onRemoved);
 
   function reject(id) { controller.rejectRequest(id, providerErrors.userRejectedRequest()); }
+  function rejectAll() {
+    for (const approval of Object.values(controller.state.pendingApprovals ?? {})) reject(approval.id);
+  }
   function rejectOrigin(origin) {
     for (const approval of Object.values(controller.state.pendingApprovals)) {
       if (approval.origin === origin) reject(approval.id);
@@ -134,5 +155,6 @@ export function createApprovals({ messenger, runtime, windows, tabs, action, pla
 
   return { controller, triggerUi, reject, rejectOrigin, createOriginThrottlingMiddleware,
     whenUiSettled: () => uiOpening ?? Promise.resolve(),
+    setAutomaticClose: marked => { automaticClose = marked === true; },
     destroy() { windows.onRemoved.removeListener(onRemoved); controller.clearRequests(providerErrors.userRejectedRequest()); messenger.unsubscribe('ApprovalController:stateChange', updateBadge); controller.destroy(); } };
 }

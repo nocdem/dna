@@ -15,7 +15,7 @@ export function approvalFixture() {
     async create(options) { created.push(options); const win = { ...options, id: created.length }; open.push(win); return win; },
     async update(id, options) { (options.focused ? focused : positioned).push({ id, ...options }); },
   };
-  return { windows, created, focused, positioned, removed, runtime: { id: 'test-extension', getURL: path => `chrome-extension://test-extension/${path}` } };
+  return { windows, created, focused, positioned, removed, open, runtime: { id: 'test-extension', getURL: path => `chrome-extension://test-extension/${path}` } };
 }
 
 // Proves the real controller's pending request opens a 400x620 notification and reuses it; a mocked approval controller could hide a missing show hook.
@@ -165,4 +165,107 @@ test('toolbar badge failures do not affect approvals and destroy clears the badg
   const waiting = approvals.controller.addAndShowApprovalRequest({ id: 'c', origin: 'https://site.example', type: 'personal_sign' }); waiting.catch(() => {});
   await approvals.whenUiSettled(); assert.equal(texts.at(-1), '1');
   approvals.destroy(); assert.equal(texts.at(-1), '');
+});
+
+// Window removal as the browser reports it: the window leaves the list, then every onRemoved listener hears its id.
+const closeWindow = (fixture, id) => {
+  fixture.open.splice(fixture.open.findIndex(win => win.id === id), 1);
+  for (const listener of [...fixture.removed]) listener(id);
+};
+const idle = async () => { for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve)); };
+// An approval window already open with approval 'first' answered and approval 'second' waiting: 'second' arrived while the
+// window was closing, so it only focused the window (no new one). The outcome of 'second' is read from its promise.
+async function windowWithSecondWaiting() {
+  const fixture = approvalFixture(), approvals = createApprovals({ ...fixture, messenger: new Messenger({ namespace: 'Background' }) });
+  const first = approvals.controller.addAndShowApprovalRequest({ id: 'first', origin: 'https://site.example', type: 'wallet_requestPermissions' });
+  await approvals.whenUiSettled(); approvals.controller.acceptRequest('first', true); await first;
+  const second = approvals.controller.addAndShowApprovalRequest({ id: 'second', origin: 'https://site.example', type: 'personal_sign' });
+  const outcome = second.then(() => 'accepted', error => error.code);
+  await approvals.whenUiSettled();
+  assert.equal(fixture.created.length, 1, 'the second approval only focused the window that is closing');
+  return { fixture, approvals, outcome };
+}
+
+// Proves an approval that arrived while the window was closing itself gets a new window: the mark is set, the window
+// removed, and a second window is created with the same options. Could falsely pass if the fixture created a second
+// window for the first approval too; the setup asserts a single window before the removal.
+test('an automatic close with an approval still pending opens a new window', async () => {
+  const { fixture, approvals, outcome } = await windowWithSecondWaiting();
+  approvals.setAutomaticClose(true); closeWindow(fixture, 1); await idle();
+  assert.equal(fixture.created.length, 2); assert.deepEqual(fixture.created[1], fixture.created[0]);
+  assert.equal(approvals.controller.state.pendingApprovalCount, 1, 'the approval is still waiting, not rejected');
+  approvals.reject('second'); assert.equal(await outcome, 4001); approvals.destroy();
+});
+
+// Proves an automatic close with nothing pending opens no window and rejects nothing. Could falsely pass if the removal
+// listener were never called; the later user-close test and the other-window test pin that the listener is live.
+test('an automatic close with no approval pending opens no window and rejects nothing', async () => {
+  const fixture = approvalFixture(), approvals = createApprovals({ ...fixture, messenger: new Messenger({ namespace: 'Background' }) });
+  const only = approvals.controller.addAndShowApprovalRequest({ id: 'only', origin: 'https://site.example', type: 'wallet_requestPermissions' });
+  await approvals.whenUiSettled(); approvals.controller.acceptRequest('only', 'answered'); assert.equal(await only, 'answered');
+  approvals.setAutomaticClose(true); closeWindow(fixture, 1); await idle();
+  assert.equal(fixture.created.length, 1); assert.equal(approvals.controller.state.pendingApprovalCount, 0);
+  approvals.destroy();
+});
+
+// Proves a window the user closes rejects every pending approval with the user-rejection code 4001 and opens no new
+// window. Two approvals from different origins show that all are rejected, not only the first. Could falsely pass if
+// the approvals were rejected by something else; the setup shows both pending until the removal.
+test('closing the approval window by hand rejects every pending approval and opens no window', async () => {
+  const fixture = approvalFixture(), approvals = createApprovals({ ...fixture, messenger: new Messenger({ namespace: 'Background' }) });
+  const outcomes = ['https://a.example', 'https://b.example'].map((origin, n) => approvals.controller
+    .addAndShowApprovalRequest({ id: `p${n}`, origin, type: 'personal_sign' }).then(() => 'accepted', error => error.code));
+  await approvals.whenUiSettled(); assert.equal(approvals.controller.state.pendingApprovalCount, 2);
+  closeWindow(fixture, 1);
+  assert.deepEqual(await Promise.all(outcomes), [4001, 4001]);
+  await idle(); assert.equal(fixture.created.length, 1); assert.equal(approvals.controller.state.pendingApprovalCount, 0);
+  approvals.destroy();
+});
+
+// Proves the mark is read and reset by one removal: after an automatic close, the next window's close by the user rejects.
+// Could falsely pass if the second window's removal were not heard; the first removal reopens, so window 2 exists.
+test('the automatic-close mark applies to one removal only', async () => {
+  const { fixture, approvals, outcome } = await windowWithSecondWaiting();
+  approvals.setAutomaticClose(true); closeWindow(fixture, 1); await idle(); assert.equal(fixture.created.length, 2);
+  closeWindow(fixture, 2); assert.equal(await outcome, 4001); await idle(); assert.equal(fixture.created.length, 2);
+  approvals.destroy();
+});
+
+// Proves a removal while an opening is in flight (the opening found the closing window and is focusing it) is followed by a
+// new opening that creates a window, not by joining the one that focused the closing window. The focus call is held open
+// by hand so the removal lands inside it. Could falsely pass if the hold were released before the removal; the test
+// removes the window first and counts created windows only after the release.
+test('a removal while an opening is in flight is followed by a new window', async () => {
+  const fixture = approvalFixture(), approvals = createApprovals({ ...fixture, messenger: new Messenger({ namespace: 'Background' }) });
+  const first = approvals.controller.addAndShowApprovalRequest({ id: 'first', origin: 'https://site.example', type: 'wallet_requestPermissions' });
+  await approvals.whenUiSettled(); approvals.controller.acceptRequest('first', true); await first;
+  let release; const held = new Promise(resolve => { release = resolve; });
+  fixture.windows.update = async (id, options) => { fixture.focused.push({ id, ...options }); await held; };
+  const second = approvals.controller.addAndShowApprovalRequest({ id: 'second', origin: 'https://site.example', type: 'personal_sign' });
+  const outcome = second.then(() => 'accepted', error => error.code);
+  await idle(); assert.equal(fixture.focused.length, 1, 'the opening is focusing the closing window');
+  approvals.setAutomaticClose(true); closeWindow(fixture, 1); await idle();
+  assert.equal(fixture.created.length, 1, 'recovery waits for the opening in flight');
+  release(); await idle();
+  assert.equal(fixture.created.length, 2); assert.equal(approvals.controller.state.pendingApprovalCount, 1);
+  approvals.reject('second'); assert.equal(await outcome, 4001); approvals.destroy();
+});
+
+// Proves a withdrawn mark (the page could not close) makes the next removal a user close: approvals are rejected and no
+// window opens. Could falsely pass if the mark were never set; the same removal with the mark kept is the first test above.
+test('a withdrawn automatic-close mark leaves a later close to count as the user close', async () => {
+  const { fixture, approvals, outcome } = await windowWithSecondWaiting();
+  approvals.setAutomaticClose(true); approvals.setAutomaticClose(false); closeWindow(fixture, 1);
+  assert.equal(await outcome, 4001); await idle(); assert.equal(fixture.created.length, 1); approvals.destroy();
+});
+
+// Proves the removal of any other window (toolbar popup, a tab) changes nothing and keeps the mark: no rejection, no
+// window, and the mark still applies to the approval window's own removal afterwards. Could falsely pass if the other id
+// coincided with the approval window's; id 99 is not any created window.
+test('the removal of another window changes nothing', async () => {
+  const { fixture, approvals, outcome } = await windowWithSecondWaiting();
+  approvals.setAutomaticClose(true); for (const listener of [...fixture.removed]) listener(99); await idle();
+  assert.equal(fixture.created.length, 1); assert.equal(approvals.controller.state.pendingApprovalCount, 1);
+  closeWindow(fixture, 1); await idle(); assert.equal(fixture.created.length, 2, 'the mark survived the other removal');
+  approvals.reject('second'); assert.equal(await outcome, 4001); approvals.destroy();
 });

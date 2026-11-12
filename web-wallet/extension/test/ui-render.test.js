@@ -355,8 +355,11 @@ test('the approval window asks to close when no approval is left, and other page
 
 // Proves only notification.html is given the closer, so the toolbar popup and the full page can never close themselves.
 test('only the approval window page receives the closer', () => {
-  const close = () => {};
+  let received;
+  const close = options => { received = options; };
   assert.deepEqual(Object.keys(approvalWindowOptions('/notification.html', close)), ['closeWhenNothingPending']);
+  const client = {}; approvalWindowOptions('/notification.html', close).closeWhenNothingPending(client);
+  assert.equal(received.client, client, 'the closer gets the page\'s trusted client to tell the background');
   assert.deepEqual(approvalWindowOptions('/popup.html', close), {});
   assert.deepEqual(approvalWindowOptions('/home.html', close), {});
   assert.deepEqual(approvalWindowOptions(undefined, close), {});
@@ -367,13 +370,33 @@ test('only the approval window page receives the closer', () => {
 test('closeApprovalWindow closes only a popup window', async () => {
   const run = async windowsGetCurrent => {
     const log = [];
+    const client = { async request(method) { log.push(method); } };
     const browser = { windows: { getCurrent: windowsGetCurrent }, tabs: { async getCurrent() { return { id: 7 }; }, async remove(id) { log.push(`remove ${id}`); } } };
-    const result = await closeApprovalWindow({ browser, window: { close() { log.push('close'); } } });
+    const result = await closeApprovalWindow({ client, browser, window: { close() { log.push('close'); } } });
     return { result, log };
   };
-  assert.deepEqual(await run(async () => ({ type: 'popup' })), { result: true, log: ['close', 'remove 7'] });
+  // The page is still running after both close attempts here (the fakes do not end it), so the mark is withdrawn.
+  const closed = ['markNotificationPopupAsAutomaticallyClosed', 'close', 'remove 7', 'clearNotificationPopupAutomaticClose'];
+  assert.deepEqual(await run(async () => ({ type: 'popup' })), { result: true, log: closed });
   assert.deepEqual(await run(async () => ({ type: 'normal' })), { result: false, log: [] });
-  assert.deepEqual(await run(async () => { throw new Error('unreadable'); }), { result: true, log: ['close', 'remove 7'] });
+  assert.deepEqual(await run(async () => { throw new Error('unreadable'); }), { result: true, log: closed });
+});
+
+// Proves the background is told the close is automatic before window.close() runs (the order is what keeps the removal
+// from being read as the user closing the window), that a failing mark stops the close, and that the mark is withdrawn
+// only when the page is still running after both close attempts. Fakes record one shared log, so a call made in the
+// wrong order shows in the list; it could falsely pass only if a fake ended the page, which these do not.
+test('closeApprovalWindow marks the close as automatic first and withdraws the mark when the close fails', async () => {
+  const log = [];
+  const client = { async request(method) { log.push(method); } };
+  const browser = { windows: { async getCurrent() { return { type: 'popup' }; } }, tabs: { async getCurrent() { return { id: 7 }; }, async remove() { log.push('remove'); } } };
+  await closeApprovalWindow({ client, browser, window: { close() { log.push('close'); } } });
+  assert.deepEqual(log, ['markNotificationPopupAsAutomaticallyClosed', 'close', 'remove', 'clearNotificationPopupAutomaticClose']);
+  // A background that cannot take the mark stops the close: nothing is closed, and nothing is withdrawn.
+  const failing = [];
+  const refusing = { async request(method) { failing.push(method); throw new Error('background gone'); } };
+  await assert.rejects(closeApprovalWindow({ client: refusing, browser, window: { close() { failing.push('close'); } } }), /background gone/u);
+  assert.deepEqual(failing, ['markNotificationPopupAsAutomaticallyClosed']);
 });
 
 // Proves activity reconciles another window's lock without erasing password entry on the locked screen; directly refreshing in the assertion would bypass the event wiring.
