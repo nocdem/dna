@@ -573,7 +573,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     // names the host, method, duration and error name or status. The text is the debug line without its "nodus-debug <time>"
     // prefix: that line is built without URL path, parameters or address (src/debug-log.js). Successful calls write nothing.
     noteDebugLine({ area, event, line }) {
-      if (area !== 'rpc' || event !== 'call' || typeof line !== 'string' || !/ outcome=error(?: |$)/.test(line)) return;
+      // While no wallet session is unlocked nothing is written: a call aborted by lock fails after log.clear() and must not refill it.
+      if (!session || area !== 'rpc' || event !== 'call' || typeof line !== 'string' || !/ outcome=error(?: |$)/.test(line)) return;
       const text = line.slice(line.indexOf(` ${area} ${event}`) + 1);
       log.log('net', text, { error: true });
     },

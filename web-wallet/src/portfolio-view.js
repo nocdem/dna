@@ -122,6 +122,8 @@ export function createReadFailureNotes(log = sessionLog) {
       log.log('wallet', `${network?.name || chain} ${networkLabelOf(network)}: balance read failed: ${label}`, { error: true });
     },
     succeeded(chain) { last.delete(chain); },
+    // A new wallet session (portfolio clear/open) starts with no remembered failure: its log was cleared with the old one.
+    reset() { last.clear(); },
   };
 }
 export function createPortfolio({ readBalances, readPrices = defaultReadPrices, selectAsset, leadingNetworks = [], extraNetworks = [], onKept }) {
@@ -430,7 +432,7 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
   // idle deadline is locked first (src/app.js), and then nothing is read.
   document.addEventListener('visibilitychange', () => setTimeout(autoTick, 0));
   function clear() {
-    session++; for (const job of jobs.values()) job.abort(); jobs.clear(); priceJob?.abort(); priceJob = undefined;
+    session++; readFailures.reset(); for (const job of jobs.values()) job.abort(); jobs.clear(); priceJob?.abort(); priceJob = undefined;
     clearInterval(timer); addresses = undefined; endpoints = undefined; balances = {}; quotes = {}; filter = 'all'; hidden = false; rowActions = {}; earn = {}; kept.clear(); replaced.clear(); lastKeptCount = 0;
     readAt = 0; pricesAt = 0; doneAt = 0; backgroundJobs.clear(); expandedNetworkGroups.clear();
     $('portfolio-updated').textContent = ''; render();
