@@ -939,7 +939,7 @@ test('the empty tolerance field shows no number and names what to do; the approv
   const placeholder = tol.match(/placeholder="([^"]*)"/)[1];
   assert.doesNotMatch(placeholder, /\d/);
   assert.match(html, /id="tol-hint"[^>]*>[^<]*choose|id="tol-hint"[^>]*>[^<]*Not chosen/i);
-  assert.match(html, /id="approve-hint"[^>]*>[^<]*Choose a slippage tolerance to continue/);
+  assert.match(html, /id="approve-hint"[^>]*>[^<]*disabled until you choose a slippage tolerance/);
   assert.deepEqual([...html.matchAll(/class="chip"[^>]*data-pct="([^"]+)"/g)].map(m => m[1]), ['0.5', '1', '3']);
   const js = readFileSync(new URL('swap.js', dir), 'utf8');
   assert.match(js, /const chosen = percentToBps\(\$\('tol'\)\.value\)\.ok;\s*\$\('tol-hint'\)\.hidden = chosen;\s*\$\('approve-hint'\)\.hidden = chosen \|\| \$\('approve-btn'\)\.hidden;/);

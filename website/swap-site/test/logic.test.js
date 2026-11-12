@@ -342,6 +342,16 @@ test('refusalText: every word of amm_http.h has plain words, "busy" included; an
   assert.match(refusalText('below_minimum', 'add'), /100,000 NODUS/);
 });
 
+// PROVES: a state word that names a property every object inherits (constructor, toString, __proto__, hasOwnProperty)
+//   is read as an unknown, pending state, not as a final one; before the fix FINAL[state] found Object.prototype's
+//   members, so describeSwapState({ state: 'constructor' }) returned final: true and stopped the follow (Sol, 2026-11-13).
+// FALSE PASS: none known; the bot itself only sends its journal state words (amm_journal.h AMM_S_*).
+test('describeSwapState: an inherited property name is a pending state, never a final one', () => {
+  for (const state of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+    assert.deepEqual(describeSwapState({ state }), { final: false, kind: 'pending', state, text: 'In progress.' }, state);
+  }
+});
+
 test('describeSwapState: only paid / refunded / dropped / expired are final; nothing else is ever called failed', () => {
   for (const state of ['paid', 'refunded', 'dropped', 'expired']) assert.equal(describeSwapState({ state }).final, true, state);
   for (const state of ['approved', 'paid_waiting_depth', 'counted', 'payout_pending', 'refund_pending', 'held', 'reversed', 'unknown', 'something_new']) {

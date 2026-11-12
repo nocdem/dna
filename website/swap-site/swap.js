@@ -298,7 +298,7 @@ $('approve-btn').addEventListener('click', async () => {
   }
   // Paid: the quote is spent (flow.confirm), so the approval is not offered again; a new price is asked for.
   $('approve-btn').hidden = true; $('ask-btn').hidden = false; renderToleranceHint();
-  say($('swap-msg'), 'Payment sent. The bot is now handling your swap.');
+  say($('swap-msg'), 'The extension sent your request and your payment. The bot is now handling your swap.');
   $('step-paid').classList.add('done'); $('step-paid-t').textContent = time(Math.floor(Date.now() / 1000));
   await followSwap(r.requestNumber, unit);
 });
@@ -341,7 +341,7 @@ $('liq-approve').addEventListener('click', async () => {
   }
   if (!r.ok) { say($('liq-msg'), r.text, true); return; }
   $('liq-approve').hidden = true; $('liq-ask').hidden = false;   // paid: the pair is spent (flow.confirmAdd)
-  say($('liq-msg'), 'Both requests were sent and both payments made. Your liquidity counts after 300 Ethereum blocks (at least one hour) and 3 Nodus blocks.');
+  say($('liq-msg'), 'The extension sent both requests and both payments. Your liquidity counts after 300 Ethereum blocks (at least one hour) and 3 Nodus blocks.');
 });
 
 // withdraw: nodus_signMessage (existing method) and a post by this site (plan 6.4.6, 6.4.7)

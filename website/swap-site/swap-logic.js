@@ -478,8 +478,9 @@ export const stateLabel = state => (typeof state === 'string' && STATE_TITLES.ge
 // state (plan section 7 step 8).
 export function describeSwapState(answer) {
   const state = typeof answer?.state === 'string' ? answer.state : '';
-  if (FINAL[state]) return { final: true, kind: FINAL[state].kind, state, text: FINAL[state].text };
-  let text = PENDING[state] ?? 'In progress.';
+  // Own keys only: a state word such as "constructor" must not find Object.prototype's members.
+  if (Object.hasOwn(FINAL, state)) return { final: true, kind: FINAL[state].kind, state, text: FINAL[state].text };
+  let text = (Object.hasOwn(PENDING, state) ? PENDING[state] : undefined) ?? 'In progress.';
   if (state === 'payout_pending') text = payoutPendingText(answer);
   if (state === 'paid_waiting_depth' && answer.waitingForRoom === true) {
     text = 'Payment seen. It is waiting in line until the bot has room under its limit for money in flight.';
