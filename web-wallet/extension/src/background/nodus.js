@@ -232,7 +232,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
   async function consumeNodusSeed(seed, { phrase, id, addresses, nodusWasmBytes, signal, assertReady } = {}) {
     lock();
     if (typeof factory !== 'function') throw new Error('Nodus sending is not available in this wallet build.');
-    const s = { abort: new AbortController(), rows: [], quarantined: [], activityBlocked: false, retries: 0,
+    const s = { abort: new AbortController(), rows: [], quarantined: [], activityBlocked: false, retries: 0, settled: { claim: 0, other: 0 },
       releasedQuarantine: new Set(), quarantineReadAt: -Infinity, reviews: new Map(), networkActivities: new Map(), assertReady, id, identity: { addresses: {} } };
     session = s;
     s.client = newClient(s);
@@ -324,9 +324,17 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       void persist(s).catch(error => { if (session === s) s.activityError = error.message; });
       void reconcileQuarantine(s);
       if (--s.passLeft <= 0 && s.confirmedUnlisted) { s.confirmedUnlisted = false; void listConfirmed(s); }
+      if (s.settledPublish) { s.settledPublish = false; changed(s); }
     }, { check: async (row, options) => {
       const update = await adapter.checkNodusActivity(row, { ...options, client: s.client });
       if (update.status === 'confirmed' && row.status !== 'confirmed') s.confirmedUnlisted = true;
+      // src/app.js:660-667: a record of this wallet that reaches a final state (the status it still has here is the one
+      // before this check) may have changed what an open screen shows: a claim moves the claim status, any other transaction
+      // may have moved a delegation or registered this wallet's chain name. The open screens learn of it through these
+      // two public counts (getSettled, shown by the background's getState outside `nodus`, whose change would clear the
+      // popup's cached balances) and read that once; a count is only ever raised, per session. It is published after
+      // the watcher has stored the new status (the onChange above), so a read the screens then make sees the final row.
+      if (terminal(update.status) && !terminal(row.status)) { s.settled[adapter.isClaimRow(row) ? 'claim' : 'other']++; s.settledPublish = true; }
       return update;
     } });
   }
@@ -807,6 +815,8 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       // The own chain name kept from the last use, shown at once as an unconfirmed name until a lookup answers (the
       // signature window never uses it: confirmedOwnName). Empty while locked.
       keptOwnName: keptOwnNameOf(session) }; },
+    // How many claims / other transactions of this session's tracker went from non-final to final (see track).
+    getSettled() { return { claim: session?.settled.claim ?? 0, other: session?.settled.other ?? 0 }; },
     async getBalances() {
       const s = active(); track(s);
       const rows = await adapter.balances('nodus', s.addresses.nodus, undefined, { client: s.client, signal: s.abort.signal });

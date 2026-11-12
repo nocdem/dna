@@ -1,7 +1,7 @@
 // src/app.js:1327-1351,1628-1650. The faucet is deliberately absent on the
 // operator's 2026-10-29 instruction. Only the allocation action is mounted.
 export function mountClaimAction({ ui, portfolio, run, showReview }) {
-  let generation = 0, identity, disposed = false;
+  let generation = 0, identity, settledMark, disposed = false;
   async function refresh() {
     const check = ++generation; portfolio.setAction('nodus', undefined);
     if (!ui.state.nodus?.claimable) return;
@@ -22,6 +22,11 @@ export function mountClaimAction({ ui, portfolio, run, showReview }) {
         note: `Could not check whether an allocation is waiting for this wallet: ${error.message || 'unknown error'}`, run: refresh });
     }
   }
-  return { refresh, update() { const key = `${ui.state.addresses.nodus}:${ui.state.nodus?.state}:${ui.state.nodus?.claimable}`; if (key !== identity) { identity = key; void refresh(); } },
+  return { refresh, update() {
+    const key = `${ui.state.addresses.nodus}:${ui.state.nodus?.state}:${ui.state.nodus?.claimable}`, settled = ui.state.nodusSettled?.claim;
+    if (key !== identity) { identity = key; settledMark = settled; void refresh(); }
+    // A claim of this wallet reached a final state while this screen stayed open (src/app.js:660-667): read the claim status once.
+    else if (settled !== settledMark) { settledMark = settled; void refresh(); }
+  },
     dispose() { disposed = true; generation++; } };
 }

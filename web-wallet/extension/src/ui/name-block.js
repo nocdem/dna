@@ -3,7 +3,7 @@
 import { debugLog } from '../../../src/debug-log.js';
 export function mountNameBlock({ root, ui, selected, run, showReview }) {
   const $ = id => root.querySelector('#' + id);
-  let generation = 0, quoteCheck = 0, quoted, identity, disposed = false;
+  let generation = 0, quoteCheck = 0, quoted, identity, settledMark, disposed = false;
   function clearQuote() { quoteCheck++; quoted = undefined; $('name-review').disabled = true; $('name-quote').textContent = ''; }
   function resetGreeting() { $('wallet-heading').hidden = false; $('wallet-title').textContent = 'Welcome back'; $('wallet-register-name').hidden = true; }
   // The name kept from the last use (the background's public state; unconfirmed) on the greeting and the name line, with
@@ -70,6 +70,10 @@ export function mountNameBlock({ root, ui, selected, run, showReview }) {
     const state = ui.state, visible = selected() === 'nodus' && (state.nodus?.nameable || Boolean(state.nodus?.keptOwnName));
     $('name-block').hidden = !visible;
     const key = `${state.addresses.nodus}:${state.nodus?.connection}:${state.nodus?.state}:${state.nodus?.nameable}:${state.nodus?.registrable}`;
-    if (key !== identity) { identity = key; generation++; clearQuote(); resetGreeting(); if (state.nodus?.nameable) void refresh(); else if (state.nodus?.keptOwnName) showKept(state.nodus.keptOwnName); }
+    const settled = state.nodusSettled?.other;
+    if (key !== identity) { identity = key; settledMark = settled; generation++; clearQuote(); resetGreeting(); if (state.nodus?.nameable) void refresh(); else if (state.nodus?.keptOwnName) showKept(state.nodus.keptOwnName); }
+    // A transaction of this wallet reached a final state while this screen stayed open (src/app.js:660-667): it may have
+    // registered the name, whose first read only found it in the mempool. Read once per such transaction.
+    else if (settled !== settledMark) { settledMark = settled; if (state.nodus?.nameable) void refresh(); }
   }, sent() { $('name-input').value = ''; clearQuote(); void refresh(); }, dispose() { disposed = true; generation++; clearQuote(); resetGreeting(); } };
 }

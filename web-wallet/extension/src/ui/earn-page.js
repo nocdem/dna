@@ -7,7 +7,7 @@ import { NODUS_ASSET } from '../../../src/nodus/network.js';
 // the trusted port; decoded review rows use the wallet's common dialog.
 export function mountEarn({ root, document, ui, selected, portfolio, run, showReview, navigate }) {
   const $ = id => root.querySelector('#' + id);
-  let stakeView, expandedValidator, generation = 0, disposed = false, available = false;
+  let stakeView, expandedValidator, generation = 0, disposed = false, available = false, settledMark;
   const groupDigits = text => { const [whole, fraction] = text.split('.'); return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (fraction ? `.${fraction}` : ''); };
   const nodusAmountText = units => groupDigits(formatUnits(units, NODUS_ASSET.decimals));
   const startStake = (kind, params) => run(async () => {
@@ -167,6 +167,10 @@ function renderStaking(view) {
     available = next; $('quick-earn').disabled = !next; $('quick-earn').title = next ? '' : 'Earn opens once the wallet is connected to the Nodus network.';
     $('nav-earn').hidden = $('stake-panel').hidden = !capabilitiesFor(selected()).earn; portfolio.setEarn('nodus', next);
     if (!next) $('stake-status').textContent = 'Connect to the Nodus node to read delegations and prepare transactions.';
+    // A transaction of this wallet reached a final state while this page stayed open (src/app.js:660-667): it may have
+    // moved a delegation or the witness list, which its first read (in the mempool) did not show. Read once per such transaction.
+    const settled = ui.state.nodusSettled?.other, settledNow = settled !== settledMark; settledMark = settled;
+    if (!changed && next && settledNow) void refresh();
     if (changed) { generation++; if (next) void refresh(); else { stakeView = undefined; expandedValidator = undefined; $('validator-list').replaceChildren(); $('delegation-list').replaceChildren(); $('stake-network').hidden = true; } }
   }
   return { update, refresh, contextChanged() { generation++; expandedValidator = undefined; }, sent() { expandedValidator = undefined; if (stakeView) renderStaking(stakeView); void refresh(); }, dispose() { disposed = true; generation++; stakeView = undefined; } };

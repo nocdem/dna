@@ -205,6 +205,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
         networks: selectedNetworks,
         evm: evm.getState(),
         nodus: nodus.getState(),
+        // Outside `nodus`: the popup clears its cached balances when state.nodus changes (wallet-ui.js refresh identity).
+        nodusSettled: nodus.getSettled(),
         // Port: metamask-controller.js:2378-2384 flattens controller UI state.
         ...permissions.controller.state, ...approvals.controller.state };
     },
