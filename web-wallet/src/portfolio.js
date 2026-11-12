@@ -85,11 +85,14 @@ export async function readPrices({ signal, fetcher } = {}) {
 // The identity of the network a balance was read on: 'main' for a main network, and for a test network its chain id and
 // the host of its endpoint (so Sepolia, a Solana devnet and another test network differ). It fits the saved record's
 // pattern. A kept balance is shown, valued and saved only for the network it was read on.
+// `networkId` (optional, given by the screen with the definition): the id of the selected network ('testnet', 'devnet',
+// 'sepolia'), needed where several test networks share one definition (Solana Testnet and Devnet).
 export function networkIdOf(network) {
   if (!network?.testnet) return 'main';
   let host = '';
   try { host = new URL(network.endpoint).hostname.toLowerCase().replace(/[^a-z0-9.-]/g, ''); } catch { /* no endpoint: the chain id alone */ }
-  return `test:${network.chainId ?? ''}:${host}`.slice(0, 64);
+  const selected = typeof network.networkId === 'string' ? network.networkId.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 24) : '';
+  return `test:${selected ? `${selected}:` : ''}${network.chainId ?? ''}:${host}`.slice(0, 64);
 }
 // The kept balances of one wallet, one row per asset key: { units: bigint, observedAt, address, network, price? }. Pure
 // bookkeeping (portfolio-view.js drives it): `networkIdFor(chain)` is the chain's current network identity and

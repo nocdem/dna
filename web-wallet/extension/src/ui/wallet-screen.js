@@ -513,11 +513,12 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     for (const [chain, config] of Object.entries(networks)) {
       const testnet = (isPqChain(chain) || ['solana', 'tron', ...EVM_FAMILIES].includes(chain)) && selectedNetwork(chain).id !== 'mainnet';
       const endpoint = endpoints()[chain], previousEndpoint = endpointVersions.get(chain);
-      const version = JSON.stringify([config, testnet, endpoint, publicAddresses()[chain]]);
+      const version = JSON.stringify([config, testnet, endpoint, publicAddresses()[chain], selectedNetwork(chain).id]);
       if (networkVersions.get(chain) !== version) {
         const before = networkVersions.get(chain); networkVersions.set(chain, version);
         endpointVersions.set(chain, endpoint);
-        portfolio.setNetwork(chain, { ...config, testnet }, { keepRead: !before || chain === 'nodus', forgetKept: ['algorand', 'ckb'].includes(chain) });
+        // `networkId`: the selected network's own id, so two test networks of one chain (Solana Testnet and Devnet) differ.
+        portfolio.setNetwork(chain, { ...config, testnet, networkId: selectedNetwork(chain).id }, { keepRead: !before || chain === 'nodus', forgetKept: ['algorand', 'ckb'].includes(chain) });
         if (opened && before && previousEndpoint !== endpoint) portfolio.changeEndpoint(chain, endpoint);
         if (opened) portfolio.setAddress(chain, publicAddresses()[chain]);
       }
