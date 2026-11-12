@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Nodus Connect",
   "short_name": "Nodus",
-  "version": "0.1.165",
+  "version": "0.1.166",
   "description": "Wallet for the Nodus testnet, Ethereum, BNB Smart Chain, Solana and TRON, with website connections and Nodus Connect messages.",
   "minimum_chrome_version": "123",
   "action": {
