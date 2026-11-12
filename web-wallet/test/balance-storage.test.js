@@ -67,7 +67,7 @@ test('saved balances: a kept price round-trips and a malformed price is refused'
   const withPrice = { 'ethereum:ETH': { ...entries['ethereum:ETH'], price: { units: '200000000000', observedAt: 1789999990000 } } };
   const text = await serializeBalances(id, withPrice, key);
   assert.ok(!text.includes('200000000000'));
-  assert.deepEqual(await parseBalances(text, id, key, 1790000000000), { 'ethereum:ETH': { units: 1500000000000000000n, observedAt: 1790000000000, address: '0xabc', price: { units: 200000000000n, observedAt: 1789999990000 } } });
+  assert.deepEqual(await parseBalances(text, id, key, 1790000000000), { 'ethereum:ETH': { units: 1500000000000000000n, observedAt: 1790000000000, address: '0xabc', network: 'main', price: { units: 200000000000n, observedAt: 1789999990000 } } });
   for (const price of [{ units: '-1', observedAt: 1 }, { units: '1', observedAt: 0 }, { units: '1', observedAt: 1790000000000 + 3600000 }, 'x']) {
     await assert.rejects(parseBalances(await serializeBalances(id, { 'ethereum:ETH': { ...entries['ethereum:ETH'], price } }, key), id, key, 1790000000000), /Invalid saved balances/);
   }
