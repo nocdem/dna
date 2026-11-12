@@ -2336,6 +2336,8 @@ function selectChain() {
       pqEnvironment.replaceChildren(...PQ_NETWORKS[incoming].networks.map(network => new Option(network.label, network.id)));
       pqEnvironment.value = 'mainnet'; pqEnvironment.onchange(); return;
     }
+    // Ixios, like the PQ chains, starts on mainnet whenever it is selected: the reselection below runs this function again.
+    if (incoming === ixiosChain && ixiosSelection !== 'mainnet') { selectIxiosNetwork('mainnet'); return; }
   }
   revision++; closeReview();
   if (historyJob) { historyJob.controller.abort(); historyJob = null; }
