@@ -483,24 +483,16 @@ export function createNodusClient({ factory, onState, onBeforeLock, steps, setIn
   // A 'ready' client that has lost its session (see the callers).
   function failReady(reason, error) { if (!stopped && state === 'ready') setState('error', { reason, error }); }
   // Selection happens in a microtask after an enqueue, after an entry's end and
-  // after a lease closes, never inside another entry's settle path. An entry
-  // queued while the queue is idle is the one the microtask starts (`first`),
-  // as the one that arrives first at an idle queue always started before; it
-  // is not started if it left the queue meanwhile or, other class, a lease
-  // opened meanwhile.
-  function pump(first) {
+  // after a lease closes, never inside another entry's settle path; the rule
+  // is applied at that moment, so an entry that was aborted meanwhile is gone.
+  function pump() {
     if (pumpQueued) return;
     pumpQueued = true;
-    queueMicrotask(() => { pumpQueued = false; startNext(first); });
+    queueMicrotask(() => { pumpQueued = false; startNext(); });
   }
-  function startNext(first) {
+  function startNext() {
     if (running || stopped) return;
-    let entry;
-    if (first && waiting.has(first) && (first.user || flows.size === 0)) {
-      const queue = first.user ? userWaiting : otherWaiting;
-      queue.splice(queue.indexOf(first), 1);
-      entry = first;
-    } else entry = userWaiting.shift() ?? (flows.size === 0 ? otherWaiting.shift() : undefined);
+    const entry = userWaiting.shift() ?? (flows.size === 0 ? otherWaiting.shift() : undefined);
     if (!entry) return;
     running = true;
     entry.run().finally(() => { running = false; pump(); });
@@ -552,9 +544,8 @@ export function createNodusClient({ factory, onState, onBeforeLock, steps, setIn
         debugLog('nodus-queue', 'end', { op, class: kind, ms: ran?.(), ...outcome });
       }
     };
-    const idle = !running && !pumpQueued;
     queue.push(entry);
-    pump(idle ? entry : undefined);
+    pump();
     return result;
   }
   function ready() { if (state !== 'ready') throw new Error('Nodus connection is not ready.'); }

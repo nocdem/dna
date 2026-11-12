@@ -46,6 +46,8 @@ test('Q1: a user entry passes a waiting background entry; options cannot set the
   const closed = await closedView(client);
   const base = mock.log.length, open = mock.gate('balance');
   const inFlight = client.balance();
+  // balance is in flight before the two other entries are queued
+  await until(() => mock.log.slice(base).includes('balance:start'), 'balance entered the gated call');
   const background = client.list({ flow: {}, class: 'user' }); // other class whatever the options say
   const user = closed.rulesetInfo();
   await settle();
@@ -53,6 +55,24 @@ test('Q1: a user entry passes a waiting background entry; options cannot set the
   open();
   await Promise.all([inFlight, background, user]);
   assert.deepEqual(starts(mock, base), ['balance', 'rulesetInfo', 'list']);
+  assert.equal(mock.state.overlap, false);
+  client.lock();
+});
+
+// Proves: selection at an idle queue follows the rule too: a background call and then an ended view's call (user class)
+// are queued in one synchronous block with nothing running; the user call starts first, then the background one.
+// Falsely passes if the queue was not idle (guarded: the log holds no entry of the block before they are queued, and
+// the starts are read from the module log) or if the background call never ran (it is awaited and listed).
+// Base: userFlow is missing.
+test('Q1b: at an idle queue a user entry starts before a background entry queued earlier in the same tick', OPTIONS, async () => {
+  const { mock, client } = await readyClient();
+  const closed = await closedView(client);
+  await settle();
+  const base = mock.log.length;
+  const background = client.list();
+  const user = closed.balance();
+  await Promise.all([background, user]);
+  assert.deepEqual(starts(mock, base), ['balance', 'list']);
   assert.equal(mock.state.overlap, false);
   client.lock();
 });

@@ -74,7 +74,9 @@ test('unlock checks the module identity, wipes the JS seed and starts a 60 s kee
 test('one operation queue: a second call never enters the module while the first is running', async () => {
   const { mock, client, timers } = await readyClient();
   const open = mock.gate('balance');
-  const first = client.balance(), second = client.list();
+  const first = client.balance();
+  await settle(); // balance is in flight (held by the gate) before list and the keepalives are queued
+  const second = client.list();
   timers.fn(); timers.fn(); // two keepalives while busy: only one is queued
   await settle();
   // mock.log[0..1] is the unlock call.
