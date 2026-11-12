@@ -9,6 +9,7 @@ export function mountNameBlock({ root, ui, selected, run, showReview }) {
   // The name kept from the last use (the background's public state; unconfirmed) on the greeting and the name line, with
   // no lookup: shown at once after unlock, also while the Nodus connection is opening or unavailable.
   function showKept(kept) {
+    $('name-fields').hidden = true;
     $('wallet-title').textContent = `Welcome back, ${kept}`;
     $('own-name').textContent = `Your chain name is "${kept}" (last known; confirming…). People can send NODUS to you by typing this name instead of your address.`;
     debugLog('identity', 'kept-name-shown');
@@ -65,7 +66,8 @@ export function mountNameBlock({ root, ui, selected, run, showReview }) {
   });
   $('wallet-register-name').onclick = () => { $('name-title').focus({ preventScroll: true }); $('name-block').scrollIntoView({ block: 'start' }); $('name-input').focus({ preventScroll: true }); };
   return { refresh, update() {
-    const state = ui.state, visible = selected() === 'nodus' && state.nodus?.nameable;
+    // Shown once the client can read names; before that only while a kept (unconfirmed) name is there to show.
+    const state = ui.state, visible = selected() === 'nodus' && (state.nodus?.nameable || Boolean(state.nodus?.keptOwnName));
     $('name-block').hidden = !visible;
     const key = `${state.addresses.nodus}:${state.nodus?.connection}:${state.nodus?.state}:${state.nodus?.nameable}:${state.nodus?.registrable}`;
     if (key !== identity) { identity = key; generation++; clearQuote(); resetGreeting(); if (state.nodus?.nameable) void refresh(); else if (state.nodus?.keptOwnName) showKept(state.nodus.keptOwnName); }

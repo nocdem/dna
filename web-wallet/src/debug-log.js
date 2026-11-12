@@ -73,14 +73,14 @@ export function stopwatch() {
 // the error goes on unchanged.
 export async function timed(area, event, fields, work) {
   const elapsed = stopwatch();
-  try {
-    const value = await work();
-    debugLog(area, event, { ...fields, ms: elapsed(), outcome: 'ok' });
-    return value;
-  } catch (error) {
-    debugLog(area, event, { ...fields, ms: elapsed(), ...errorFields(error) });
-    throw error;
-  }
+  // Building the line (spreading the fields, reading the error) happens inside the guard too: a diagnostic can never
+  // replace the result or the rejection of `work`.
+  const note = extra => { try { debugLog(area, event, { ...fields, ms: elapsed(), ...extra() }); } catch { /* the log only records */ } };
+  let value;
+  try { value = await work(); }
+  catch (error) { note(() => errorFields(error)); throw error; }
+  note(() => ({ outcome: 'ok' }));
+  return value;
 }
 
 // A thin WebSocket subclass that writes the open, each frame's size and the close of every connection, never a
