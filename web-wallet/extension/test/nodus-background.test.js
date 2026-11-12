@@ -761,8 +761,10 @@ test('Nodus connection rejection preserves locally unlocked PQ receive and recor
 // chainListsHistory / confirmedOnChainList / sentRowsToShow; web wallet src/app.js:559, 660-663) ----
 // Fixtures: in-memory module and storage, nothing is left behind. The tracker's first pass runs at unlock
 // (watchActivity starts with tick()), so no timer is advanced except where a test says so.
+// A VALID page (src/nodus/history.js parseAddrHistory: a non-boundary entry carries a 128-hex wire); its wire is no row's
+// hash or wire, so a row is listed only by its block height.
 const pageAt = height => ({ enabled: true, from_height: '1', entries: [{ h: height, i: '0', q: '0', kind: 'spend_in',
-  amount: '100000000', token: NODUS_TOKEN_ID, fee: '0', peer: recipient, wire: '', ts: '1' }] });
+  amount: '100000000', token: NODUS_TOKEN_ID, fee: '0', peer: recipient, wire: 'aa'.repeat(64), ts: '1' }] });
 const settle = async (rounds = 30) => { for (let i = 0; i < rounds; i++) await new Promise(resolve => setImmediate(resolve)); };
 async function until(condition, what) {
   const deadline = performance.now() + 2000;
@@ -813,17 +815,21 @@ test('getHistory drops a confirmed row the page lists from the saved activity', 
 });
 
 // Proves: a confirmed row the page does not list stays saved and is scanned again after lock and unlock.
-// Could falsely pass if the page did list it; the page here holds another block (9, the row is in 11).
+// The page is valid (the read must succeed: `served` counts pages the client accepted) and holds another block (9, the
+// row is in 11), so only the block decides.
 test('a confirmed row the page does not list stays saved and is scanned again after unlock', async t => {
+  let served = 0;
   const { background, values, calls } = await setup(t, {
     async scanConfirm() { calls.push(['scanConfirm']); return { found: true, tip: '11', height: '11' }; },
-    async addrHistory() { return pageAt('9'); },
+    async addrHistory() { served++; return pageAt('9'); },
   });
   const { id, key } = await saveActivity(values, [savedRow()]);
   await unlockConnected(background);
   const addresses = { ...background.walletKeys.getAddresses() };
-  await until(() => calls.some(([op]) => op === 'history' || op === 'scanConfirm'), 'the tracker ran');
+  await until(() => served === 1, 'the account history was read');
   await settle();
+  assert.equal(served, 1);
+  assert.equal(background.nodus.getState().activityError, '');
   assert.equal(background.nodus.getLocalHistory()[0].status, 'confirmed');
   assert.deepEqual(await savedHashes(values, id, key, addresses), [savedRow().hash]);
   await background.lock();
