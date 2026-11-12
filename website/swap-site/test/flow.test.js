@@ -898,3 +898,33 @@ test('the empty tolerance field shows no number and names what to do; the approv
   const js = readFileSync(new URL('swap.js', dir), 'utf8');
   assert.match(js, /const chosen = percentToBps\(\$\('tol'\)\.value\)\.ok;\s*\$\('tol-hint'\)\.hidden = chosen;\s*\$\('approve-hint'\)\.hidden = chosen \|\| \$\('approve-btn'\)\.hidden;/);
 });
+
+// ── a paid quote is spent ──
+// PROVES: after a SUCCESSFUL confirm / confirmAdd the quote is gone from the flow state (it was only cleared on the
+//   delivered failure), so the same price cannot be approved again (the bot would only answer number_reused after two
+//   needless extension windows), and a second confirm returns not_ready without reaching the adapter.
+// FALSE PASS: the stub adapter resolves at once; the real extension's windows and swap.js's button handling are not run.
+test('a successful confirm spends the quote: state.quote is null and a second confirm never reaches the adapter', async () => {
+  const adapter = stubAdapter();
+  const { flow } = makeFlow({ adapter, routes: { 'POST /amm/quote': [200, QUOTE] } });
+  await flow.loadStatus(); await flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
+  const first = await flow.confirm({ toleranceBps: 100 });
+  assert.equal(first.ok, true);
+  assert.equal(first.requestNumber, '4242');
+  assert.equal(flow.state.quote, null);
+  assert.equal((await flow.confirm({ toleranceBps: 100 })).reason, 'not_ready');
+  assert.equal(adapter.calls.length, 1);
+});
+
+test('a successful confirmAdd spends the pair: state.addQuote is null and a second confirmAdd never reaches the adapter', async () => {
+  const pair = { approved: true, usdtAmount: '10000000', nodusAmount: '10000000000000', requestNumber: '88', validUntil: '1700000300', payEthereum: `0x${'fe'.repeat(20)}`, payNodus: 'fd'.repeat(64) };
+  const adapter = stubAdapter();
+  const { flow } = makeFlow({ adapter, routes: { 'POST /amm/liquidity/quote': [200, pair] } });
+  await flow.loadStatus(); await flow.pressAdd({ side: 'nodus', amountText: '100000' });
+  const first = await flow.confirmAdd();
+  assert.equal(first.ok, true);
+  assert.equal(first.requestNumber, '88');
+  assert.equal(flow.state.addQuote, null);
+  assert.equal((await flow.confirmAdd()).reason, 'not_ready');
+  assert.equal(adapter.calls.length, 1);
+});

@@ -229,6 +229,10 @@ export function createSwapFlow({
         if (info.delivered) { s.quote = null; return { ok: false, reason: 'delivered', requestNumber: q.requestNumber, ...info }; }
         return { ok: false, reason: err?.code ?? 'extension_error', ...info };
       }
+      // The request reached the bot and was paid: the price is spent exactly as in the delivered branch. A second
+      // approval could only end in the bot's number_reused after two needless extension windows. swapGen is bumped
+      // (as clearQuote does) so a late answer to this price is not shown.
+      s.quote = null; s.swapGen++;
       return { ok: true, requestNumber: q.requestNumber, minimum: min };
     },
 
@@ -296,6 +300,7 @@ export function createSwapFlow({
         if (info.delivered) { s.addQuote = null; return { ok: false, reason: 'delivered', requestNumber: q.requestNumber, ...info }; }
         return { ok: false, reason: err?.code ?? 'extension_error', ...info };
       }
+      s.addQuote = null; s.addGen++;   // paid: the pair is spent, as in the delivered branch
       return { ok: true, requestNumber: q.requestNumber };
     },
 

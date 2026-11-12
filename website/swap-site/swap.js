@@ -6,7 +6,7 @@ import { createExtension } from './extension.js';
 import { createAdapter } from './adapter.js';
 import { createSwapFlow, stepText } from './flow.js';
 import {
-  USDT_DECIMALS, NODUS_DECIMALS, outputUnit, displayAmount, percentToBps, priceFromReserves, poolText, priceMovementPercent, waitText, refusalText, nodusWithCommas, STILL_PENDING_TEXT,
+  USDT_DECIMALS, NODUS_DECIMALS, outputUnit, displayAmount, percentToBps, priceFromReserves, poolText, priceMovementPercent, waitText, refusalText, nodusWithCommas, STILL_PENDING_TEXT, approveEnabled,
 } from './swap-logic.js';
 
 const $ = id => document.getElementById(id);
@@ -60,9 +60,10 @@ function resetAddQuote() {
 const time = unix => new Date(Number(unix) * 1000).toLocaleTimeString();
 
 // While an approval sequence runs (the extension windows are open or the request is on its way) the user must not start
-// another one: the approve buttons stay disabled, and so does everything that could bring one back or ask a new price
-// (the amount, the direction, the tolerance and its chips, the ask buttons). setBusy(false) re-enables those; the approve
-// buttons are left to the code that ends each outcome (a delivered or failed approval re-enables its own).
+// another one, in either tab: BOTH approve buttons are disabled and both handlers return at once while sequenceBusy is
+// set. So is everything that could bring one back or ask a new price (the amount, the direction, the tolerance and its
+// chips, the ask buttons). setBusy(false) re-enables those and recomputes each approve button from its own readiness
+// (syncApprove): a spent quote leaves it disabled (and the handler hides it), a kept one leaves it enabled.
 let sequenceBusy = false;
 const LOCKED_WHILE_BUSY = ['pay', 'flip', 'tol', 'ask-btn', 'liq-ask', 'liq-amount', 'liq-side'];
 function setBusy(on) {
@@ -70,6 +71,13 @@ function setBusy(on) {
   for (const id of LOCKED_WHILE_BUSY) $(id).disabled = on;
   for (const chip of document.querySelectorAll('.chip')) chip.disabled = on;
   if (!on) { $('ask-btn').disabled = !connected(); $('liq-ask').disabled = !connected(); }
+  syncApprove();
+}
+// The disabled flag of both approve buttons, each from its own readiness (approveEnabled, swap-logic.js).
+function syncApprove() {
+  const { accounts } = flow.state;
+  $('approve-btn').disabled = !approveEnabled({ busy: sequenceBusy, quote: flow.state.quote, toleranceOk: percentToBps($('tol').value).ok, accounts });
+  $('liq-approve').disabled = !approveEnabled({ busy: sequenceBusy, quote: flow.state.addQuote, toleranceOk: true, accounts });
 }
 
 // While no usable tolerance is typed or chosen the field says so, and so does the approve button's note (the button is
@@ -85,9 +93,8 @@ function renderMinimum() {
   const q = flow.state.quote;
   if (!q) return;
   const t = percentToBps($('tol').value);
-  if (!t.ok) { $('d-min').textContent = '—'; $('approve-btn').disabled = true; return; }
-  $('d-min').textContent = amountOut(flow.minimumFor(t.bps), outputUnit(q.direction));   // the quote's own direction
-  $('approve-btn').disabled = sequenceBusy || !flow.state.accounts;
+  $('d-min').textContent = t.ok ? amountOut(flow.minimumFor(t.bps), outputUnit(q.direction)) : '—';   // the quote's own direction
+  syncApprove();
 }
 
 function renderStatus(status) {
@@ -250,28 +257,29 @@ async function followSwap(requestNumber, unit) {
 
 // The user's yes: the extension signs, sends the signed request to the bot and pays (plan section 7 steps 4-5).
 $('approve-btn').addEventListener('click', async () => {
+  if (sequenceBusy) return;   // another approval (this tab or the liquidity tab) is running
   const t = percentToBps($('tol').value);
   if (!t.ok) { say($('swap-msg'), 'Type a tolerance from 0 to 100 percent first.', true); return; }
   say($('swap-msg'), stepText());
-  $('approve-btn').disabled = true;
-  setBusy(true);
+  setBusy(true);   // disables both approve buttons
   const unit = outputUnit(flow.state.quote?.direction ?? direction);   // the approved quote's own direction
   let r;
   try { r = await flow.confirm({ toleranceBps: t.bps, onStep: step => say($('swap-msg'), stepText(step)) }); }
-  finally { setBusy(false); }
+  finally { setBusy(false); }   // an unexpected rejection ends here too: the button is recomputed from its readiness
   if (!r.ok && r.delivered) {
     // The bot holds this request number: the approval is not offered again (a new price is needed); the swap is followed.
     say($('swap-msg'), r.text, true);
-    $('approve-btn').hidden = true; $('approve-btn').disabled = false; $('ask-btn').hidden = false;
+    $('approve-btn').hidden = true; $('ask-btn').hidden = false; renderToleranceHint();
     await followSwap(r.requestNumber, unit);
     return;
   }
   if (!r.ok) {
-    say($('swap-msg'), r.text, true);
-    $('approve-btn').disabled = false;
+    say($('swap-msg'), r.text, true);   // the quote is kept: setBusy(false) left the button enabled per its readiness
     if (r.openRequestNumber) await followSwap(r.openRequestNumber, unit); // givens item 57: show the open swap
     return;
   }
+  // Paid: the quote is spent (flow.confirm), so the approval is not offered again; a new price is asked for.
+  $('approve-btn').hidden = true; $('ask-btn').hidden = false; renderToleranceHint();
   say($('swap-msg'), 'Request sent and payment made by the extension.');
   $('step-paid').classList.add('done'); $('step-paid-t').textContent = time(Math.floor(Date.now() / 1000));
   await followSwap(r.requestNumber, unit);
@@ -293,24 +301,25 @@ $('liq-form').addEventListener('submit', async event => {
     $('l-nodus').textContent = amountOut(BigInt(q.nodusAmount), unitOf('nodus'));
     $('l-request').textContent = q.requestNumber;
     $('l-valid').textContent = time(q.validUntil);
-    $('liq-ask').hidden = true; $('liq-approve').hidden = false;
+    $('liq-ask').hidden = true; $('liq-approve').hidden = false; syncApprove();
     say($('liq-msg'), 'These are the exact amounts. Approve in the extension to sign and pay both sides.');
     await refreshStatus();
   } finally { $('liq-ask').disabled = !connected(); }
 });
 $('liq-approve').addEventListener('click', async () => {
+  if (sequenceBusy) return;   // another approval (this tab or the swap tab) is running
   say($('liq-msg'), stepText());
-  $('liq-approve').disabled = true;
-  setBusy(true);
+  setBusy(true);   // disables both approve buttons
   let r;
   try { r = await flow.confirmAdd({ onStep: step => say($('liq-msg'), stepText(step)) }); }
-  finally { setBusy(false); $('liq-approve').disabled = false; }
+  finally { setBusy(false); }   // recomputed from readiness, also after an unexpected rejection
   if (!r.ok && r.delivered) {   // the bot holds the request: no second approval of this pair
     say($('liq-msg'), r.text, true);   // when NODUS was or may have been sent the text says not to ask for a new pair
     $('liq-approve').hidden = true; $('liq-ask').hidden = false;
     return;
   }
   if (!r.ok) { say($('liq-msg'), r.text, true); return; }
+  $('liq-approve').hidden = true; $('liq-ask').hidden = false;   // paid: the pair is spent (flow.confirmAdd)
   say($('liq-msg'), 'Both requests were sent and both payments made by the extension. The add counts after 300 Ethereum blocks (at least one hour) and 3 Nodus blocks.');
 });
 
