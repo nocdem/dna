@@ -472,7 +472,7 @@ function payoutPendingText(answer) {
 }
 
 // Display only: the third step's title for a state word, never read back as a state (describeSwapState stays the state).
-export const stateLabel =state => (typeof state === 'string' && STATE_TITLES.get(state)) || 'Payout';
+export const stateLabel = state => (typeof state === 'string' && STATE_TITLES.get(state)) || 'Payout';
 
 // Final = the bot has decided and finished. Everything else is "pending": never "failed" for a non-final
 // state (plan section 7 step 8).
