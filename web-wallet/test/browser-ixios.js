@@ -278,12 +278,17 @@ async function openSite(url, connect) {
 }
 // Connect opens on its Home tab; the wallet is the Wallet tab.
 async function toWalletTab(page, connect) { if (connect) await page.locator('.app-nav-item[data-tab="wallet"]').click(); }
+// The network of a chain is chosen in Device & settings only: open the Settings page, pick the Ixios network there,
+// return to the wallet view. The wallet screen has no chooser.
 async function chooseEnvironment(page, id) {
-  await openNetworks(page);
-  if (!await page.locator('#wallet-environment').evaluate(node => node.open)) await page.locator('#wallet-environment > summary').click();
-  await page.locator(`#wallet-environment button[data-environment="${id}"]`).click();
+  await openPage(page, 'settings');
+  await page.selectOption('#network-ixios', id);
+  await walletView(page);
 }
-const environments = page => page.locator('#wallet-environment button[data-environment]').evaluateAll(buttons => buttons.map(button => [button.dataset.environment, button.textContent]));
+const environments = page => page.locator('#network-ixios option').evaluateAll(options => options.map(option => [option.value, option.textContent]));
+// What the wallet screen shows as text for the selected network ("Ixios · Testnet"); the network disclosure's summary.
+const shownNetwork = page => page.locator('#wallet-network .network-summary-selection').textContent();
+const noChooser = page => page.locator('#wallet-environment, #pq-network-environment, [data-environment]').count();
 const stageLabels = page => page.locator('.selected-network-stage').evaluateAll(nodes => [...new Set(nodes.map(node => node.textContent))]);
 const waitHolding = (page, text) => page.waitForFunction(expected => document.querySelector('.asset-group[data-chain="ixios"] .holding-value strong')?.textContent === expected, text);
 async function refreshNow(page) {
@@ -321,12 +326,16 @@ async function siteChecks(url, connect) {
     await page.locator('#show-zero-balances').uncheck();
     await waitHolding(page, MAIN_BALANCE_TEXT);
     assert.deepEqual(testCalls, [], `${label}: no test node request while the wallet is on Mainnet`);
-    // The chooser: Mainnet and Testnet, starting on Mainnet; Ixios keeps its own address line (no PQ status or note).
+    // The choice lives in Device & settings: Mainnet and Testnet, starting on Mainnet; the wallet screen has no chooser and
+    // shows the network as text; Ixios keeps its own address line (no PQ status or note).
     await selectNetwork(page, 'ixios');
-    assert.deepEqual(await environments(page), [['mainnet', 'Mainnet'], ['testnet', 'Testnet']], `${label}: chooser options`);
-    assert.equal(await page.locator('#pq-network-environment').inputValue(), 'mainnet');
-    assert.match(await page.locator('#wallet-environment summary').textContent(), /Environment · Mainnet/);
-    assert.equal(await page.locator('#wallet-environment').evaluate(node => node.hidden), false);
+    assert.equal(await noChooser(page), 0, `${label}: no network chooser on the wallet screen`);
+    assert.deepEqual(await environments(page), [['mainnet', 'Mainnet'], ['testnet', 'Testnet']], `${label}: settings list options`);
+    assert.equal(await page.locator('#network-ixios').inputValue(), 'mainnet');
+    assert.match(await shownNetwork(page), /Ixios · Mainnet/);
+    await openPage(page, 'settings');
+    for (const chain of ['ixios', 'algorand']) assert.equal(await page.locator(`#network-${chain}`).isVisible(), true, `${label}: settings list for ${chain}`);
+    await walletView(page);
     assert.equal(await page.locator('#pq-address-status').evaluate(node => node.hidden), true);
     assert.equal(await page.locator('#pq-recovery-note').evaluate(node => node.hidden), true);
     assert.deepEqual(await stageLabels(page), ['Mainnet']);
@@ -340,8 +349,8 @@ async function siteChecks(url, connect) {
     let fresh = site.ixiosRequests.slice(mark);
     assert.ok(fresh.length > 0 && fresh.every(requestUrl => new URL(requestUrl).origin === testOrigin), fresh.join());
     assert.deepEqual(await stageLabels(page), ['Testnet']);
-    assert.equal(await page.locator('#pq-network-environment').inputValue(), 'testnet');
-    assert.match(await page.locator('#wallet-environment summary').textContent(), /Environment · Testnet/);
+    assert.equal(await page.locator('#network-ixios').inputValue(), 'testnet');
+    assert.match(await shownNetwork(page), /Ixios · Testnet/);
     assert.equal(await page.locator('#send-fields').evaluate(node => node.hidden), true);
     assert.equal(await page.locator('#send-disabled-note').evaluate(node => node.hidden), false);
     assert.equal(await page.locator('#send-disabled-note').textContent(), IXIOS_NOTE);
@@ -361,20 +370,26 @@ async function siteChecks(url, connect) {
     fresh = site.ixiosRequests.slice(mark);
     assert.ok(fresh.length > 0 && fresh.every(requestUrl => new URL(requestUrl).origin === mainOrigin), fresh.join());
     assert.deepEqual(await stageLabels(page), ['Mainnet']);
-    // Choosing Testnet, leaving Ixios for another chain and coming back selects Ixios on Mainnet again, as for the PQ chains.
+    // What Settings chose is what the wallet screen shows: Testnet chosen there, another chain selected and Ixios selected
+    // again stays on Testnet (selecting a chain no longer resets its network; only a new opening starts on Mainnet).
     await chooseEnvironment(page, 'testnet');
     await waitHolding(page, TEST_BALANCE_TEXT);
     await selectNetwork(page, 'ethereum');
     assert.equal(await page.locator('#chain').inputValue(), 'ethereum');
-    ixiosCalls.length = 0; testCalls.length = 0; mark = site.ixiosRequests.length;
+    ixiosCalls.length = 0;
     await selectNetwork(page, 'ixios');
     assert.equal(await page.locator('#chain').inputValue(), 'ixios');
+    await waitHolding(page, TEST_BALANCE_TEXT);
+    assert.equal(await page.locator('#network-ixios').inputValue(), 'testnet', `${label}: Ixios selected again is still on Testnet`);
+    assert.match(await shownNetwork(page), /Ixios · Testnet/);
+    assert.deepEqual(await stageLabels(page), ['Testnet']);
+    assert.deepEqual(ixiosCalls, [], `${label}: no main node call after selecting Ixios again on Testnet`);
+    // Back to Mainnet in Settings for the checks below.
+    ixiosCalls.length = 0; testCalls.length = 0; mark = site.ixiosRequests.length;
+    await chooseEnvironment(page, 'mainnet');
     await waitHolding(page, MAIN_BALANCE_TEXT);
-    assert.equal(await page.locator('#pq-network-environment').inputValue(), 'mainnet', `${label}: Ixios selected again is on Mainnet`);
-    assert.match(await page.locator('#wallet-environment summary').textContent(), /Environment · Mainnet/);
-    assert.deepEqual(await stageLabels(page), ['Mainnet']);
-    assert.deepEqual(ixiosCalls, [{ method: 'eth_getBlockByNumber', params: ['0x1', false] }, { method: 'eth_getBalance', params: [expected, 'latest'] }], `${label}: main node calls after selecting Ixios again`);
-    assert.deepEqual(testCalls, [], `${label}: no test node call after selecting Ixios again`);
+    assert.deepEqual(ixiosCalls, [{ method: 'eth_getBlockByNumber', params: ['0x1', false] }, { method: 'eth_getBalance', params: [expected, 'latest'] }], `${label}: main node calls after choosing Mainnet again`);
+    assert.deepEqual(testCalls, [], `${label}: no test node call after choosing Mainnet again`);
     fresh = site.ixiosRequests.slice(mark);
     assert.ok(fresh.length > 0 && fresh.every(requestUrl => new URL(requestUrl).origin === mainOrigin), fresh.join());
     // A test read still in flight when the network changes back (red-team note 2 of the plan review): its answer is held
@@ -412,8 +427,8 @@ async function siteChecks(url, connect) {
     assert.ok(ixiosCalls.length > 0 && ixiosCalls.every(call => call.method.startsWith('eth_')), `${label}: the reopened wallet reads the main node`);
     ixiosGenesis = IXIOS_GENESIS;
     await selectNetwork(page, 'ixios');
-    assert.equal(await page.locator('#pq-network-environment').inputValue(), 'mainnet', `${label}: reopened on Mainnet`);
-    assert.match(await page.locator('#wallet-environment summary').textContent(), /Environment · Mainnet/);
+    assert.equal(await page.locator('#network-ixios').inputValue(), 'mainnet', `${label}: reopened on Mainnet`);
+    assert.match(await shownNetwork(page), /Ixios · Mainnet/);
     assert.deepEqual(await stageLabels(page), ['Mainnet']);
     assert.ok(site.ixiosRequests.every(requestUrl => [mainOrigin, testOrigin].includes(new URL(requestUrl).origin)), site.ixiosRequests.join());
     assert.deepEqual(site.unexpected, [], `${label}: unexpected requests`); assert.deepEqual(site.errors, [], `${label}: page errors`);

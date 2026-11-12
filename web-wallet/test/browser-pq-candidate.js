@@ -57,13 +57,17 @@ async function choose(page, chain) {
   await badge.click();
   await page.locator('.wallet-navigation a[href="#receive"]').click();
 }
-async function environment(page, network) {
-  const select = page.locator('#pq-network-environment');
-  if (await select.inputValue() === network) return;
-  if (await select.isVisible()) return select.selectOption(network);
-  if (!await page.locator('#wallet-network').evaluate(node => node.open)) await page.locator('#wallet-network > summary').click();
-  if (!await page.locator('#wallet-environment').evaluate(node => node.open)) await page.locator('#wallet-environment > summary').click();
-  await page.locator(`#wallet-environment [data-environment="${network}"]`).click();
+// A chain's network is chosen in Device & settings only (#network-<chain>; the wallet screen has no chooser). A chain with
+// one network (Tidecoin, Soqucoin) has no list and nothing to choose. After a change the script is back on the Receive page.
+// How this could falsely pass: for a single-network chain nothing is checked here; the callers wait for the expected address.
+async function environment(page, chain, network) {
+  const select = page.locator(`#network-${chain}`);
+  if (!await select.count() || await select.inputValue() === network) return;
+  const settings = await page.locator('#extension-bottom-bar').count() ? page.locator('#extension-bottom-bar button[aria-label="Settings"]') : page.locator('.wallet-navigation a[href="#settings"]');
+  await settings.click(); await page.locator('#page-settings').waitFor({ state: 'visible' });
+  await select.selectOption(network);
+  await page.locator('#page-settings .page-back').click(); await page.locator('#page-settings').waitFor({ state: 'hidden' });
+  await page.locator('.wallet-navigation a[href="#receive"]').click();
 }
 // CKB send on the web wallet and Connect (docs/plans/approved/2026-11-03-pq-send-parity.md
 // D3, D5, D6, section 5). A scripted mainnet node (labelled fixture, same answers as
@@ -126,7 +130,7 @@ async function openSend(page) {
   await page.locator('#recipient').waitFor({ state: 'visible' });
 }
 async function openCkbActivity(page) {
-  await choose(page, 'ckb'); await environment(page, 'mainnet');
+  await choose(page, 'ckb'); await environment(page, 'ckb', 'mainnet');
   await page.locator('.wallet-navigation a[href="#wallet-activity"]').click();
   await page.waitForFunction(() => document.querySelector('#activity').textContent.includes('Review same-transaction recovery'));
 }
@@ -163,12 +167,12 @@ async function ckbSendFlow(mode, directory) {
   // show "Send <SYMBOL> from the extension." and no send fields; the extension sends there.
   for (const [chain, symbol] of [['xion', 'XION'], ['splendor', 'SPLD'], ['qtc', 'QTC'], ['ixios', 'IXIOS']]) {
     await choose(page, chain);
-    if (chain !== 'ixios') await environment(page, 'mainnet');
+    if (chain !== 'ixios') await environment(page, chain, 'mainnet');
     assert.equal(await page.locator('#quick-send').isDisabled(), true, `${mode}:${chain} send gate`);
     assert.equal(await page.locator('#send-disabled-note').textContent(), `Send ${symbol} from the extension.`, `${mode}:${chain} note`);
     assert.equal(await page.locator('#send-fields').isVisible(), false, `${mode}:${chain} has no send fields`);
   }
-  await choose(page, 'ckb'); await environment(page, 'mainnet');
+  await choose(page, 'ckb'); await environment(page, 'ckb', 'mainnet');
   assert.equal(await page.locator('#quick-send').isDisabled(), false, `${mode}: CKB mainnet send is open`);
   // First send: the simulation request is refused after the signed transaction was handed
   // to the request, so the outcome is uncertain (unknown), never "Nothing was broadcast".
@@ -248,7 +252,7 @@ try {
       for (const [network, address] of Object.entries(networks)) {
         console.log(`CHECK ${mode}:${chain}:${network}`);
         await choose(page, chain);
-        await environment(page, network);
+        await environment(page, chain, network);
         await page.waitForFunction(expected => document.querySelector('#receive-address').textContent === expected, address);
         assert.equal(await page.locator('#copy-address').isDisabled(), false, `${mode}:${chain}:${network}`);
         assert.equal(await page.locator('#receive-qr svg').count(), 1);
@@ -271,7 +275,7 @@ try {
       await page.locator('.wallet-navigation a[href="#"]').click(); await page.locator('#lock').click();
       await page.locator('#unlock-password:visible').fill(password); await page.locator('#unlock-wallet').click();
       await page.locator('#wallet-open').waitFor({ state: 'visible' });
-      await choose(page, 'ckb'); await environment(page, 'mainnet');
+      await choose(page, 'ckb'); await environment(page, 'ckb', 'mainnet');
       await page.waitForFunction(expected => document.querySelector('#receive-address').textContent === expected, fixture.addresses.ckb.mainnet);
     }
     assert.deepEqual(errors, []);

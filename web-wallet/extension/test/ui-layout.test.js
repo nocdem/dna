@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { ASSETS, PRICE_MAX_AGE, chainBalances, portfolioSnapshot, usdText, displayAmount } from '../../src/portfolio.js';
 import { assertNetworkGroups } from '../../test/browser-network-groups.js';
+import { CHAIN_NETWORKS } from '../src/constants/networks.js';
+import { algorandNetwork } from '../../src/pq/algorand.js';
 
 // Node >=22.14; Chromium at CHROMIUM_PATH or /usr/bin/chromium. No build or
 // compile flags. SHOT_DIR optionally keeps review screenshots; otherwise no
@@ -136,12 +138,13 @@ async function selectNetwork(page, chain) {
   if (await toggle.count() && await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
   await badge.click();
 }
-// 0.1.155 (5eb8dc724): the environment is chosen with buttons in the compact
-// disclosure inside the network disclosure (wallet-screen.js:149-161).
-async function selectEnvironment(page, id) {
-  if (!await page.locator('#wallet-network').evaluate(node => node.open)) await page.locator('#wallet-network > summary').click();
-  if (!await page.locator('#wallet-environment').evaluate(node => node.open)) await page.locator('#wallet-environment > summary').click();
-  await page.locator(`#wallet-environment button[data-environment="${id}"]`).click();
+// A chain's network is chosen in Device & settings only (#network-<chain>, wallet-screen.js); the wallet screen has no
+// chooser. Open Settings from the bottom bar, pick the network, return to the wallet.
+async function selectEnvironment(page, chain, id) {
+  await bottomBar(page, 'Settings').click();
+  await page.locator('#page-settings').waitFor({ state: 'visible' });
+  await page.locator(`#network-${chain}`).selectOption(id);
+  await page.locator('#page-settings .page-back').click();
 }
 async function assertNavigation(page, current = null) {
   // index.html:34 sets the link order.
@@ -625,14 +628,15 @@ describe('mounted extension screens follow the web-wallet layout and preserve pr
           const pq=JSON.parse(readFileSync(new URL('../../test/fixtures/pq-receive.json',import.meta.url))).vectors[0].addresses;
           await page.evaluate(async pq=>{window.layout.state.pqAddresses=pq;await window.layout.refresh();},pq);
           await page.locator('.wallet-navigation a[href="#receive"]').click();await selectNetwork(page,'qtc');
-          await selectEnvironment(page,'mainnet');
+          await selectEnvironment(page,'qtc','mainnet');
           assert.equal(await page.locator('#receive-address').textContent(),pq.qtc.mainnet);
           for(const failure of ['before','after']) {
             await page.evaluate(failure=>{window.layout.state.failNetworkWrites=failure;},failure);
-            await selectEnvironment(page,'testnet');
+            await selectEnvironment(page,'qtc','testnet');
             await page.waitForFunction(()=>!document.querySelector('#screen').inert&&document.querySelector('#wallet-status').textContent.includes('Public fixture network persistence failure'));
             const network=failure==='before'?'mainnet':'testnet';
-            assert.equal(await page.locator('#pq-network-environment').inputValue(),network);
+            assert.equal(await page.locator('#network-qtc').inputValue(),network);
+            assert.match(await page.locator('#wallet-network .network-summary-selection').textContent(),new RegExp(`QTC · ${network==='mainnet'?'Mainnet':'Testnet'}`));
             assert.equal(await page.locator('#receive-address').textContent(),pq.qtc[network]);
             assert.equal(await page.locator('#receive-qr svg').count(),1);
             assert.equal(await page.locator('#copy-address').isDisabled(),false);
@@ -787,7 +791,47 @@ describe('mounted extension screens follow the web-wallet layout and preserve pr
         await page.waitForFunction(() => window.layout.state.preferences.autoLockTimeLimit === 15);
         assert.match(await page.locator('#auto-lock-note').textContent(), /locks after 15 minutes/);
         assert.equal(await page.locator('#session-timeout').count(), 0);
-        await page.locator('#rpc-settings').evaluate(node => { node.open = true; });
+        // Networks are chosen in Device & settings only. Proves: (1) the wallet screen has no network chooser; (2) Device & settings
+        // has one list per chain with more than one network in CHAIN_NETWORKS (PQ chains and Ixios included), each visible whichever
+        // chain is selected (Ethereum, Algorand, Ixios here); (3) choosing Testnet there for Ixios and for Algorand is what the wallet
+        // screen then shows ("Ixios · Testnet", "Algorand · Testnet"), and it is stored through setChainNetwork. Falsely passes if the
+        // expected lists were computed from a wrong table (they come from CHAIN_NETWORKS, the one the page reads) or if the network
+        // line already said Testnet (each chain starts on Mainnet: DEFAULT_NETWORKS, asserted before the choice). The reads that
+        // follow a Testnet choice go to the public test endpoints of those two chains, which the fixture blocks: only those
+        // origins are tolerated and they are removed from `blocked` so the final no-outside-request assertion still covers the rest.
+        {
+          const blockedStart = blocked.length;
+          const multi = Object.entries(CHAIN_NETWORKS).filter(([, choices]) => choices.length > 1).map(([chain]) => chain).sort();
+          const settingsPage = async () => { await bottomBar(page, 'Settings').click(); await page.locator('#page-settings').waitFor({ state: 'visible' }); };
+          const toWallet = async () => { if (await page.locator('#page-settings').isVisible()) await page.locator('#page-settings .page-back').click(); };
+          const networkLine = () => page.locator('#wallet-network .network-summary-selection').textContent();
+          for (const chain of ['ethereum', 'algorand', 'ixios']) {
+            await toWallet(); await selectNetwork(page, chain);
+            assert.equal(await page.locator('#wallet-environment, #pq-network-environment, [data-environment]').count(), 0, `${chain} selected: no network chooser on the wallet screen`);
+            await settingsPage();
+            assert.deepEqual(await page.locator('#device-panel select[id^="network-"]').evaluateAll(nodes => nodes.map(node => node.id.slice('network-'.length)).sort()), multi, `${chain} selected: one list per multi-network chain`);
+            for (const id of multi) assert.equal(await page.locator(`#network-${id}`).isVisible(), true, `${chain} selected: the ${id} list is visible`);
+          }
+          for (const [chain, name] of [['ixios', 'Ixios'], ['algorand', 'Algorand']]) {
+            await toWallet(); await selectNetwork(page, chain);
+            assert.match(await networkLine(), new RegExp(`${name} · Mainnet`));
+            await settingsPage();
+            await page.locator(`#network-${chain}`).selectOption('testnet');
+            await page.waitForFunction(id => window.layout.state.networks[id] === 'testnet', chain);
+            await page.locator('#page-settings .page-back').click();
+            assert.match(await networkLine(), new RegExp(`${name} · Testnet`));
+            assert.equal(await page.locator('#wallet-environment, #pq-network-environment, [data-environment]').count(), 0);
+          }
+          // Back to Mainnet for the steps below (the fixture's state is shared with them).
+          for (const chain of ['ixios', 'algorand']) {
+            await toWallet(); await settingsPage(); await page.locator(`#network-${chain}`).selectOption('mainnet');
+            await page.waitForFunction(id => window.layout.state.networks[id] === 'mainnet', chain);
+            await page.locator('#page-settings .page-back').click();
+          }
+          await toWallet(); await settingsPage();
+          const tolerated = new Set(['ixios', 'algorand'].flatMap(chain => CHAIN_NETWORKS[chain].map(network => new URL(network.endpoint).origin)).concat(Object.values({ testnet: algorandNetwork('testnet'), mainnet: algorandNetwork('mainnet') }).map(network => new URL(network.indexer).origin)));
+          for (const url of blocked.splice(blockedStart)) assert.ok(tolerated.has(new URL(url).origin), `Unexpected outside request ${url}`);
+        }
         await page.locator('#network-solana').selectOption('devnet');
         await page.waitForFunction(() => window.layout.state.networks.solana === 'devnet');
         await page.locator('#page-settings .page-back').click();

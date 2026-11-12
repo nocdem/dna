@@ -14,7 +14,7 @@ import { randomBytes } from 'node:crypto';
 // contains the recovery phrase, not that none was attempted; a mode left out by
 // PQ_RECEIVE_BROWSER_MODE is not run; a stale build is tested as built.
 // UI pack 2026-11-03: the "receive address derived locally" status line is gone (the
-// line is empty and not visible; the network is checked on the environment summary);
+// line is empty and not visible; the network is checked on the wallet screen's network line);
 // the extension's Settings is reached through the bottom bar. Falsely passes if the
 // address never appeared (the check follows the wait for the shown address).
 // Native-rule chains (plan 2026-11-03-pq-native): #pq-recovery-note is hidden for Tidecoin, Soqucoin, XION and
@@ -65,20 +65,31 @@ async function qr(page){
   });
   assert.ok(pixels,'QR exists');return jsQR(Uint8ClampedArray.from(pixels.data),pixels.size,pixels.size)?.data;
 }
-// #chain and #pq-network-environment are hidden; the shipped page chooses both in
-// the network disclosure (src/app.js:2307, :970). Send expectations come from the
-// surface's capability table (handoff enables some mainnet/testnet sends).
+// #chain is hidden; the shipped page chooses the chain in the network disclosure (src/app.js #wallet-network) and the
+// chain's network in Device & settings only (#network-<chain>; the wallet screen has no chooser). Send expectations come
+// from the surface's capability table (handoff enables some mainnet/testnet sends).
 const sendSupported=(chain,network)=>activeMode==='extension'?extensionPageSupported(chain,'send',network):walletPageSupported(chain,'send',network);
 async function openDisclosure(page){if(!await page.locator('#wallet-network').evaluate(n=>n.open))await page.locator('#wallet-network > summary').click();}
 async function selectChain(page,chain){await openDisclosure(page);const badge=page.locator(`#portfolio-networks .network-health[data-chain="${chain}"]`);const toggle=badge.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " network-group ")]').locator('.network-group-toggle');if(await toggle.count()&&await toggle.getAttribute('aria-expanded')!=='true')await toggle.click();await badge.click();}
-async function selectEnvironment(page,network){if(await page.locator('#pq-network-environment').inputValue()===network)return;await openDisclosure(page);if(!await page.locator('#wallet-environment').evaluate(n=>n.open))await page.locator('#wallet-environment > summary').click();await page.locator(`#wallet-environment button[data-environment="${network}"]`).click();}
+// A chain with more than one network has a list in Device & settings; the helper picks the network there and returns to Receive.
+const multiNetwork=chain=>PQ_NETWORKS[chain].networks.length>1;
+async function selectEnvironment(page,chain,network){
+  if(!multiNetwork(chain)){assert.equal(await page.locator(`#network-${chain}`).count(),0,`${chain}: a single-network chain has no settings list`);return;}
+  assert.equal(await page.locator(`#network-${chain}`).count(),1,`${chain}: one settings list`);
+  if(await page.locator(`#network-${chain}`).inputValue()===network)return;
+  await settings(page);await page.selectOption(`#network-${chain}`,network);await page.locator('#page-settings .page-back').click();await page.locator('#page-settings').waitFor({state:'hidden'});
+}
+// What the wallet screen shows as text for the selected network ("Algorand · Testnet"): the network disclosure's summary.
+const shownNetwork=page=>page.locator('#wallet-network .network-summary-selection').textContent();
 async function openReceive(page){if(!(await page.locator('#page-receive').isVisible()))await page.locator('.wallet-navigation a[href="#receive"]').click();}
 async function address(page,chain,network,expected,{decode=true}={}){
   await openReceive(page);
   await selectChain(page,chain);
-  await selectEnvironment(page,network);
-  try { await page.waitForFunction(expected=>document.querySelector('#receive-address')?.textContent===expected,expected); } catch(error) { console.error('ADDRESS DIAGNOSTIC',{chain,network,expected},await page.evaluate(()=>({chain:document.querySelector('#chain')?.value,address:document.querySelector('#receive-address')?.textContent,network:document.querySelector('#pq-network-environment')?.value,status:document.querySelector('#pq-address-status')?.textContent,wallet:document.querySelector('#wallet-status')?.textContent})));throw error; }
-  assert.equal(await page.locator('#pq-network-environment').inputValue(),network);
+  await selectEnvironment(page,chain,network);
+  await openReceive(page);
+  try { await page.waitForFunction(expected=>document.querySelector('#receive-address')?.textContent===expected,expected); } catch(error) { console.error('ADDRESS DIAGNOSTIC',{chain,network,expected},await page.evaluate(id=>({chain:document.querySelector('#chain')?.value,address:document.querySelector('#receive-address')?.textContent,network:document.querySelector(`#network-${id}`)?.value,status:document.querySelector('#pq-address-status')?.textContent,wallet:document.querySelector('#wallet-status')?.textContent}),chain));throw error; }
+  if(multiNetwork(chain))assert.equal(await page.locator(`#network-${chain}`).inputValue(),network);
+  assert.equal(await page.locator('#wallet-environment, #pq-network-environment, [data-environment]').count(),0,`${activeMode} ${chain}: no network chooser on the wallet screen`);
   assert.equal(await page.locator('#copy-address').isDisabled(),false);
   // Positive side: where the table enables sending, the rail offers Send.
   assert.equal(await page.locator('.wallet-navigation a[href="#send"]').isVisible(),sendSupported(chain,network),`${activeMode} ${chain} ${network}: Send link follows the capability table`);
@@ -92,7 +103,7 @@ async function address(page,chain,network,expected,{decode=true}={}){
     assert.equal(await page.locator('#send-disabled-note').textContent(),config.sendNote);
   }
   // UI pack 2026-11-03 (operator "2"): the status line "<Network> receive address derived locally." is gone once the address
-  // is shown, the empty line takes no space; the network is read from the environment summary ("Environment · <label>").
+  // is shown, the empty line takes no space; the network is read from the network line ("<Chain> · <label>").
   assert.equal(await page.locator('#pq-address-status').textContent(),'');
   assert.equal(await page.locator('#pq-address-status').isVisible(),false);
   // The recovery note (UI pack 2026-11-03 section 5b) keeps its text as on 14dc02b9f (src/app.js, extension wallet-screen.js) for
@@ -100,9 +111,10 @@ async function address(page,chain,network,expected,{decode=true}={}){
   // (whose second sentence says native wallets may differ) is hidden (plan 2026-11-03-pq-native section 4, PQ_NATIVE_WORD_CHAINS).
   const nativeWords=PQ_NATIVE_WORD_CHAINS.includes(chain);
   assert.equal(await page.locator('#pq-recovery-note').textContent(),'Recover this address with your Nodus recovery phrase. Native chain wallets may derive different addresses.');
-  // It sits in the network environment disclosure, shown with it unless the chain is a native-word chain.
+  // It sits on the wallet screen under the network line, shown whenever a PQ chain is selected unless the chain is a native-word chain.
   assert.equal(await page.locator('#pq-recovery-note').evaluate(node=>node.hidden),nativeWords,`${activeMode} ${chain}: recovery note hidden only for native-word chains`);
-  assert.match(await page.locator('#wallet-environment summary').textContent(),new RegExp(network==='testnet'?'Testnet':'Mainnet'));
+  // The wallet screen shows the chosen network as text ("<Chain> · <Network>").
+  assert.match(await shownNetwork(page),new RegExp(network==='testnet'?'Testnet':'Mainnet'));
   if(decode)assert.equal(await qr(page),expected);
   await page.locator('#send-form').evaluate(form=>form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
   assert.equal(await page.locator('#review-dialog').evaluate(d=>d.open),false);
@@ -164,6 +176,16 @@ try {
     assert.match(legacyAddress,/^0x[0-9a-fA-F]{40}$/);
     for(const [chain,networks] of Object.entries(fixture.addresses))for(const [network,expected]of Object.entries(networks))await address(page,chain,network,expected);
     await selectChain(page,'ethereum');assert.equal(await page.locator('#receive-address').textContent(),legacyAddress);
+    // What Device & settings chose stays: Algorand on Testnet (chosen there), another chain selected and Algorand selected again
+    // is still Algorand · Testnet with its testnet address (selecting a chain never resets its network; only a new opening does).
+    await address(page,'algorand','testnet',fixture.addresses.algorand.testnet);
+    assert.match(await shownNetwork(page),/Algorand · Testnet/);
+    await selectChain(page,'ethereum');assert.equal(await page.locator('#receive-address').textContent(),legacyAddress);
+    await selectChain(page,'algorand');
+    await page.waitForFunction(expected=>document.querySelector('#receive-address')?.textContent===expected,fixture.addresses.algorand.testnet);
+    assert.equal(await page.locator('#network-algorand').inputValue(),'testnet');
+    assert.match(await shownNetwork(page),/Algorand · Testnet/);
+    await selectChain(page,'ethereum');assert.equal(await page.locator('#receive-address').textContent(),legacyAddress);
     await settings(page);
     if(mode==='web'){
       await page.locator('#vault-storage-title').click();
@@ -182,7 +204,7 @@ try {
     await page.locator('#wallet-open').waitFor({state:'visible'});
     // Operator 2026-11-03 ("hersey varsa yeniden acista mainnet"): after reopening, a network
     // that has a mainnet opens on mainnet, whatever was chosen before.
-    await openReceive(page);await selectChain(page,'ckb');assert.equal(await page.locator('#pq-network-environment').inputValue(),'mainnet');
+    await openReceive(page);await selectChain(page,'ckb');assert.equal(await page.locator('#network-ckb').inputValue(),'mainnet');assert.match(await shownNetwork(page),/Mainnet/);
     await address(page,'ckb','testnet',fixture.addresses.ckb.testnet);
     await address(page,'qtc','mainnet',fixture.addresses.qtc.mainnet);
     await address(page,'qtc','testnet',fixture.addresses.qtc.testnet);
@@ -201,7 +223,9 @@ try {
     // The helper expects the network disclosure closed, as the page leaves it after a choice is made elsewhere.
     if(await page.locator('#wallet-network').evaluate(n=>n.open))await page.locator('#wallet-network > summary').click();
     await assertNetworkGroups(page,{addressBookIxios:mode==='extension'});
-    assert.equal(await page.locator('#pq-network-environment option').count(),1);
+    // Asentum has one network (testnet): it gets no list in Device & settings, as it had no choice before; Algorand has two and does.
+    assert.equal(await page.locator('#network-asentum').count(),0);
+    assert.deepEqual(await page.locator('#network-algorand option').evaluateAll(options=>options.map(option=>option.value)),PQ_NETWORKS.algorand.networks.map(network=>network.id));
     assert.deepEqual(errors,[]);
     await lockPage(page);await context.close();context=null;
     console.log(`PASS ${mode}: 13 receive variants, decoded QR, send refusal, encrypted recovery, network persistence, reload`);
