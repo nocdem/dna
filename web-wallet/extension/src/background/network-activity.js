@@ -1,4 +1,5 @@
 import {verifyIxiosSignedTransfer} from '../../../src/pq/ixios/verify.js';
+import {IXIOS_NETWORKS} from '../../../src/pq/ixios/network.js';
 import {verifyTidecoinSignedPayload} from '../../../src/pq/tidecoin-recovery.js';
 import { createSubmissionProof, clearSubmissionProofs, recoverSubmissionProofs as recoverProofs } from '../../../src/pq/submission-proof.js';
 import { ACTIVITY_KEY, HISTORY_KEY, VAULT_KEY } from '../../../src/vault.js';
@@ -15,12 +16,14 @@ const tidecoinWrites = new Map(), ixiosWrites = new Map();
 // the unchanged encrypted formats under separate testnet storage keys, then
 // restore only the endpoint belonging to that bucket. Mainnet keeps the
 // pre-existing shared keys in nodus.js, so old sends remain mainnet sends.
+// Ixios has two buckets (mainnet, testnet): every row and every saved signed payload
+// is checked against the bucket's own network, and a new row must carry that network.
 export function createNetworkActivity({ chain, network, session: s, storage, current, onActivityChanged, tidecoinWasmBytes, ixiosWasmBytes }) {
   const activityKey = `${ACTIVITY_KEY}.${chain}.${network.id}`, historyKey = `${HISTORY_KEY}.${chain}.${network.id}`;
   let rows = [], page = null, blocked = false, error = '', writes = Promise.resolve();const tidecoinReplacements=new Map(),ixiosReplacements=new Map();
   async function checkedRows(value) {
     if (value.some(row => row.chain !== chain || (['splendor','asentum','ckb','xion','qtc','tidecoin','ixios'].includes(chain) && row.networkId !== network.id))) throw new Error('Saved activity belongs to a different chain.');
-    if(chain==='ixios')for(const row of value)if(row.signedPayload!==undefined){await verifyIxiosSignedTransfer(row.signedPayload.data,{wasmBytes:ixiosWasmBytes});current();}
+    if(chain==='ixios')for(const row of value)if(row.signedPayload!==undefined){await verifyIxiosSignedTransfer(row.signedPayload.data,{wasmBytes:ixiosWasmBytes,networkId:network.id});current();}
     if(chain==='tidecoin')for(const row of value)if(row.signedPayload!==undefined){await verifyTidecoinSignedPayload(row,{wasmBytes:tidecoinWasmBytes});current();}
     return value.map(row => ({ ...row, ...((chain==='tidecoin'||chain==='ixios')&&row.notSubmitted===true&&row.savedStatus==='failed'?{status:'failed',note:'Authenticated cancellation: this attempt was not submitted.'}:{}), endpoint: network.endpoint }));
   }
@@ -84,11 +87,11 @@ export function createNetworkActivity({ chain, network, session: s, storage, cur
       } catch (failure) { current(); blocked = true; error = failure.message; throw failure; }
     },
     async appendIxiosPendingWithProof(review,details) {
-      current();if(chain!=='ixios'||network.id!=='mainnet'||!s.vault||!s.key||details.networkId!=='mainnet'||details.from!==s.addresses.ixios||review.from!==details.from||review.to!==details.to||review.amount.toString()!==details.amountAtoms||review.fee.toString()!==details.feeAtoms||review.nonce.toString()!==details.nonce||review.gasPrice.toString()!==details.gasPrice||review.gasLimit.toString()!==details.gasLimit)throw Error('Invalid Ixios pending owner or review.');
+      current();if(chain!=='ixios'||!Object.hasOwn(IXIOS_NETWORKS,network.id)||!s.vault||!s.key||details.networkId!==network.id||(review.networkId??'mainnet')!==network.id||details.from!==s.addresses.ixios||review.from!==details.from||review.to!==details.to||review.amount.toString()!==details.amountAtoms||review.fee.toString()!==details.feeAtoms||review.nonce.toString()!==details.nonce||review.gasPrice.toString()!==details.gasPrice||review.gasLimit.toString()!==details.gasLimit)throw Error('Invalid Ixios pending owner or review.');
       return appendWithProof(recordActivity({chain:'ixios',from:details.from,to:details.to,symbol:'IXIOS',amount:formatUnits(BigInt(details.amountAtoms),18),endpoint:network.endpoint},details));
     },
     rotateIxiosPending(review,details) {
-      current();if(chain!=='ixios'||network.id!=='mainnet'||!s.vault||!s.key||details.from!==s.addresses.ixios||review.hash!==details.hash||review.from!==details.from||review.to!==details.to||review.amountAtoms!==details.amountAtoms||review.feeAtoms!==details.feeAtoms||review.nonce!==details.nonce||review.gasPrice!==details.gasPrice||review.gasLimit!==details.gasLimit)throw Error('Invalid Ixios recovery owner or review.');const matches=rows.filter(row=>row.hash===details.hash);if(matches.length!==1||matches[0].submissionId!==details.previousSubmissionId||matches[0].notSubmitted===true||!['pending','unknown'].includes(matches[0].status))throw Error('Ixios recovery attempt changed.');
+      current();if(chain!=='ixios'||!Object.hasOwn(IXIOS_NETWORKS,network.id)||!s.vault||!s.key||details.networkId!==network.id||details.from!==s.addresses.ixios||review.hash!==details.hash||review.from!==details.from||review.to!==details.to||review.amountAtoms!==details.amountAtoms||review.feeAtoms!==details.feeAtoms||review.nonce!==details.nonce||review.gasPrice!==details.gasPrice||review.gasLimit!==details.gasLimit)throw Error('Invalid Ixios recovery owner or review.');const matches=rows.filter(row=>row.hash===details.hash);if(matches.length!==1||matches[0].submissionId!==details.previousSubmissionId||matches[0].notSubmitted===true||!['pending','unknown'].includes(matches[0].status))throw Error('Ixios recovery attempt changed.');
       const row=recordActivity({chain:'ixios',from:details.from,to:details.to,symbol:'IXIOS',amount:formatUnits(BigInt(details.amountAtoms),18),endpoint:network.endpoint},details);ixiosReplacements.set(row.hash,matches[0].submissionId);rows=rows.map(old=>old===matches[0]?row:old);return row;
     },
     async appendTidecoinPendingWithProof(review,details) {

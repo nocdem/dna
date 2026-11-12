@@ -28,8 +28,9 @@ export async function createIncomingNotifications({ alarms, notifications, runti
       // Incoming-payment notices cover mainnet balances only: none while BNB Smart Chain is on its test network.
       ...(bscMainnet ? [{ chain: 'bsc', network: 'mainnet', endpoint: evm.getState().endpoints.bsc,
         label: `${CHAINS.bsc.name} (Mainnet)`, kind: 'balance', assets: [CHAINS.bsc, ...CHAINS.bsc.tokens], read: () => evm.getBalances('bsc') }] : []),
-      { chain: 'ixios', network: 'mainnet', endpoint: IXIOS_NETWORK.endpoint,
-        label: `${IXIOS_NETWORK.name} (Mainnet)`, kind: 'balance', assets: [IXIOS_NETWORK], read: () => nodus.getIxiosBalance() },
+      // Mainnet only, as BNB Smart Chain above: a test-network balance must not be compared with a mainnet baseline.
+      ...(networks.get('ixios').id === 'mainnet' ? [{ chain: 'ixios', network: 'mainnet', endpoint: IXIOS_NETWORK.endpoint,
+        label: `${IXIOS_NETWORK.name} (Mainnet)`, kind: 'balance', assets: [IXIOS_NETWORK], read: () => nodus.getIxiosBalance('mainnet') }] : []),
     ];
   }
   const identity = source => JSON.stringify([source.chain, source.network, source.endpoint]);

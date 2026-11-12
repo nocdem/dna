@@ -78,7 +78,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   let book, earn, names, claim, contracts, vaults;
   const isSolanaTron = chain => chain === 'solana' || chain === 'tron' || chain === 'algorand' || chain === 'soqucoin' || chain === 'splendor' || chain === 'asentum' || chain === 'qtc' || chain === 'ckb' || chain === 'ixios' || (chain === 'xion' && extensionCapabilitiesFor(chain, selectedNetwork(chain).id).send);
   const pendingPqNetworks = new Map();
-  const selectedNetwork = chain => chain === 'ixios' ? { id: 'mainnet', label: 'Mainnet', endpoint: IXIOS_NETWORK.endpoint } : chainNetwork(chain, pendingPqNetworks.get(chain)?.id ?? ui.state.networks?.[chain]);
+  const selectedNetwork = chain => chainNetwork(chain, pendingPqNetworks.get(chain)?.id ?? ui.state.networks?.[chain]);
   const capabilitiesFor = chain => extensionCapabilitiesFor(chain, selectedNetwork(chain).id);
   // Send is offered only where the network can send now: capability AND not receive-only (UI pack 2026-11-03, operator "send tusunu kaldir gecsin").
   const pageSupported = (chain, page) => !(page === 'send' && networks[chain]?.receiveOnly) && extensionPageSupported(chain, page, selectedNetwork(chain).id);
@@ -101,10 +101,13 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     // Background derivations have settled before unlock is published. Without
     // an Ixios or selected PQ address there is no balance source for this session; use the
     // shared portfolio's unavailable-source branch (portfolio-view.js:78-85).
-    ixios: { ...extensionNetworkConfig('ixios', IXIOS_NETWORK, selectedNetwork('ixios').id), ...(!ui.state.addresses.ixios ? { balanceUnavailable: true } : {}) },
+    ixios: { ...extensionNetworkConfig('ixios', IXIOS_NETWORK, selectedNetwork('ixios').id), endpoint: selectedNetwork('ixios').endpoint, ...(!ui.state.addresses.ixios ? { balanceUnavailable: true } : {}) },
     ...Object.fromEntries(Object.entries(PQ_NETWORKS).map(([chain, config]) => [chain, { ...extensionNetworkConfig(chain, config, selectedNetwork(chain).id), testnet: selectedNetwork(chain).id === 'testnet',
       ...(!ui.state.pqAddresses?.[chain]?.[selectedNetwork(chain).id] ? { balanceUnavailable: true } : {}) }])) });
   let networks = networkDefinitions(), latestKept = {}, opened = false;
+  // Kept balances are saved only for mainnet where one key serves several networks of a chain (Solana, TRON, and Ixios,
+  // whose test network has the same address); Algorand and CKB keep none.
+  const keptSaved = key => { const chain = key.split(':')[0]; return !['algorand', 'ckb'].includes(chain) && (!['solana', 'tron'].includes(chain) || ui.state.networks?.[chain] === 'mainnet') && (chain !== 'ixios' || selectedNetwork('ixios').id === 'mainnet'); };
   const readers = portfolioReaders(ui);
   const portfolio = createPortfolio({ ...readers, selectAsset,
     async readBalances(chain, address, endpoint, options = {}) {
@@ -118,7 +121,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     leadingNetworks: [{ network: networks.nodus, asset: NODUS_ASSET }],
     extraNetworks: [{ network: CELLFRAME, asset: CPUNK_ASSET }, { network: networks.ixios, asset: IXIOS_ASSET }, ...PQ_ENTRIES.map(entry => ({ ...entry, network: networks[entry.asset.chain] }))],
     onKept(entries) {
-      latestKept = Object.fromEntries(Object.entries(entries).filter(([key]) => !['algorand', 'ckb'].includes(key.split(':')[0]) && (!['solana', 'tron'].includes(key.split(':')[0]) || ui.state.networks?.[key.split(':')[0]] === 'mainnet')));
+      latestKept = Object.fromEntries(Object.entries(entries).filter(([key]) => keptSaved(key)));
       void ui.request('keepBalances', [latestKept]).catch(error => sessionLog.log('wallet', error, { error: true }));
     } });
   let deviceStorage; try { deviceStorage = window.localStorage; } catch { /* device preferences stay in this page */ }
@@ -131,8 +134,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   $('show-zero-balances').onchange = () => { $('show-zero-balances-note').textContent = applyZero(!$('show-zero-balances').checked); };
   const initial = ui.request('getKeptBalances').catch(() => ({})).then(entries => {
     if (disposed) return;
-    latestKept = Object.fromEntries(Object.entries(entries).filter(([key]) => !['algorand', 'ckb'].includes(key.split(':')[0]) && (!['solana', 'tron'].includes(key.split(':')[0]) || ui.state.networks?.[key.split(':')[0]] === 'mainnet')));
-    const kept = Object.fromEntries(Object.entries(latestKept).map(([key, value]) => [key, { ...value, units: BigInt(value.units), ...(value.price ? { price: { units: BigInt(value.price.units), observedAt: value.price.observedAt } } : {}) }]));
+    latestKept = Object.fromEntries(Object.entries(entries).filter(([key]) => keptSaved(key)));
+    const kept =Object.fromEntries(Object.entries(latestKept).map(([key, value]) => [key, { ...value, units: BigInt(value.units), ...(value.price ? { price: { units: BigInt(value.price.units), observedAt: value.price.observedAt } } : {}) }]));
     portfolio.open(publicAddresses(), endpoints(), { kept, automatic: false }); opened = true;
     earn?.update(); void claim?.refresh();
     return portfolio.refresh();
@@ -511,14 +514,14 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     const state = ui.state;
     networks = networkDefinitions();
     for (const [chain, config] of Object.entries(networks)) {
-      const testnet = (isPqChain(chain) || ['solana', 'tron', ...EVM_FAMILIES].includes(chain)) && selectedNetwork(chain).id !== 'mainnet';
+      const testnet = (isPqChain(chain) || ['solana', 'tron', 'ixios', ...EVM_FAMILIES].includes(chain)) && selectedNetwork(chain).id !== 'mainnet';
       const endpoint = endpoints()[chain], previousEndpoint = endpointVersions.get(chain);
       const version = JSON.stringify([config, testnet, endpoint, publicAddresses()[chain], selectedNetwork(chain).id]);
       if (networkVersions.get(chain) !== version) {
         const before = networkVersions.get(chain); networkVersions.set(chain, version);
         endpointVersions.set(chain, endpoint);
         // `networkId`: the selected network's own id, so two test networks of one chain (Solana Testnet and Devnet) differ.
-        portfolio.setNetwork(chain, { ...config, testnet, networkId: selectedNetwork(chain).id }, { keepRead: !before || chain === 'nodus', forgetKept: ['algorand', 'ckb'].includes(chain) });
+        portfolio.setNetwork(chain, { ...config, testnet, networkId: selectedNetwork(chain).id }, { keepRead: !before || chain === 'nodus', forgetKept: ['algorand', 'ckb'].includes(chain) || (chain === 'ixios' && !!before && JSON.parse(before).at(-1) !== selectedNetwork(chain).id) });
         if (opened && before && previousEndpoint !== endpoint) portfolio.changeEndpoint(chain, endpoint);
         if (opened) portfolio.setAddress(chain, publicAddresses()[chain]);
       }
@@ -541,7 +544,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
       if (previousNetwork && identity !== previousNetwork) { readGeneration++; cancelReview(); }
       previousNetwork = identity; previousTokens = tokens; previousAddress = address; selectChain();
     }
-    for (const chain of ['ethereum', 'bsc', 'solana', 'tron']) $(`network-${chain}`).value = chainNetwork(chain, state.networks?.[chain]).id;
+    for (const chain of ['ethereum', 'bsc', 'solana', 'tron', 'ixios']) $(`network-${chain}`).value = chainNetwork(chain, state.networks?.[chain]).id;
     if (evmSelect) evmSelect.value = state.evm.selectedChain;
     updateContractAvailability();
     book.update(); earn.update(); names.update(); claim.update(); contracts.update(); vaults.update();

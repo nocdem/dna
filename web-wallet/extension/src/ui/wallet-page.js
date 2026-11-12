@@ -30,7 +30,7 @@ export function portfolioReaders(ui) {
       const methods = { nodus: 'getNodusBalances', ethereum: 'getEvmBalances', bsc: 'getEvmBalances',
         solana: 'getSolanaBalances', tron: 'getTronBalances', cellframe: 'getCpunkBalance', ixios: 'getIxiosBalance' };
       if (!methods[chain]) throw new Error('Unsupported balance network.');
-      const value = await ui.request(methods[chain], ['ethereum', 'bsc'].includes(chain) ? [chain] : []);
+      const value = await ui.request(methods[chain], ['ethereum', 'bsc'].includes(chain) ? [chain] : chain === 'ixios' ? [networkId ?? ui.state?.networks?.ixios ?? 'mainnet'] : []);
       return chain === 'cellframe' ? [{ symbol: 'CPUNK', balance: value.balance }] : value;
     },
     async readPrices() {

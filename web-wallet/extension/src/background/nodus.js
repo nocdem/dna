@@ -9,7 +9,7 @@ import { deriveNodusAddress } from '../../../src/nodus/derive.js';
 import * as adapter from '../../../src/adapters/nodus.js';
 import { readCpunk } from '../../../src/adapters/cpunk.js';
 import { readIxiosBalance } from '../../../src/pq/ixios/balance.js';
-import { IXIOS_NETWORK } from '../../../src/pq/ixios/network.js';
+import { ixiosNetwork } from '../../../src/pq/ixios/network.js';
 import { prepareTransfer } from '../../../src/wallet.js';
 import { NODUS_ASSET, nodusTokens } from '../../../src/nodus/network.js';
 import { NODUS_HISTORY_LIMIT, localRowsToShow, nodusHistoryRow, nodusHistoryStatus } from '../../../src/nodus/history.js';
@@ -770,10 +770,10 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       const s = active();
       const result = await readCpunk({ address: getAddresses().cpunk, signal: s.abort.signal }); current(s); return result;
     },
-    async getIxiosBalance() {
+    async getIxiosBalance(networkId = 'mainnet') {
       const s = active(), address = getAddresses().ixios;
       if (!address) throw new Error('Ixios address unavailable. Lock and reopen your wallet to retry.');
-      const result = await readIxiosBalance(address, IXIOS_NETWORK.endpoint, { signal: s.abort.signal }); current(s); return result;
+      const result = await readIxiosBalance(address, ixiosNetwork(networkId).endpoint, { signal: s.abort.signal, networkId }); current(s); return result;
     },
     async prepareSend({ to, amount, tokenId } = {}) {
       const s = active();

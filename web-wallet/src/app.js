@@ -1033,13 +1033,14 @@ function syncPqAddress(chain) {
   }
 }
 // Chooses the Ixios network (an id of IXIOS_NETWORKS). Mainnet is the same IXIOS_NETWORK object the portfolio was
-// created with; the test network gets a copy with its endpoint, option list and stage label. The kept balances of Ixios
+// created with; the test network gets a copy with its endpoint, option list and stage label, marked testnet (with its network id) so
+// the kept balances carry that network's own identity (src/portfolio.js networkIdOf). The kept balances of Ixios
 // are forgotten (one key serves both networks) and a read in flight is aborted by setNetwork.
 function selectIxiosNetwork(id) {
   const entry = ixiosNetwork(id);
   if (ixiosSelection === entry.id) return;
   ixiosSelection = entry.id; endpoints[ixiosChain] = entry.endpoint;
-  receiveOnlyNetworks[ixiosChain] = entry.id === 'mainnet' ? IXIOS_NETWORK : { ...IXIOS_NETWORK, endpoint: entry.endpoint, rpcOptions: entry.rpcOptions, stage: entry.label };
+  receiveOnlyNetworks[ixiosChain] = entry.id === 'mainnet' ? IXIOS_NETWORK : { ...IXIOS_NETWORK, endpoint: entry.endpoint, rpcOptions: entry.rpcOptions, stage: entry.label, testnet: true, networkId: entry.id };
   portfolio.setNetwork(ixiosChain, receiveOnlyNetworks[ixiosChain], { forgetKept: true });
   if (!wallet || wallet.locked) return;
   const address = wallet.addresses[ixiosChain];

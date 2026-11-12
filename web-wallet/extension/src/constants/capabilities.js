@@ -1,6 +1,7 @@
 import { CKB_FULL_RECIPIENT_SEND_ENABLED } from '../../../src/pq/ckb-recipient-policy.js';
 import { capabilitiesFor, pageSupported } from '../../../src/capabilities.js';
 import { pqSendGate, PQ_PAGE_HISTORY_CHAINS } from '../../../src/pq/send-gates.js';
+import { IXIOS_NETWORKS } from '../../../src/pq/ixios/network.js';
 
 // Trusted extension wallet UI only. This does not enable site-provider signing,
 // assets, rekeyed accounts or testnet sends. The send / history flags of the
@@ -15,7 +16,8 @@ const onEvmTestNetwork = (chain, networkId) => (chain === 'ethereum' || chain ==
 export function extensionCapabilitiesFor(chain, networkId) {
   const shared = capabilitiesFor(chain);
   if (onEvmTestNetwork(chain, networkId)) return { ...shared, history: false };
-  if (chain === 'ixios') return { ...shared, send: networkId === 'mainnet', history: networkId === 'mainnet' }; // Trusted code candidate; live RPC availability remains qualified.
+  // Send and history are on for every listed Ixios network (mainnet and the test network); an unlisted id gets neither.
+  if (chain === 'ixios') { const listed = typeof networkId === 'string' && Object.hasOwn(IXIOS_NETWORKS, networkId); return { ...shared, send: listed, history: listed }; } // Trusted code candidate; live RPC availability remains qualified.
   const gate = pqSendGate(chain, networkId);
   return gate ? { ...shared, ...gate } : shared;
 }
@@ -24,7 +26,7 @@ export function extensionPageSupported(chain, page, networkId) {
   return page === 'send' ? extensionCapabilitiesFor(chain, networkId).send : page === 'wallet-activity' && [...PQ_PAGE_HISTORY_CHAINS, 'ixios'].includes(chain) ? extensionCapabilitiesFor(chain, networkId).history : pageSupported(chain, page);
 }
 export function extensionNetworkConfig(chain, config, networkId) {
-  if (chain === 'ixios') return { ...config, receiveOnly: !extensionCapabilitiesFor(chain, networkId).send, sendNote: networkId === 'mainnet' ? 'Native IXIOS only, 1,000 gas and an explicit gas-price cap. Fresh identity/fee checks must pass; live RPC availability is not guaranteed. No contracts, tokens or automatic replacement.' : 'IXIOS sends are available only on the mainnet code candidate.' };
+  if (chain === 'ixios') return { ...config, receiveOnly: !extensionCapabilitiesFor(chain, networkId).send, sendNote: networkId === 'mainnet' ? 'Native IXIOS only, 1,000 gas and an explicit gas-price cap. Fresh identity/fee checks must pass; live RPC availability is not guaranteed. No contracts, tokens or automatic replacement.' : networkId === 'testnet' ? 'Ixios test network: test IXIOS only. Native IXIOS only, 1,000 gas and an explicit gas-price cap. Fresh identity/fee checks must pass; live RPC availability is not guaranteed. No contracts, tokens or automatic replacement.' : 'IXIOS sends are available only on the mainnet code candidate.' };
   if (chain === 'qtc') return { ...config, receiveOnly: networkId !== 'mainnet', sendNote: networkId === 'mainnet' ? 'Native QTC mainnet only, up to 8 inputs. Final gateway submission, not public simulation; provider-reported spendability and local submission history.' : 'QTC testnet sending and recovery are not enabled.' };
   if (chain === 'ckb') return { ...config, receiveOnly: networkId !== 'mainnet', sendNote: networkId === 'mainnet' ? (CKB_FULL_RECIPIENT_SEND_ENABLED ? 'Native CKB to full-format Bech32m recipients; quantum inputs only. Address validity does not prove recipient control. Signed simulation is disclosed to the configured node.' : 'Native CKB only; quantum-lock recipients and empty-data, non-cellbase inputs. Signed simulation is disclosed to the configured node.') : 'CKB sending and recovery are available on mainnet only.' };
   if (chain === 'xion') return { ...config, receiveOnly: networkId !== 'mainnet', sendNote: networkId === 'mainnet' ? 'Native XION only. Choose fee and gas; these are not a network quote. The configured node reports state and the signed transaction expires at the reviewed height.' : 'XION testnet sending and recovery are not enabled.' };

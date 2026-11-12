@@ -1,4 +1,4 @@
-import { IXIOS_NETWORK } from '../../../src/pq/ixios/network.js';
+import { IXIOS_NETWORKS } from '../../../src/pq/ixios/network.js';
 import { CHAINS, CELLFRAME } from '../../../src/config.js';
 import { SOQU_MAINNET } from '../../../src/pq/soqu-preflight.js';
 import { ckbNetwork } from '../../../src/pq/ckb.js';
@@ -31,7 +31,8 @@ export const CHAIN_NETWORKS = {
     { id: 'devnet', label: 'Devnet', endpoint: 'https://api.devnet.solana.com', genesisHash: 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG', scope: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1' }],
   tron: [mainnet('tron'),
     { id: 'nile', label: 'Nile', endpoint: 'https://nile.trongrid.io', genesisHash: '0000000000000000d698d4192c56cb6be724a558448e2684802de4d6cd8690dc', scope: 'tron:3448148188', explorer: 'https://nile.tronscan.org/#/transaction/' }],
-  ixios: [{ id: 'mainnet', label: 'Mainnet', endpoint: IXIOS_NETWORK.endpoint }],
+  // Mainnet first (the default); the test network's fixed values are in src/pq/ixios/network.js.
+  ixios: ['mainnet', 'testnet'].map(id => ({ id, label: IXIOS_NETWORKS[id].label, endpoint: IXIOS_NETWORKS[id].endpoint })),
   cellframe: [{ id: 'mainnet', label: 'Mainnet', endpoint: CELLFRAME.endpoint }],
   ...Object.fromEntries(Object.entries(PQ_NETWORKS).map(([chain, config]) => [chain, config.networks.map(choice => ({ ...choice, ...(chain === 'algorand' ? { endpoint: algorandNetwork(choice.id).algod, genesisHash: algorandNetwork(choice.id).genesisHash } : chain === 'soqucoin' ? { endpoint: SOQU_MAINNET.rpc } : chain === 'qtc' ? { endpoint: choice.id === 'mainnet' ? 'https://qtc.events' : 'https://testnet.qtc.events' } : chain === 'ckb' ? { endpoint: ckbNetwork(choice.id).rpc } : chain === 'xion' ? { endpoint: choice.id === 'mainnet' ? 'https://api.xion-mainnet-1.burnt.com' : 'https://api.xion-testnet-2.burnt.com' } : chain === 'asentum' ? { endpoint: 'https://testnet.asentum.com' } : chain === 'splendor' ? { endpoint: choice.id === 'mainnet' ? 'https://quantum-rpc.splendor.org' : 'https://quantum-rpc-testnet.splendor.org' } : {}) }))])),
 };

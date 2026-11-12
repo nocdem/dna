@@ -35,6 +35,7 @@ import { createNetworks } from './networks.js';
 import { PermissionsRequestNotFoundError } from '@metamask/permission-controller';
 import { VAULT_KEY, decryptVault, validateNewPassword } from '../../../src/vault.js';
 import { sitesKeyFor, SITES_KEY } from '../../../src/activity-storage.js';
+import { publicActivityRow } from '../../../src/activity.js';
 import { validateNodusPhrase } from '../../../src/recovery.js';
 import { readPrices as readWalletPrices } from '../../../src/portfolio.js';
 import { PQ_NETWORKS, pqNetwork } from '../../../src/pq/networks.js';
@@ -171,7 +172,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   chainHandlers.ckb = ckb;
   const qtc = createQtc({ storage, transportKind: 'gateway', prepare: prepareQtcGatewayReview, getTransport: id => createQtcGatewayTransport(id), lockCoordinator, getWalletKeys: () => walletKeys, getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
   chainHandlers.qtc = qtc;
-  const ixios = createIxios({ storage, lockCoordinator, getWalletKeys: () => walletKeys, getActivity: () => nodus.chainActivity('ixios', 'mainnet') });
+  const ixios = createIxios({ storage, lockCoordinator, getWalletKeys: () => walletKeys, getActivity: (chain, network) => nodus.chainActivity(chain, network), getNetwork: chain => networks.get(chain) });
   chainHandlers.ixios = ixios;
   incomingNotifications = notifications ? await createIncomingNotifications({ alarms: backgroundAlarms, notifications, runtime,
     lockCoordinator, networks, nodus, evm, solana, tron }) : null;
@@ -368,7 +369,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     setEvmEndpoint: (chain, endpoint) => evm.setEndpoint(chain, endpoint),
     getNodusBalances: () => nodus.getBalances(),
     getCpunkBalance: () => nodus.getCpunkBalance(),
-    getIxiosBalance: () => nodus.getIxiosBalance(),
+    getIxiosBalance: (networkId = 'mainnet') => { if (networkId !== networks.get('ixios').id) throw new Error('Ixios network changed. Read again.'); return nodus.getIxiosBalance(networkId); },
     prepareNodusSend: fields => nodus.prepareSend(fields),
     readNodusContract: fields => nodus.readContract(fields),
     prepareNodusContract: fields => nodus.prepareContract(fields),
@@ -380,7 +381,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     resubmitNodusSend: hash => nodus.resubmit(hash),
     abandonActivity: (chain, hash) => nodus.abandonActivity(chain, hash, networks.getState()[chain]),
     getChainHistory: (chain, options) => nodus.getChainHistory(chain, options),
-    getChainLocalHistory: chain => nodus.getChainLocalHistory(chain),
+    // Ixios keeps one saved list per network: the selected network's, not the mainnet one.
+    getChainLocalHistory: chain => chain === 'ixios' ? nodus.chainActivity('ixios', networks.get('ixios').id).rows().map(publicActivityRow) : nodus.getChainLocalHistory(chain),
     getKeptBalances: () => nodus.getKeptBalances(),
     keepBalances: entries => nodus.keepBalances(entries),
     getSessionLog: () => nodus.getSessionLog(),
