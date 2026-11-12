@@ -13,7 +13,7 @@ import { integerJson, parseExactJson } from './integer-json.js';
 import { rpcFetch } from '../rpc-transport.js';
 import { assertWalletActive } from '../keys.js';
 import { readXionLedgerHead } from './xion-ledger-head.js';
-import { validXionPending } from './xion-recovery.js';
+import { validXionPending, verifyXionSignedPayload } from './xion-recovery.js';
 const nets=Object.freeze({mainnet:{url:'https://api.xion-mainnet-1.burnt.com',chain:'xion-mainnet-1'},testnet:{url:'https://api.xion-testnet-2.burnt.com',chain:'xion-testnet-2'}});
 const held=new Map();
 function active(wallet,from,signal){signal?.throwIfAborted();assertWalletActive(wallet);if(wallet.addresses?.xion!==from)throw Error('XION account changed.');}
@@ -82,7 +82,7 @@ export async function prepareXionExactRecovery(row,{signal,fetcher,assertCurrent
  if(typeof assertCurrent!=='function')throw Error('Active wallet guard is required.');assertCurrent();signal?.throwIfAborted();
  if(!row||row.executionWindowClosed!==undefined||!['pending','unknown'].includes(row.status)||(row.savedStatus!==undefined&&!['pending','unknown'].includes(row.savedStatus))||row.notSubmitted===true)throw Error('This XION activity is not eligible for exact recovery.');
  const snapshot={networkId:row.networkId,address:row.address,to:row.to,amountAtoms:row.amountAtoms,feeAtoms:row.feeAtoms,gasLimit:row.gasLimit,sequence:row.sequence,accountNumber:row.accountNumber,timeoutHeight:row.timeoutHeight,hash:row.hash,submissionId:row.submissionId,signedPayload:{encoding:row.signedPayload?.encoding,data:row.signedPayload?.data}};
- const {verifyXionSignedPayload}=await import('./xion-recovery.js');const raw=await verifyXionSignedPayload(snapshot,{wasmBytes,signal});assertCurrent();signal?.throwIfAborted();
+ const raw=await verifyXionSignedPayload(snapshot,{wasmBytes,signal});assertCurrent();signal?.throwIfAborted();
  const pending={networkId:snapshot.networkId,from:snapshot.address,hash:snapshot.hash};if(snapshot.timeoutHeight!==undefined){const head=await readXionLedgerHead({networkId:snapshot.networkId,signal,fetcher});assertCurrent();if(BigInt(head.height)>BigInt(snapshot.timeoutHeight))throw Error('XION execution window is closed; do not replay.');}
  const prior=await observeXionSubmission({...pending,signal,fetcher});assertCurrent();signal?.throwIfAborted();if(prior.state!=='pending')throw Error('XION transaction is already included or resolved.');
  let used=false;const expiresAt=Date.now()+60000;return Object.freeze({networkId:snapshot.networkId,from:snapshot.address,to:snapshot.to,amountAtoms:snapshot.amountAtoms,feeAtoms:snapshot.feeAtoms,gasLimit:snapshot.gasLimit,sequence:snapshot.sequence,accountNumber:snapshot.accountNumber,timeoutHeight:snapshot.timeoutHeight,hash:snapshot.hash,expiresAt,notice:'A missing transaction is inconclusive. Confirming sends the exact same signed bytes; the earlier attempt may already be pending.',cancel(){used=true;},async confirm(onAttempt){

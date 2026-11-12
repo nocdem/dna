@@ -7,6 +7,7 @@ import {pqChainSeed} from './receive.js';
 import {prepareSplendorTransfer} from './splendor-prepare.js';
 import {signSplendorTransfer} from './splendor-sign.js';
 import {splendorTransferBody} from './splendor-transfer-body.js';
+import {validateSplendorSignedPayload} from './splendor-recovery.js';
 import {integerJson} from './integer-json.js';
 import {rpcFetch} from '../rpc-transport.js';
 import {assertWalletActive} from '../keys.js';
@@ -67,7 +68,7 @@ export async function prepareSplendorExactRecovery(row,{signal,fetcher,assertCur
  if(typeof assertCurrent!=='function')throw new Error('Active wallet guard is required.');assertCurrent();signal?.throwIfAborted();
  if(!row||typeof row.submissionId!=='string'||!/^[0-9a-f]{32}$/.test(row.submissionId)||!['pending','unknown'].includes(row.status)||(row.savedStatus!==undefined&&!['pending','unknown'].includes(row.savedStatus))||row.notSubmitted===true)throw new Error('This Splendor activity is not eligible for exact recovery.');
  const snapshot={submissionId:row.submissionId,networkId:row.networkId,address:row.address,to:row.to,amountAtoms:row.amountAtoms,feeAtoms:row.feeAtoms,nonce:row.nonce,timestamp:row.timestamp,hash:row.hash,signedPayload:{encoding:row.signedPayload?.encoding,data:row.signedPayload?.data}};
- const {validateSplendorSignedPayload}=await import('./splendor-recovery.js');const wire=validateSplendorSignedPayload(snapshot);
+ const wire=validateSplendorSignedPayload(snapshot);
  const pending={networkId:snapshot.networkId,from:snapshot.address,to:snapshot.to,amount:snapshot.amountAtoms,fee:snapshot.feeAtoms,nonce:snapshot.nonce,hash:snapshot.hash};
  const prior=await observeSplendorSubmission(pending,{signal,fetcher});assertCurrent();signal?.throwIfAborted();
  if(prior.state!=='pending')throw new Error('Splendor transaction is already resolved.');

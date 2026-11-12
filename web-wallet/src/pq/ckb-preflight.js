@@ -9,7 +9,8 @@ import {rpcFetch} from '../rpc-transport.js';
 import {parseExactJson} from './integer-json.js';
 import {ckbNetwork} from './ckb.js';
 import {parseCkbFullRecipient} from './ckb-full-recipient.js';
-import {ckbQuantumAddressLock} from './ckb-quantum-transaction.js';
+import {ckbQuantumAddressLock,prepareCkbQuantumTransaction} from './ckb-quantum-transaction.js';
+import {validCkbPending} from './ckb-pending.js';
 const cat=(...a)=>concatBytes(...a), hash=s=>typeof s==='string'&&/^0x[0-9a-f]{64}$/.test(s);
 const uint=(s,bits=64)=>{if(typeof s!=='string'||!/^0x(0|[1-9a-f][0-9a-f]*)$/.test(s)||BigInt(s)>=(1n<<BigInt(bits)))throw Error('Invalid CKB integer.');return BigInt(s);};
 function u32(n){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,Number(n),true);return b;}
@@ -109,7 +110,7 @@ export async function simulateCkbAtConfiguredNode({rpcTransaction,txid,expectedF
 // local reorg-risk policy, NOT economic finality or a cryptographic proof.
 // A missing/rejected/uncommitted tx never releases the durable hold.
 export async function observeCkbSubmission(row,{signal,fetcher}={}){
- const {validCkbPending}=await import('./ckb-pending.js');if(!validCkbPending(row))throw Error('Invalid CKB pending record.');
+ if(!validCkbPending(row))throw Error('Invalid CKB pending record.');
  const network=ckbNetwork(row.networkId),options={signal,fetcher},tip=await snapshot(network,options),result=await call(network,'get_transaction',[row.hash,'0x2',false],options);
  if(!result||result.tx_status?.status!=='committed')return {state:'pending',hash:row.hash};
  const status=result.tx_status,tx=result.transaction,height=uint(status.block_number);if(!hash(status.block_hash)||height===0n||height>tip.height||uint(status.tx_index,32)===0n||tx?.hash!==row.hash)throw Error('Invalid CKB committed transaction.');
@@ -124,7 +125,6 @@ export async function observeCkbSubmission(row,{signal,fetcher}={}){
   if(origin?.tx_status?.status!=='committed'||origin.transaction?.hash!==h||o?.type!==null||!sameLock(o?.lock,lock)||origin.transaction?.outputs_data?.[v]!=='0x')throw Error('CKB original input cannot be verified.');
   const capacity=uint(o.capacity);resolved.push({outpoint:b,output:table(u64(capacity),lockBytes,new Uint8Array()),data:new Uint8Array()});
  }
- const {prepareCkbQuantumTransaction}=await import('./ckb-quantum-transaction.js');
  const p=prepareCkbQuantumTransaction({networkId:row.networkId,from:row.address,to:row.to,inputs:resolved,amount:BigInt(row.amountAtoms),fee:BigInt(row.feeAtoms)});
  const {blake2b}=await import('@noble/hashes/blake2b');const {bytesToHex,utf8ToBytes}=await import('@noble/hashes/utils');
  const txid='0x'+bytesToHex(blake2b(p.rawTransaction,{dkLen:32,personalization:utf8ToBytes('ckb-default-hash')}));if(txid!==row.hash)throw Error('CKB committed transaction hash does not match review.');

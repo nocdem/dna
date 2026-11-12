@@ -27,6 +27,8 @@ import { CHAINS, CELLFRAME, rpcChoiceOffered } from './config.js';
 import { CPUNK_ASSET, displayAmount, unavailableAssetNote } from './portfolio.js';
 // Pure data, referenced by the Ixios blocks below.
 import { IXIOS_NETWORK, IXIOS_ASSET, IXIOS_NETWORKS, ixiosNetwork } from './pq/ixios/network.js';
+import { deriveIxiosAddress } from './pq/ixios/derive.js';
+import { ixiosChecksumAddress } from './pq/ixios/address.js';
 import { PQ_NETWORKS, PQ_ENTRIES, PQ_NATIVE_WORD_CHAINS, isPqChain, pqNetwork } from './pq/networks.js';
 import { derivePqAddresses } from './pq/receive.js';
 import { readAlgorandBalances } from './pq/algorand.js';
@@ -2195,9 +2197,11 @@ function showCellframeAddress() { void doShowCellframeAddress?.(); }
 // stored on the wallet (source.addresses.ixios) and reported to the portfolio
 // only once current() passes; the portfolio then reads its balance through
 // ixiosReader, as it does Cellframe's through cellframeReader.
-// Everything Ixios-specific — the dynamic imports (derive.js fetches
-// nodus/mldsa87.wasm through `new URL(..., import.meta.url)`; balance.js reads
-// the balance), the status element and the UI text — stays inside this block.
+// derive.js (it fetches nodus/mldsa87.wasm through
+// `new URL(..., import.meta.url)`) and address.js are imported at the top of
+// this file: they are in this file's chunk. Everything else Ixios-specific —
+// the balance.js dynamic import, the status element and the UI text — stays
+// inside this block.
 // lock(), the open paths and readBalances reach it only through
 // stopIxiosAddress / doShowIxiosAddress / ixiosChain + ixiosReader.
 {
@@ -2210,7 +2214,7 @@ function showCellframeAddress() { void doShowCellframeAddress?.(); }
   status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   $('cellframe-address-status').after(status); addressStatus[chain] = status;
   stopIxiosAddress = () => { ixiosDerivation?.abort(); ixiosDerivation = undefined; status.textContent = ''; };
-  Promise.all([import('./pq/ixios/derive.js'), import('./pq/ixios/address.js'), import('./pq/ixios/balance.js')]).then(([{ deriveIxiosAddress }, { ixiosChecksumAddress }, { readIxiosBalance }]) => {
+  import('./pq/ixios/balance.js').then(({ readIxiosBalance }) => {
     // The URL comes from the selected entry, not from `endpoint`: the portfolio keeps the endpoints it was opened with.
     ixiosReader = (address, endpoint, options) => readIxiosBalance(address, ixiosNetwork(ixiosSelection).endpoint, { signal: options.signal, networkId: ixiosSelection });
     doShowIxiosAddress = async () => {

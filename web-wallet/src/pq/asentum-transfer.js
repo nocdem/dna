@@ -5,6 +5,7 @@ import {bech32} from '@scure/base';
 import {pqChainSeed} from './receive.js';
 import {prepareAsentumTransfer} from './asentum-prepare.js';
 import {signAsentumTransfer} from './asentum-sign.js';
+import {validateAsentumSignedPayload} from './asentum-recovery.js';
 import {integerJson} from './integer-json.js';
 import {rpcFetch} from '../rpc-transport.js';
 import {assertWalletActive} from '../keys.js';
@@ -45,7 +46,7 @@ export async function prepareAsentumExactRecovery(row,{signal,fetcher,assertCurr
  if(typeof assertCurrent!=='function')throw new Error('Active wallet guard is required.');assertCurrent();signal?.throwIfAborted();
  if(!row||typeof row.submissionId!=='string'||!/^[0-9a-f]{32}$/.test(row.submissionId)||!['pending','unknown'].includes(row.status)||(row.savedStatus!==undefined&&!['pending','unknown'].includes(row.savedStatus))||row.notSubmitted===true)throw new Error('This Asentum activity is not eligible for exact recovery.');
  const snapshot={networkId:row.networkId,address:row.address,to:row.to,amountAtoms:row.amountAtoms,nonce:row.nonce,gasLimit:row.gasLimit,maxFeePerGas:row.maxFeePerGas,hash:row.hash,submissionId:row.submissionId,signedPayload:{encoding:row.signedPayload?.encoding,data:row.signedPayload?.data}};
- const {validateAsentumSignedPayload}=await import('./asentum-recovery.js');const raw=validateAsentumSignedPayload(snapshot),pending={networkId:snapshot.networkId,from:snapshot.address,to:snapshot.to,hash:snapshot.hash};
+ const raw=validateAsentumSignedPayload(snapshot),pending={networkId:snapshot.networkId,from:snapshot.address,to:snapshot.to,hash:snapshot.hash};
  const prior=await observeAsentumSubmission(pending,{signal,fetcher});assertCurrent();signal?.throwIfAborted();if(prior.state!=='pending')throw new Error('Asentum transaction is already included or resolved.');
  let used=false;const expiresAt=Date.now()+120000;return Object.freeze({networkId:snapshot.networkId,from:snapshot.address,to:snapshot.to,amount:snapshot.amountAtoms,nonce:snapshot.nonce,gasLimit:snapshot.gasLimit,maxFeePerGas:snapshot.maxFeePerGas,maximumFee:(BigInt(snapshot.gasLimit)*BigInt(snapshot.maxFeePerGas)).toString(),hash:snapshot.hash,expiresAt,notice:'Receipt not found is inconclusive. Confirming submits the exact same signed transaction; it may already be pending.',cancel(){used=true;},async confirm(onAttempt){
   if(used)throw new Error('This recovery review is already closed.');used=true;assertCurrent();signal?.throwIfAborted();if(Date.now()>=expiresAt)throw new Error('Recovery review expired.');if(typeof onAttempt!=='function')throw new Error('Durable pending storage is required.');const key=snapshot.address;if(recoveries.has(key))throw new Error('Asentum recovery is already in progress.');recoveries.add(key);
