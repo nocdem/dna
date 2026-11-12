@@ -416,6 +416,11 @@ static void log_rpc_error(const char *name, const char *url, const char *method,
 
 /* One JSON-RPC call. `params` is the JSON text of the params array. 0 and
  * `d` filled, or -1 (every failure, including an error object). */
+static uint64_t mono_ms(void);
+
+/* A provider call that takes this long is written to the log. */
+#define RPC_SLOW_MS 3000
+
 static int rpc_call(amm_eth_rpc_t *r, const char *method, const char *params,
                     uint64_t deadline_ms, doc_t *d) {
     memset(d, 0, sizeof(*d));
@@ -428,11 +433,17 @@ static int rpc_call(amm_eth_rpc_t *r, const char *method, const char *params,
     d->resp = malloc(r->max_response);
     if (!d->resp) { free(body); return -1; }
     size_t rl = 0;
+    uint64_t t0 = mono_ms();
     int pr = r->post(r->post_ctx, r->url, (const uint8_t *)body, (size_t)n,
                      d->resp, r->max_response, &rl, deadline_ms);
+    uint64_t took = mono_ms() - t0;
     free(body);
+    if (took >= RPC_SLOW_MS)
+        QGP_LOG_WARN(LOG_TAG, "%s: %s: the answer took %llu ms", r->name, method,
+                     (unsigned long long)took);
     if (pr != AMM_ETH_OK || rl == 0 || rl > r->max_response) {
-        QGP_LOG_WARN(LOG_TAG, "%s: %s: no usable answer", r->name, method);
+        QGP_LOG_WARN(LOG_TAG, "%s: %s: no usable answer (after %llu ms)", r->name, method,
+                     (unsigned long long)took);
         doc_free(d);
         return -1;
     }
@@ -1053,6 +1064,12 @@ int amm_rpc_curl_post(void *ctx, const char *url, const uint8_t *body, size_t bo
         ok = pr == CURLE_OK &&
              curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &code) == CURLE_OK &&
              code == 200;
+        /* the cause, without the address (it may carry a key); the caller
+         * writes the provider's name on the next line */
+        if (pr != CURLE_OK)
+            QGP_LOG_WARN(LOG_TAG, "post: transfer failed: %s", curl_easy_strerror(pr));
+        else if (!ok)
+            QGP_LOG_WARN(LOG_TAG, "post: HTTP status %ld", code);
     }
     curl_slist_free_all(hdr);
     curl_easy_cleanup(h);
