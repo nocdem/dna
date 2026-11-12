@@ -86,12 +86,14 @@ export async function timed(area, event, fields, work) {
 // A thin WebSocket subclass that writes the open, each frame's size and the close of every connection, never a
 // frame's content. The Nodus send module opens its sockets through the global constructor (its generated glue reads
 // `WebSocket` directly and takes only a url and a subprotocol), so this is the one place where its requests and
-// answers can be seen. Installed once; only for the hosts named in `hosts` (the configured Nodus endpoints), so no
-// other page or library socket is touched.
+// answers can be seen. Installed once; only for the configured Nodus endpoints, given as the URLs the module opens
+// (`wss://<ip>:<port>/`): each is reduced to its host with the same normalisation (hostOf) that the wrapper applies to
+// the socket's URL, so a default port (443 for wss) is dropped on both sides. No other page or library socket is touched.
 let installedFor;
-export function logWebSocketsFor(hosts) {
+export function logWebSocketsFor(urls) {
   const Native = globalThis.WebSocket;
   if (typeof Native !== 'function') return;
+  const hosts = urls.map(hostOf);
   if (installedFor) { for (const host of hosts) installedFor.add(host); return; }
   installedFor = new Set(hosts);
   // The size of a frame, read inside its own guard: 0 when it cannot be read; the frame itself is never touched otherwise.

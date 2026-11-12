@@ -282,7 +282,7 @@ export async function createNodusSendModule(network, { claim = null, evm = null,
   // Debug log: the module's sockets are opened through the global WebSocket (its glue takes only a url and a
   // subprotocol), so the connection and frame sizes of the configured endpoints are logged through a thin subclass
   // (debug-log.js logWebSocketsFor), never the frames' content.
-  logWebSocketsFor(endpoints.map(endpoint => `${endpoint.host}:${endpoint.port}`));
+  logWebSocketsFor(endpoints.map(endpoint => `${net.scheme}://${endpoint.host}:${endpoint.port}/`));
   const M = await createNodusSendWasm({ websocket: { url: `${net.scheme}://`, subprotocol: 'binary' }, printErr: text => console.log(text) });
   // Every module call is one debug line: its nsw_* name, its kind and duration, and the failure (the module's own
   // error text is not logged: only whether it was the busy refusal). Arguments and results never are.
