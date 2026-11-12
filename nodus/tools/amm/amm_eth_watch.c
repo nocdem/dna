@@ -441,18 +441,21 @@ static int gather_logs(amm_eth_watch_t *w, const step_t *st,
     if (!ents) return -1;
     int n_ent = 0, answered = 0;
     memset(ans, 0, sizeof(int) * AMM_ETH_MAX_PROVIDERS);
-    /* The parent's evidence set exactly: a single loop in provider index order,
-     * no early stop, every usable provider is asked whatever its header read
-     * returned (a provider that failed, had none or returned another header may
-     * still list logs of the quorum block; log_ok checks each log's block hash),
-     * so no verdict differs from the parent's. */
+    /* The parent's provider set: a single loop in provider index order, no early
+     * stop, every usable provider is asked whatever its header read returned (a
+     * provider that failed, had none or returned another header may still hold
+     * the quorum block). The logs are read BY THE ACCEPTED BLOCK'S HASH
+     * (amm_eth_watch.h step 5), so an answer is about exactly that block: a
+     * provider that holds another block at this height answers with an error,
+     * which is "not answered", never an empty list counted as an absent vote;
+     * log_ok still checks each log's number and hash. */
     {
       for (int i = 0; i < w->cfg.n_providers; i++) {
         if (!st->use[i]) continue;
         const amm_eth_provider_t *p = &w->prov[i];
         amm_eth_log_t *buf = w->logbuf + (size_t)i * AMM_ETH_LOGS_MAX;
         int n = 0;
-        if (p->get_logs(p->ctx, qb->number, w->cfg.usdt, TRANSFER_TOPIC,
+        if (p->get_logs(p->ctx, qb->number, qb->hash, w->cfg.usdt, TRANSFER_TOPIC,
                         w->cfg.foundation, buf, AMM_ETH_LOGS_MAX, &n,
                         st->deadline) != AMM_ETH_OK ||
             n < 0 || n > AMM_ETH_LOGS_MAX) continue;
