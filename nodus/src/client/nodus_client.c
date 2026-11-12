@@ -116,8 +116,13 @@ static void keepalive_if_due(nodus_client_t *client) {
     uint8_t ping_buf[128];
     size_t ping_len = 0;
     uint32_t txn = atomic_fetch_add(&client->next_txn, 1);
-    if (nodus_t2_ping(txn, client->token, ping_buf, sizeof(ping_buf), &ping_len) == 0)
-        send_request(client, ping_buf, ping_len);
+    if (nodus_t2_ping(txn, client->token, ping_buf, sizeof(ping_buf), &ping_len) == 0 &&
+        send_request(client, ping_buf, ping_len) == 0) {
+        /* no pending slot waits for the pong: client_on_frame knows it by
+         * this id instead of writing it as a late reply */
+        client->keepalive_txn = txn;
+        client->keepalive_open = true;
+    }
 }
 
 /* ── Internal read thread ──────────────────────────────────────── */
@@ -656,6 +661,14 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     nodus_pending_t *slot = nodus_client_pending_find(client, tmp.txn_id);
     if (!slot) {
         pthread_mutex_unlock(&client->pending_mutex);
+        /* the pong of the keepalive ping (keepalive_if_due), which no
+         * pending slot waits for: expected, not a late reply */
+        if (client->keepalive_open && tmp.txn_id == client->keepalive_txn &&
+            !strcmp(tmp.method, "pong")) {
+            client->keepalive_open = false;
+            nodus_t2_msg_free(&tmp);
+            return;
+        }
         /* O15C-D — correlation itself is sound: next_txn is monotonic per
          * client (only reset in nodus_client_init) and the match above
          * also requires in_use, so a response can never be delivered to
@@ -930,6 +943,7 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
             return -1;
         }
         client->last_ping_ms = now_ms();
+        client->keepalive_open = false;   /* a new connection: no ping out */
         set_state(client, NODUS_CLIENT_READY);
         return 0;
     }
@@ -1006,6 +1020,7 @@ static int do_connect_one(nodus_client_t *client, int server_idx) {
     }
 
     client->last_ping_ms = now_ms();
+    client->keepalive_open = false;   /* a new connection: no ping out */
     set_state(client, NODUS_CLIENT_READY);
 
     /* Re-subscribe after reconnect */
