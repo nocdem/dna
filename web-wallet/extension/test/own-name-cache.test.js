@@ -44,3 +44,22 @@ test('a name that is not found is not kept, so the next read still waits for the
   assert.equal(reads, 2);
   found = true; assert.deepEqual(await nodus.getOwnName(), { found: true, name: 'later' }); assert.equal(reads, 3);
 });
+
+// Proves the kept name outlives a failed background refresh: a refresh that rejects (network error) and one that answers
+// not-found both leave the kept name in place, and the next read is still answered at once from it (a new refresh each
+// time, counted below, so the refresh slot is not stuck after a failure). Falsely passes if the refresh never ran; the
+// read counts guard that.
+test('a kept own name survives a refresh that fails or finds nothing', async t => {
+  let reads = 0, mode = 'ok';
+  const { nodus } = await walletSession(t, { module: module(async () => {
+    reads++;
+    if (mode === 'fail') throw new Error('network error');
+    return mode === 'missing' ? { found: false, committedHeight: '10' } : { found: true, name: 'kept', committedHeight: '10' };
+  }) });
+  assert.deepEqual(await nodus.getOwnName(), { found: true, name: 'kept' }); assert.equal(reads, 1);
+  mode = 'fail';
+  assert.deepEqual(await nodus.getOwnName(), { found: true, name: 'kept' }); await turns(); assert.equal(reads, 2);
+  mode = 'missing';
+  assert.deepEqual(await nodus.getOwnName(), { found: true, name: 'kept' }); await turns(); assert.equal(reads, 3);
+  assert.deepEqual(await nodus.getOwnName(), { found: true, name: 'kept' }); await turns(); assert.equal(reads, 4);
+});

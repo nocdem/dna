@@ -316,6 +316,28 @@ test('an approval arriving while the open-wallet screen is shown replaces it on 
   assert.ok(button(root, 'Reject')); assert.equal(disposed, 1); assert.match(root.textContent, /site\.example/);
 });
 
+// Proves the approval window does not close while the recovery-phrase step is open, even with nothing pending, and
+// closes once, after the step is left. The wallet is uninitialized so the start screen is shown while an approval is
+// pending; the import form is then opened, the approval goes away, and only the completed import ends the step.
+test('the approval window does not close during the recovery-phrase step', async t => {
+  let closed = 0;
+  const { root, state, notify, phrase } = await pageFixture(t, false, { closeWhenNothingPending: () => { closed++; } });
+  await settle(() => closed === 1);
+  state.pendingApprovals.request = pending(); notify();
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  button(root, 'Import phrase').onclick();
+  state.pendingApprovals = {}; notify();
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closed, 1, 'no close request while the phrase step is open');
+  const words = root.querySelectorAll('input').filter(input => input.type === 'text');
+  phrase.split(' ').forEach((word, index) => { words[index].value = word; });
+  for (const input of root.querySelectorAll('input[type="password"]')) input.value = 'public-test-password-123';
+  await descendants(root, node => node.tagName === 'form')[0].onsubmit({ preventDefault() {} });
+  await settle(() => closed === 2);
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closed, 2, 'exactly one close request after the step is left');
+});
+
 // Proves the approval window closes itself once the last approval is gone, once per empty spell, and again after a new
 // approval has come and gone; and that a page mounted without the close option (toolbar popup, full page) never asks.
 // The closer is a counter: the real window closing is in close-window checks below and the Chromium measurement.
