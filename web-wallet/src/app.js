@@ -26,7 +26,7 @@ import { recordActivity, watchActivity, checkActivity, terminal, submissionStatu
 import { CHAINS, CELLFRAME, rpcChoiceOffered } from './config.js';
 import { CPUNK_ASSET, displayAmount, unavailableAssetNote } from './portfolio.js';
 // Pure data, referenced by the Ixios blocks below.
-import { IXIOS_NETWORK, IXIOS_ASSET } from './pq/ixios/network.js';
+import { IXIOS_NETWORK, IXIOS_ASSET, IXIOS_NETWORKS, ixiosNetwork } from './pq/ixios/network.js';
 import { PQ_NETWORKS, PQ_ENTRIES, PQ_NATIVE_WORD_CHAINS, isPqChain, pqNetwork } from './pq/networks.js';
 import { derivePqAddresses } from './pq/receive.js';
 import { readAlgorandBalances } from './pq/algorand.js';
@@ -113,6 +113,9 @@ let nodusClient;
 let claimCheck = 0;
 // Set only inside the Ixios blocks below; undefined/no-ops until the Ixios modules have loaded.
 let doShowIxiosAddress, stopIxiosAddress = () => {}, ixiosChain, ixiosReader;
+// The Ixios network shown (an id of IXIOS_NETWORKS). Every opening starts on mainnet, as for the PQ networks; a choice
+// lasts for this page only (selectIxiosNetwork).
+let ixiosSelection = 'mainnet';
 // Settles once the open wallet's NODUS address derivation has ended (either
 // way); the other receive-only addresses are derived after it (0.1.96).
 let nodusAddressFirst = Promise.resolve();
@@ -300,6 +303,8 @@ let latestKept = null, balanceWrites = Promise.resolve();
 function persistBalances(entries) {
   // Algorand environments share an address; the v1 cache has no environment.
   entries = Object.fromEntries(Object.entries(entries).filter(([key]) => !Object.hasOwn(pqBalanceReaders, key.split(':')[0])));
+  // Ixios has one key for both networks and the same address: a test-network read is never saved as a mainnet "last read".
+  if (ixiosSelection !== 'mainnet') entries = Object.fromEntries(Object.entries(entries).filter(([key]) => key.split(':')[0] !== IXIOS_ASSET.chain));
   latestKept = entries;
   const session = activitySession, source = wallet;
   if (!session?.balancesKey || !source) return;
@@ -983,6 +988,8 @@ function renderEnvironment() {
 }
 pqEnvironment.onchange = () => {
   const chain = $('chain').value;
+  // Ixios is not a PQ chain (it keeps its own module and address path) but offers the same environment choice.
+  if (chain === ixiosChain) { selectIxiosNetwork(ixiosNetwork(pqEnvironment.value).id); return; }
   if (!isPqChain(chain)) return;
   if (isPqChain(chain) && historySupported(chain)) {
     if (historyJob?.chain === chain) { historyJob.controller.abort(); historyJob = null; }
@@ -993,11 +1000,16 @@ pqEnvironment.onchange = () => {
   if (wallet && !wallet.locked) selectChain();
 };
 function updatePqStatus(chain) {
-  const shown = isPqChain(chain);
-  environmentDisclosure.hidden = !shown; pqStatus.hidden = !shown;
+  const shown = isPqChain(chain), ixios = chain === ixiosChain;
+  environmentDisclosure.hidden = !shown && !ixios; pqStatus.hidden = !shown;
   // Native-word chains derive the chain wallet's own address: the "may derive different addresses" note is untrue there.
   pqRecoveryNote.hidden = !shown || PQ_NATIVE_WORD_CHAINS.includes(chain);
-  if (!shown) { pqStatus.textContent = ''; return; }
+  if (!shown) {
+    pqStatus.textContent = '';
+    // Ixios: the environment choice only; its own address status line is separate and the PQ status and note stay hidden.
+    if (ixios) { pqEnvironment.replaceChildren(...Object.values(IXIOS_NETWORKS).map(network => new Option(network.label, network.id))); pqEnvironment.value = ixiosSelection; renderEnvironment(); }
+    return;
+  }
   const choice = pqNetwork(chain, pqSelections[chain]);
   pqEnvironment.replaceChildren(...PQ_NETWORKS[chain].networks.map(network => new Option(network.label, network.id)));
   pqEnvironment.value = choice.id;
@@ -1019,6 +1031,20 @@ function syncPqAddress(chain) {
     updatePqStatus(chain);
     if (isPqChain(chain) && historySupported(chain)) { renderHistory(); void loadHistory(chain); }
   }
+}
+// Chooses the Ixios network (an id of IXIOS_NETWORKS). Mainnet is the same IXIOS_NETWORK object the portfolio was
+// created with; the test network gets a copy with its endpoint, option list and stage label. The kept balances of Ixios
+// are forgotten (one key serves both networks) and a read in flight is aborted by setNetwork.
+function selectIxiosNetwork(id) {
+  const entry = ixiosNetwork(id);
+  if (ixiosSelection === entry.id) return;
+  ixiosSelection = entry.id; endpoints[ixiosChain] = entry.endpoint;
+  receiveOnlyNetworks[ixiosChain] = entry.id === 'mainnet' ? IXIOS_NETWORK : { ...IXIOS_NETWORK, endpoint: entry.endpoint, rpcOptions: entry.rpcOptions, stage: entry.label };
+  portfolio.setNetwork(ixiosChain, receiveOnlyNetworks[ixiosChain], { forgetKept: true });
+  if (!wallet || wallet.locked) return;
+  const address = wallet.addresses[ixiosChain];
+  if (address) portfolio.setAddress(ixiosChain, address);
+  if ($('chain').value === ixiosChain) selectChain();
 }
 async function showPqAddresses() {
   const source = wallet;
@@ -2201,7 +2227,8 @@ function showCellframeAddress() { void doShowCellframeAddress?.(); }
   $('cellframe-address-status').after(status); addressStatus[chain] = status;
   stopIxiosAddress = () => { ixiosDerivation?.abort(); ixiosDerivation = undefined; status.textContent = ''; };
   Promise.all([import('./pq/ixios/derive.js'), import('./pq/ixios/address.js'), import('./pq/ixios/balance.js')]).then(([{ deriveIxiosAddress }, { ixiosChecksumAddress }, { readIxiosBalance }]) => {
-    ixiosReader = (address, endpoint, options) => readIxiosBalance(address, endpoint, { signal: options.signal });
+    // The URL comes from the selected entry, not from `endpoint`: the portfolio keeps the endpoints it was opened with.
+    ixiosReader = (address, endpoint, options) => readIxiosBalance(address, ixiosNetwork(ixiosSelection).endpoint, { signal: options.signal, networkId: ixiosSelection });
     doShowIxiosAddress = async () => {
       ixiosDerivation?.abort();
       const operation = new AbortController(), source = wallet;
@@ -2904,6 +2931,8 @@ function focusOpenWallet(kept = {}) {
     delete historyByChain[chain]; delete historyNote[chain];
     pqSelections[chain] = id; syncPqAddress(chain);
   }
+  // Ixios starts on mainnet on every opening as well.
+  selectIxiosNetwork('mainnet');
   portfolio.open(wallet.addresses, endpoints, { kept });
   $('wallet-title').focus({ preventScroll: true });
   document.querySelector('.wallet-card').scrollIntoView({ block: 'start' });

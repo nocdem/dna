@@ -1,6 +1,6 @@
 import {parseIxiosSignedTransfer} from './transaction.js';
-export async function verifyIxiosSignedTransfer(raw,{wasmBytes,signal}={}){
- const parsed=parseIxiosSignedTransfer(raw);let binary=wasmBytes,instance;signal?.throwIfAborted();
+export async function verifyIxiosSignedTransfer(raw,{wasmBytes,signal,networkId='mainnet'}={}){
+ const parsed=parseIxiosSignedTransfer(raw,{networkId});let binary=wasmBytes,instance;signal?.throwIfAborted();
  try{if(!binary){const timeout=AbortSignal.timeout(15000),response=await fetch(new URL('./mldsa87-verify.wasm',import.meta.url),{credentials:'omit',redirect:'error',signal:signal?AbortSignal.any([signal,timeout]):timeout});if(!response.ok)throw Error('Ixios signature verifier unavailable.');binary=await response.arrayBuffer();}
  signal?.throwIfAborted();const result=await WebAssembly.instantiate(binary,{});instance=result.instance??result;const e=instance.exports;e._initialize?.();if(!(e.memory instanceof WebAssembly.Memory)||['message','public_key','signature','verify','clear'].some(x=>typeof e['ixios_'+x]!=='function'))throw Error('Invalid Ixios verifier.');const mem=new Uint8Array(e.memory.buffer),hash=Uint8Array.from(parsed.signingHash.slice(2).match(/../g),x=>parseInt(x,16));for(const [key,data] of [['message',hash],['public_key',parsed.publicKey],['signature',parsed.signature]]){const at=e['ixios_'+key]();if(!Number.isInteger(at)||at<0||at+data.length>mem.length)throw Error('Invalid Ixios verifier memory.');mem.set(data,at);}if(e.ixios_verify()!==0)throw Error('Invalid Ixios ML-DSA-87 signature.');signal?.throwIfAborted();return parsed;
  }finally{if(instance){try{instance.exports.ixios_clear?.();}finally{if(instance.exports.memory)new Uint8Array(instance.exports.memory.buffer).fill(0);}}}
