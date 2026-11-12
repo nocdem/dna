@@ -24,7 +24,7 @@ h1,h2{margin:0;font-weight:650}
 /* ── header ── */
 .site-header{position:sticky;top:0;z-index:5;background:#141612e6;border-bottom:1px solid #d4edb712;backdrop-filter:blur(12px)}
 .header-inner{max-width:1120px;margin:0 auto;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;gap:16px}
-.wordmark{display:flex;align-items:center;gap:10px;font-weight:650;font-size:20px;letter-spacing:-.04em}
+.wordmark{flex-shrink:0;display:flex;align-items:center;gap:10px;font-weight:650;font-size:20px;letter-spacing:-.04em}
 .wordmark small{font-size:12px;font-weight:600;letter-spacing:0;color:var(--lime);background:#d5f99814;border-radius:999px;padding:3px 10px}
 .header-links{display:flex;align-items:center;gap:20px;min-width:0}
 .text-link{font-size:14px;color:var(--soft)}
@@ -37,7 +37,8 @@ h1,h2{margin:0;font-weight:650}
 .button.wide{display:flex;width:100%;min-height:54px;font-size:15px;border-radius:var(--radius)}
 .button.ghost{background:transparent;color:var(--text);box-shadow:inset 0 0 0 1px var(--line)}
 .button.ghost:hover:not(:disabled){background:var(--raised)}
-#connect-btn{font-variant-numeric:tabular-nums}
+/* after connecting the button holds both short addresses: it shrinks and ends in an ellipsis instead of overflowing */
+#connect-btn{display:block;min-width:0;line-height:22px;font-variant-numeric:tabular-nums}
 
 /* ── page layout ── */
 main{max-width:1120px;margin:0 auto;padding:44px 24px 72px;display:grid;grid-template-columns:minmax(0,500px) minmax(0,1fr);grid-template-areas:"intro intro" "trade side";column-gap:48px;row-gap:32px;align-items:start}
@@ -124,6 +125,7 @@ main{max-width:1120px;margin:0 auto;padding:44px 24px 72px;display:grid;grid-tem
 .form-title{font-size:16px;letter-spacing:-.02em;margin:6px 0 12px}
 .withdraw{margin-top:26px;padding-top:22px;border-top:1px solid var(--line-soft)}
 .withdraw .field input{font-size:26px}
+.withdraw .button{margin-top:14px}
 
 /* ── your swap: one sequence of three steps ── */
 .status{padding:22px}
