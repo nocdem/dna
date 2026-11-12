@@ -85,8 +85,14 @@ When the bot refuses because an open approval with the same sender and amount ex
 (`reason: "open_approval"`), `error.data.openRequestNumber` is that open swap's request
 number (a decimal string, 1 to 4294967295) for the site to show it; any other form is
 dropped. The data object also carries the `cause` field the JSON-RPC error library adds
-(`null` when absent). After a delivered request that was not paid the data is
-`{ delivered: true, paid: false | "unknown", cause: null }`. `paid` is `"unknown"` whenever the
+(`null` when absent). A USDT to NODUS swap and a liquidity add first prepare their USDT payment
+(fee estimate, fee, nonce and balance, as the payment window will) before anything is signed or
+posted; when that fails the call rejects with `{ delivered: false, paid: false, answered: false,
+reason }` and a message that names the cause: `reason` is `native_fee_short` when the address has
+too little of the network's own coin for the fee, `payment_not_ready` for any other failure. After
+a delivered request that was not paid the data is `{ delivered: true, paid: false | "unknown",
+cause: null }`, plus `failure` (the payment step's own reason, a string) unless the user rejected
+the payment (code 4001). `paid` is `"unknown"` whenever the
 payment's broadcast step was reached (its pending record was saved) and then failed, whatever the
 error or the wallet state afterwards: the transaction may have been sent, so check the wallet's
 Activity before trying again. `paid: false` means the failure came before that step. For a

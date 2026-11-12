@@ -49,8 +49,10 @@ export const EXTENSION_CALLS = {
 //                                  extension's error and its `data`: `extensionCode`, `delivered` and `paid`
 //                                  ({ delivered: false, paid: false } = the request did not reach the bot, nothing was
 //                                  paid, never retried automatically, givens item 88), `answered`, `reason`
-//                                  (the bot's refusal word), `openRequestNumber` (not set by this extension build),
-//                                  and `cause`.
+//                                  (the bot's refusal word; or the extension's own 'native_fee_short' /
+//                                  'payment_not_ready' when the USDT payment could not be prepared, before anything
+//                                  was signed or posted), `openRequestNumber` (not set by this extension build),
+//                                  `failure` (a delivered request: why its payment step failed) and `cause`.
 import { buildNodusToUsdtText, buildLiquidityAddText, toBig } from './swap-logic.js';
 
 export class AdapterError extends Error {
@@ -105,6 +107,8 @@ export function createAdapter({ getProvider, calls = EXTENSION_CALLS } = {}) {
         // liquidity add: `paid` is the USDT half only; the NODUS half is nodusSent (true, false or 'unknown'), with the
         // held transfer's ids when it was sent (extension swap.js:179-188)
         nodusSent: d.nodusSent, intentId: d.intentId, transferId: d.transferId,
+        // a delivered request whose payment failed: the payment step's own reason (extension swap.js afterDelivery)
+        failure: typeof d.failure === 'string' ? d.failure : undefined,
         reason: cause?.reason ?? d.reason, openRequestNumber: cause?.openRequestNumber ?? d.openRequestNumber,
       });
     }

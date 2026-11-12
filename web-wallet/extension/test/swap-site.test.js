@@ -99,6 +99,26 @@ test('USDT -> NODUS: a rejected signature posts nothing; a rejected payment is r
   assert.equal(f.botCalls.length, 1); assert.equal(f.raw.length, 0);
 });
 
+// Proves the USDT payment is prepared before anything is signed or posted (operator's add 3354299809, 2026-11-12: an
+// address with no Sepolia ETH had its request posted, then the payment could not be prepared and the bot held that USDT
+// amount until the request expired). With no native coin for the fee, or a fee estimate that fails, no approval window
+// is shown, the bot is not contacted and nothing is paid; the error names the reason. Environment: swap-fixture.js
+// stubs (balance 0x0; estimateError makes eth_estimateGas answer a JSON-RPC error). Leftovers: none. False pass: the
+// "not contacted" claim rests on the stub bot's call list and the approval controller's state.
+for (const [label, set, reason, text] of [
+  ['no native coin for the fee', f => { f.state.balance = '0x0'; }, 'native_fee_short', /too little ETH on Ethereum for the network fee of the USDT payment; ETH on another network does not count\. Nothing was signed, sent to the bot or paid\./],
+  ['a fee estimate that fails', f => { f.state.estimateError = true; }, 'payment_not_ready', /^The USDT payment cannot be prepared: .*Nothing was signed, sent to the bot or paid\.$/],
+]) {
+  test(`USDT -> NODUS: ${label} stops the swap before any signature or post`, async t => {
+    const f = await setup(t), remote = f.site(); await connectBoth(f, remote); set(f);
+    const answer = await remote.request(SWAP_METHODS.sendUsdtToNodus, [usdtRequest()]);
+    assert.equal(answer.error.code, -32603); assert.match(answer.error.message, text);
+    assert.deepEqual(answer.error.data, { delivered: false, paid: false, answered: false, reason, cause: null });
+    assert.equal(f.botCalls.length, 0); assert.equal(f.raw.length, 0); assert.deepEqual(f.events, []);
+    assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {});
+  });
+}
+
 // Proves the extension, not the site, fixes what is posted and where: the site cannot choose the path, a non-https or
 // path-carrying bot address is refused before any approval, and unknown or missing fields are refused.
 test('swap requests refuse a bad bot address, extra fields and a wrong sender before anything is shown', async t => {
@@ -266,7 +286,8 @@ test('NODUS -> USDT: a held transfer past its expiry is never sent', async t => 
   f.state.onBot = () => { f.nodusMock.state.tip = held.expiryHeight; };
   const sending = remote.request(SWAP_METHODS.sendNodusToUsdt, [{ holdId: held.holdId, botUrl: BOT, text }]);
   await f.walk(sending, ['nodus_signMessage']); answer = await sending;
-  assert.match(answer.error.message, /expired/); assert.deepEqual(answer.error.data, { delivered: true, paid: false, cause: null });
+  assert.match(answer.error.message, /expired/); assert.deepEqual(answer.error.data, { delivered: true, paid: false, failure: answer.error.data.failure, cause: null });
+  assert.match(answer.error.data.failure, /expired/);
   assert.equal(f.botCalls.length, 1); assert.equal(f.nodusMock.state.submissions.length, 0);
 });
 
@@ -360,6 +381,21 @@ test('liquidity add: a refused USDT payment sends nothing; mismatched halves are
   assert.equal(f.botCalls.length, 0); assert.equal(f.raw.length, 0);
 });
 
+// Proves the liquidity add checks its USDT payment before the Ethereum signature: with no native coin for the fee
+// nothing is signed or posted, the held NODUS transfer is never sent and the hold is dropped (a new hold can be made at
+// once). Same environment and false-pass notes as the USDT -> NODUS case above.
+test('liquidity add: no native coin for the fee stops the add before any signature or post', async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote), { answer: held } = await hold(f, remote, nodusAccount);
+  f.state.balance = '0x0';
+  const answer = await remote.request(SWAP_METHODS.sendLiquidityAdd, [addRequest(f, nodusAccount, held)]);
+  assert.equal(answer.error.code, -32603); assert.match(answer.error.message, /too little ETH on Ethereum for the network fee/);
+  assert.deepEqual(answer.error.data, { delivered: false, paid: false, answered: false, reason: 'native_fee_short', cause: null });
+  assert.equal(f.botCalls.length, 0); assert.equal(f.signCalls.length, 0); assert.equal(f.raw.length, 0); assert.equal(f.nodusMock.state.submissions.length, 0);
+  assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {});
+  const again = await remote.request(SWAP_METHODS.sendLiquidityAdd, [addRequest(f, nodusAccount, held)]);
+  assert.notEqual(again.error?.data?.reason, 'native_fee_short'); assert.equal(f.botCalls.length, 0); // the dropped hold is refused, not reused
+});
+
 // ---- holds, payment results, throttling ----
 
 // Proves hold creation is serialised per wallet session: while one hold waits for the user's approval a second call is
@@ -418,6 +454,7 @@ test('a failure before the broadcast step reports paid false', async t => {
   await f.walk(swapping, ['eth_signTypedData']);
   const answer = await swapping;
   assert.equal(answer.error.data.delivered, true); assert.equal(answer.error.data.paid, false); assert.match(answer.error.message, /wrong network/);
+  assert.match(answer.error.data.failure, /wrong network/); // the payment step's own reason, for the site's text
   assert.equal(f.events.includes('eth_sendRawTransaction'), false);
 });
 test('a held NODUS transfer the node refused after its record was durable reports paid "unknown"', async t => {

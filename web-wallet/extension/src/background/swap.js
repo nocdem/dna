@@ -98,7 +98,23 @@ function afterDelivery(error, sent = {}) {
   const uncertain = error?.data?.activityTracked === true || error?.broadcastReached === true;
   const data = { delivered: true, paid: uncertain ? 'unknown' : false, ...sent };
   if (error?.code === 4001) return providerErrors.userRejectedRequest({ message: 'You rejected the payment. The bot has your request; it expires unpaid.', data });
-  return rpcErrors.internal({ message: `The bot has your request but the payment was not completed: ${error?.message ?? 'unknown error'}`, data });
+  // `failure`: the payment step's own reason, so the site can name it without parsing this message.
+  return rpcErrors.internal({ message: `The bot has your request but the payment was not completed: ${error?.message ?? 'unknown error'}`,
+    data: { ...data, failure: String(error?.message ?? 'unknown error') } });
+}
+// Before any signature or post: the USDT payment is prepared once as the payment screen will prepare it (estimate, fee,
+// nonce, balance) and dropped, so a payment the wallet cannot send leaves no open request at the bot that would hold
+// this USDT amount until it expires. Nothing is signed, posted or paid when this throws.
+async function assertPayable(session, payment, flow) {
+  try { await session.checkUsdtPayment(payment); }
+  catch (error) {
+    debugLog('swap', 'not-payable', { flow, ...errorFields(error) });
+    const short = error?.nativeShort === true;
+    const message = short
+      ? `Your Ethereum address has too little ${session.symbol} on ${session.networkName} for the network fee of the USDT payment; ${session.symbol} on another network does not count. Nothing was signed, sent to the bot or paid.`
+      : `The USDT payment cannot be prepared: ${error?.shortMessage ?? error?.message ?? 'unknown error'}. Nothing was signed, sent to the bot or paid.`;
+    throw rpcErrors.internal({ message, data: { delivered: false, paid: false, answered: false, reason: short ? 'native_fee_short' : 'payment_not_ready' } });
+  }
 }
 
 export function createSwap({ evm, nodus }) {
@@ -112,6 +128,7 @@ export function createSwap({ evm, nodus }) {
     const session = evm.swapSession(origin, from);
     if (getAddress(session.account) !== from) throw providerErrors.unauthorized();
     assertSwapUsdtToken(session.chain, token); // before any signature, post or payment
+    await assertPayable(session, { token, to: payTo, amount }, 'usdt_to_nodus');
     const sender = from.toLowerCase();
     const fields = { sender, destination, amount: amount.toString(), minimumToReceive: minimum.toString(), requestNumber: number.toString() };
     debugLog('swap', 'signature-asked', { flow: 'usdt_to_nodus', origin });
@@ -182,6 +199,7 @@ export function createSwap({ evm, nodus }) {
       session = evm.swapSession(origin, ethereumAddress);
       if (getAddress(session.account) !== ethereumAddress) throw providerErrors.unauthorized();
       assertSwapUsdtToken(session.chain, token); // before any signature, post or payment
+      await assertPayable(session, { token, to: payTo, amount: usdt }, 'liquidity_add');
       debugLog('swap', 'signature-asked', { flow: 'liquidity_add', origin });
       const ethSignature = await session.signTyped(liquidityAddTyped({ chainId: session.chainId, ethereumAddress: ethereumAddress.toLowerCase(), nodusAddress: hold.account,
         usdtAmount: usdt.toString(), nodusAmount: nodusAmount.toString(), requestNumber: number.toString() }));

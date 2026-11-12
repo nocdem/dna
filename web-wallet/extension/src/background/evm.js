@@ -73,7 +73,8 @@ export async function prepareSiteTransaction({ chain, wallet, fields, endpoint, 
       provider.getTransactionCount(tx.from, 'pending'), provider.getBalance(tx.from)]));
     assertCurrent();
     const gasLimit = fields.gas === undefined ? gas * 120n / 100n : rawInteger(fields.gas), gasPrice = fees.gasPrice;
-    if (!gasPrice || balance < gasLimit * gasPrice + tx.value) throw new Error('Insufficient native balance for amount and network fee.');
+    // `nativeShort` lets a caller tell this refusal apart from a failed read (swap.js checks it before posting a request).
+    if (!gasPrice || balance < gasLimit * gasPrice + tx.value) throw Object.assign(new Error('Insufficient native balance for amount and network fee.'), { nativeShort: true });
     const unsigned = { ...tx, chainId: config.chainId, nonce, gasLimit, gasPrice, type: 0 }; delete unsigned.from;
     return { fee: `Up to ${formatUnits(gasLimit * gasPrice, 18)} ${config.symbol}`, expiresAt: Date.now() + 60000, nonce,
       async send(onBroadcast) {
@@ -326,20 +327,28 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
     const session = capture(origin, from);
     if (!SWAP_CHAINS.includes(session.chain)) throw rpcErrors.invalidParams('Swap payments are made on Ethereum or Ethereum Sepolia. Switch the network first.');
     const config = chainConfig(session.chain), account = session.wallet.evm.address;
+    const prepareUsdt = (token, to, amount) => prepareSiteTransaction({ ...session,
+      fields: { from: account, to: token, value: '0x0', data: erc20Transfer.encodeFunctionData('transfer', [to, amount]), chainId: toQuantity(config.chainId) } });
     return {
-      chain: session.chain, chainId: config.chainId, account,
+      chain: session.chain, chainId: config.chainId, account, symbol: config.symbol, networkName: config.name,
       async signTyped(typed) {
         session.assertCurrent();
         await approved(origin, ApprovalType.EthSignTypedData, { account, chain: session.chain, text: JSON.stringify(typed, null, 2) }, session.assertCurrent);
         const signature = await keyring.signTypedMessage({ from: account, data: typed }, 'V4'); session.assertCurrent(); return signature;
+      },
+      // The same preparation as approveUsdtPayment (estimate, fee, nonce, balance), shown to nobody and never sent: the
+      // caller runs it before any signature or post, so a payment that cannot be sent leaves nothing at the bot.
+      async checkUsdtPayment({ token, to, amount }) {
+        assertSwapUsdtToken(session.chain, token);
+        assertSendable(session.chain);
+        await prepareUsdt(token, to, amount);
       },
       // Prepares the USDT `transfer(to, amount)` of `token`, shows it for approval (exact amount and destinations)
       // and returns `send()`, which signs, records and broadcasts exactly that prepared transaction.
       async approveUsdtPayment({ token, to, amount, bot }) {
         assertSwapUsdtToken(session.chain, token); // the screen says USDT: only the pinned USDT contract is paid
         assertSendable(session.chain);
-        const data = erc20Transfer.encodeFunctionData('transfer', [to, amount]);
-        const prepared = await prepareSiteTransaction({ ...session, fields: { from: account, to: token, value: '0x0', data, chainId: toQuantity(config.chainId) } });
+        const prepared = await prepareUsdt(token, to, amount);
         await approved(origin, 'nodus_swapPayment', { account, chain: session.chain, title: 'Pay USDT for a swap', rows: [
           ['Network', config.name], ['From', account], ['Pay to', getAddress(to)], ['Token contract', getAddress(token)],
           ['Amount', `${formatUnits(amount, 6)} USDT (${amount} units of 6 decimals)`], ['Network fee', prepared.fee], ['Bot that received the request', bot],

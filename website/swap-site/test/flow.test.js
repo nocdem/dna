@@ -253,6 +253,32 @@ test('delivered and unpaid: the add flow has its own text, the swap flow keeps i
   assert.equal(describeAdapterError(err, { flow: 'swap' }).text, DELIVERED_UNPAID_TEXT);
 });
 
+// Proves the page says WHY a request was not paid (operator's add 3354299809, 2026-11-12: the orange text said only
+// "nothing was paid" while the extension had found no ETH for the network fee). A refusal before signing (extension
+// 0.1.172 and later: reason native_fee_short / payment_not_ready) shows the extension's own sentence; a delivered request
+// names the payment step's reason from `failure`, or from the message of an older extension; a rejection says so; with
+// no reason the old text stays word for word. Cannot prove what the extension sends; the shapes follow its swap.js.
+test('an unpaid request names why it was not paid: no fee coin, a failed payment step, a rejection', () => {
+  const short = 'Your Ethereum address has too little ETH on Ethereum Sepolia for the network fee of the USDT payment; ETH on another network does not count. Nothing was signed, sent to the bot or paid.';
+  for (const flow of ['add', 'swap']) {
+    const r = describeAdapterError(new AdapterError('extension_error', short, { delivered: false, paid: false, answered: false, reason: 'native_fee_short' }), { flow });
+    assert.equal(r.text, short);
+    const n = describeAdapterError(new AdapterError('extension_error', 'The USDT payment cannot be prepared: execution reverted. Nothing was signed, sent to the bot or paid.',
+      { delivered: false, paid: false, answered: false, reason: 'payment_not_ready' }), { flow });
+    assert.match(n.text, /^The USDT payment cannot be prepared: execution reverted\. Nothing was signed/);
+  }
+  const fee = ' Your Ethereum address has too little ETH on the bot\'s Ethereum network for the network fee of the USDT payment.';
+  const insufficient = 'Insufficient native balance for amount and network fee.';
+  const fromField = describeAdapterError(new AdapterError('extension_error', 'x', { delivered: true, paid: false, nodusSent: false, failure: insufficient }), { flow: 'add' });
+  assert.equal(fromField.text, DELIVERED_UNPAID_ADD_TEXT.replace('nothing was paid.', `nothing was paid.${fee}`));
+  const older = describeAdapterError(new AdapterError('extension_error', `The bot has your request but the payment was not completed: ${insufficient}`, { delivered: true, paid: false, nodusSent: false }), { flow: 'add' });
+  assert.equal(older.text, fromField.text);
+  const other = describeAdapterError(new AdapterError('extension_error', 'x', { delivered: true, paid: false, failure: 'Review expired. Prepare the transfer again.' }));
+  assert.equal(other.text, DELIVERED_UNPAID_TEXT.replace('nothing was paid.', 'nothing was paid. The extension could not send the payment: Review expired. Prepare the transfer again.'));
+  const rejected = describeAdapterError(new AdapterError('extension_error', 'You rejected the payment.', { delivered: true, paid: false, extensionCode: 4001 }), { flow: 'add' });
+  assert.equal(rejected.text, DELIVERED_UNPAID_ADD_TEXT.replace('nothing was paid.', 'nothing was paid. You rejected the payment in the extension.'));
+});
+
 test('the adapter\'s failure ends the flow in plain words: not configured, no extension, rejected, passed-on refusal', async () => {
   const cases = [
     [new AdapterError('not_configured', 'x'), /not available in the extension yet/, undefined],

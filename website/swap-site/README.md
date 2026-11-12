@@ -13,7 +13,7 @@ Plan: `docs/plans/2026-11-08-swap-bot-plan.nodus1.md` sections 5-8, 14, 18 (chan
 | --- | --- |
 | `index.html`, `swap.css` | The page and its look (CSP: no inline script or style). |
 | `swap.js` | DOM wiring only. |
-| `flow.js` | The order of the steps: status, press (only once the extension is connected), yes, bounded polling; liquidity add and withdraw. No DOM. |
+| `flow.js` | The order of the steps: status, press (only once the extension is connected), yes, bounded polling; liquidity add and withdraw. No DOM. `describeAdapterError` turns the extension's error into the page text; an unpaid request names why (the extension's own sentence when the USDT payment could not be prepared before anything was sent; the payment step's `failure`, or a rejection, after the bot got the request). |
 | `swap-logic.js` | Units, the minimum to receive, request bodies, signed texts, typed data, refusal words, swap states. |
 | `bot.js` | Fetch client of the bot's routes (`amm_http.h`). |
 | `extension.js` | The extension's EXISTING site methods (`nodus_requestAccounts`, `eth_requestAccounts`, `nodus_signMessage`). After Connect the button shows the account's chain name when the extension gives one, otherwise the two short addresses; the full addresses are in its hover text. |

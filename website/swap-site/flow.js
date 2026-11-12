@@ -47,6 +47,18 @@ export function stepText(step) {
 }
 export const amountProblem = reason => AMOUNT_WORDS[reason] ?? 'This amount is not valid.';
 
+// Why a delivered request was not paid, from the extension's error: `failure` is the payment step's own reason
+// (extension swap.js afterDelivery); an older extension carries it only inside its message after AFTER_DELIVERY.
+const AFTER_DELIVERY = 'The bot has your request but the payment was not completed: ';
+function unpaidReason(err) {
+  if (err?.extensionCode === 4001) return ' You rejected the payment in the extension.';
+  const failure = typeof err?.failure === 'string' ? err.failure
+    : typeof err?.message === 'string' && err.message.startsWith(AFTER_DELIVERY) ? err.message.slice(AFTER_DELIVERY.length) : '';
+  if (!failure) return '';
+  if (/^Insufficient native balance/.test(failure)) return ' Your Ethereum address has too little ETH on the bot\'s Ethereum network for the network fee of the USDT payment.';
+  return ` The extension could not send the payment: ${failure}`;
+}
+
 // An error from the adapter (adapter.js) in plain words.
 // ctx.requestNumber: the request number of the price the user approved (named in a liquidity add's text).
 // ctx.flow: 'add' for the liquidity add; anything else is the swap flow. The bot's open-approval rule differs: an add
@@ -70,6 +82,12 @@ export function describeAdapterError(err, ctx = {}) {
         : `Nothing was paid for this new request. You already have an open request with the same amount (request ${n}). ` +
           `The bot refuses this exact amount until that request has expired or the bot has taken in its payment: a liquidity add's once its USDT payment is seen, a swap's once its payment is confirmed and it is not waiting in line for room. You can use a different amount now. ` +
           `If request ${n} is a swap, it is shown below.`;
+      return out;
+    }
+    // The extension refused before signing or posting because the USDT payment could not be made (extension
+    // swap.js assertPayable): its own message names the reason and says nothing was sent.
+    if ((err.reason === 'native_fee_short' || err.reason === 'payment_not_ready') && typeof err.message === 'string' && err.message) {
+      out.text = err.message;
       return out;
     }
     out.text = typeof err.reason === 'string' && err.answered
@@ -102,10 +120,11 @@ export function describeAdapterError(err, ctx = {}) {
       out.text = 'Your payment may have been sent. Do not pay again; check the extension\'s activity.';
       return out;
     }
+    const why = unpaidReason(err);
     out.text = ctx.flow === 'add'
-      ? 'The bot has your liquidity add, but nothing was paid. The add stays open until its approval time has passed and the bot has checked that no payment came. ' +
+      ? `The bot has your liquidity add, but nothing was paid.${why} The add stays open until its approval time has passed and the bot has checked that no payment came. ` +
         'Until then the bot refuses a new liquidity add or a USDT to NODUS swap with exactly this USDT amount from your Ethereum address; you can use a different amount now.'
-      : 'The bot has your request, but nothing was paid. The request stays open until its approval time has passed and the bot has checked that no payment came; this page then shows it as expired. Until then the bot refuses a new swap of exactly this amount; you can swap a different amount now.';
+      : `The bot has your request, but nothing was paid.${why} The request stays open until its approval time has passed and the bot has checked that no payment came; this page then shows it as expired. Until then the bot refuses a new swap of exactly this amount; you can swap a different amount now.`;
     return out;
   }
   if (err?.openRequestNumber != null) out.openRequestNumber = String(err.openRequestNumber);
