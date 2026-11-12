@@ -149,3 +149,26 @@ test('a failed RPC call writes one net line to the background session log; a suc
   await f.background.lock();
   assert.deepEqual(f.background.nodus.getSessionLog().entries, [], 'cleared on lock');
 });
+
+// Proves the sink gets the same bytes with and without a listener: the prefix "nodus-debug ", the ISO time, area, event and the
+// fields in the order they were passed, compared literally for an rpc call line and a failed one (the lines other tools read
+// from the console). Time is pinned with a mocked Date. Could falsely pass if the expected text were copied from a changed
+// layout: it is written out here by hand, field by field, as the line looked before onDebugLine existed.
+test('the sink receives the literal same line with and without a listener', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-12T10:20:30.456Z') });
+  const run = () => {
+    const lines = []; const restore = setDebugLogSink(line => lines.push(line));
+    try {
+      debugLog('rpc', 'call', { host: 'rpc.example.test', method: 'eth_chainId', ms: 5, status: 200, outcome: 'ok' });
+      debugLog('rpc', 'call', { host: 'rpc.example.test', method: 'eth_getBalance', ms: 15000, ...errorFields(Object.assign(new Error('x'), { name: 'TimeoutError' })) });
+    } finally { restore(); }
+    return lines;
+  };
+  const expected = [
+    'nodus-debug 2026-11-12T10:20:30.456Z rpc call host=rpc.example.test method=eth_chainId ms=5 status=200 outcome=ok',
+    'nodus-debug 2026-11-12T10:20:30.456Z rpc call host=rpc.example.test method=eth_getBalance ms=15000 outcome=error name=TimeoutError',
+  ];
+  assert.deepEqual(run(), expected);
+  const stop = onDebugLine(() => {});
+  try { assert.deepEqual(run(), expected); } finally { stop(); }
+});
