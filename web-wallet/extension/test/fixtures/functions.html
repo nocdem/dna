@@ -12,6 +12,7 @@ const calls = []; let hold, release, price = '200000000', bscFails = true;
 // `?holdevm`: every Ethereum-family balance read waits until fixture.releaseEvm(); `?kept`: the saved record holds a MAINNET
 // Ethereum row (3 ETH with its price) for this wallet. Both are off by default.
 let holdEvm = new URLSearchParams(location.search).has('holdevm'); const evmWaiting = [];
+let holdSolana = false; const solanaWaiting = [];   // fixture.holdSolana(true) holds Solana balance reads until releaseSolana()
 const keptRecord = () => new URLSearchParams(location.search).has('kept')
   ? { 'ethereum:ETH': { units: '3000000000000000000', observedAt: Date.now() - 1000, address: state.addresses.ethereum, network: 'main', price: { units: price, observedAt: Date.now() - 1000 } } } : {};
 if (new URLSearchParams(location.search).has('contracts')) Object.assign(state.nodus, { evmReadable: true, evmBuildable: true });
@@ -40,7 +41,9 @@ const ui = { get state() { return state; },
     if (method === 'getNodusBalances') return [{ symbol: 'NODUS', balance: '12' }];
     if (method === 'getCpunkBalance') return { balance: '7' };
     if (method === 'getIxiosBalance') return [{ symbol: 'IXIOS', balance: '8' }];
-    if (method === 'getSolanaBalances') return [{ symbol: 'SOL', balance: '1000' }];
+    if (method === 'getSolanaBalances' && holdSolana) await new Promise(resolve => { solanaWaiting.push(resolve); });
+    // Solana Testnet answers 777 SOL, the default (devnet) 1000, so one network's amount cannot be mistaken for the other's.
+    if (method === 'getSolanaBalances') return [{ symbol: 'SOL', balance: state.networks.solana === 'testnet' ? '777' : '1000' }];
     if (method === 'getTronBalances') return [{ symbol: 'TRX', balance: '2000' }];
     throw new Error(`Unexpected fixture method ${method}`);
   }, async refresh() {}, async setAutoLock(value) { state.preferences.autoLockTimeLimit = value; },
@@ -51,6 +54,7 @@ const run = async action => { try { return await action(); } finally { screen?.u
 screen = mountReferenceWallet({ document, window, root: document.getElementById('screen'), status: document.getElementById('status'), ui, run,
   loadBalances: () => screen.loadBalances(true), lock() {}, reveal() {}, setAutoLock: value => run(() => ui.setAutoLock(value)), clearReveal() {} });
 window.fixture = { screen, state, ui, calls, hold() { hold = true; }, release() { hold = false; release?.(); }, price(value) { price = value; }, bscFails(value) { bscFails = value; },
+  holdSolana(value) { holdSolana = value; }, releaseSolana() { holdSolana = false; for (const resolve of solanaWaiting.splice(0)) resolve(); },
   holdEvm(value) { holdEvm = value; }, releaseEvm() { holdEvm = false; for (const resolve of evmWaiting.splice(0)) resolve(); } };
 await screen.loadBalances(); window.fixture.ready = true;
 </script></body></html>
