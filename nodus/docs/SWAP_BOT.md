@@ -88,16 +88,20 @@ at `amm_http.c:696`). Any other path is 404, a wrong method is 405.
    arrives at a full limit waits in line (givens item 94).
 
 **Ethereum provider reads run at the same time** (`tools/amm/amm_eth_fanout.h`).
-When the Ethereum watcher or the payer asks the usable providers one question
-(qualify, the tip, a block, a transaction record, the logs, a receipt, a balance,
-a gas estimate), it asks all of them at once, one short-lived thread per
-provider, and examines the answers in provider order only after every call has
-returned. The quorum rules that combine the answers are unchanged. A group
-therefore waits for every one of its calls; each request keeps its own transfer
-timeout, and no upper bound on the time of the whole group is set. If a thread
-cannot be started, that provider's call runs on the calling thread before the
-join, and the line `AMM_FANOUT: k of n provider calls ran on the calling thread`
-is written.
+When the Ethereum watcher asks the usable providers one question (qualify, the
+tip, a block, the logs, a transaction record with its receipt, a record's
+receipt with that provider's tip for the depth vote), or the payer asks one
+(qualify, a balance, a gas estimate, a receipt with that provider's tip), it
+asks all of them at once, one short-lived thread per provider, and examines the
+answers in provider order only after every call has returned. The payer's other
+reads (the tip, the nonce counts and the fee prices, `qth` in
+`tools/amm/amm_eth_pay.c`) and its sending of a payment still ask the providers
+one after another. The quorum rules that combine the answers are unchanged. A
+group therefore waits for every one of its calls; each request keeps its own
+transfer timeout, and no upper bound on the time of the whole group is set. If
+a thread cannot be started, that provider's call runs on the calling thread
+before the join, and the line
+`AMM_FANOUT: k of n provider calls ran on the calling thread` is written.
 
 **Liquidity add and withdraw** (`amm_engine.h`, "LIQUIDITY ADD" and "LIQUIDITY
 WITHDRAW"): others add and withdraw without stake. An add carries at least
