@@ -19,6 +19,14 @@ const FIELD_MAX = 160;
 const SECRET_NAME = /seed|word|phrase|pass|secret|private|mnemonic|signature|signed|envelope|payload|text|typed|params|body|key/i;
 let sink = line => { console.debug(line); };
 
+// Listeners see each finished line, after the sink has taken it (the console output is unchanged), with its area and event.
+// A listener that throws changes nothing for the caller or for the other listeners. Returns the remover.
+const listeners = new Set();
+export function onDebugLine(listener) {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
 // Replaces the sink; returns a function that puts the previous one back (tests capture lines with it).
 export function setDebugLogSink(next) {
   const previous = sink; sink = next;
@@ -44,6 +52,7 @@ export function debugLog(area, event, fields = {}) {
       line += ` ${name}=${render(value)}`;
     }
     sink(line);
+    for (const listener of [...listeners]) { try { listener({ area, event, line }); } catch { /* a listener never changes the caller */ } }
   } catch { /* the log never changes what its caller does */ }
 }
 

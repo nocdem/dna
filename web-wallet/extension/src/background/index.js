@@ -11,7 +11,7 @@ import { Messenger } from '@metamask/messenger';
 import { rpcErrors } from '@metamask/rpc-errors';
 import { createPersistedStore } from './store.js';
 import { createApprovals } from './approvals.js';
-import { debugLog } from '../../../src/debug-log.js';
+import { debugLog, onDebugLine } from '../../../src/debug-log.js';
 import { createPermissions } from './permissions.js';
 import { createConnectedSites } from './connected-sites.js';
 import { createPrivacyConsent } from './privacy-consent.js';
@@ -108,6 +108,8 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       catch { /* a closing interface cannot receive the invalidation */ }
     },
     getPermittedAccounts: origin => permissions.getNodusAccounts(origin), approvals });
+  // A failed RPC call made here becomes one line of the session log the extension's copied log merges (nodus.noteDebugLine).
+  const stopDebugLines = onDebugLine(note => nodus.noteDebugLine(note));
   permissions = createPermissions({ messenger, approvals, runtime,
     getNetworkState: options => engine.getNetworkState(options), getNodusAccount: () => nodus.getAccount(),
     rememberRevocation: (origin, names) => connectedSites.rememberRevocation(origin, names) });
@@ -457,6 +459,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
       engine.destroy(); approvals.destroy(); store.destroy(); evm.destroy(); networks.controller.destroy(); permissions.controller.destroy();
       messenger.unsubscribe('PermissionController:stateChange', onPermissionsChanged);
       alarms.onAlarm.removeListener(onAlarm);
+      stopDebugLines();
       await store.flush();
     },
   };

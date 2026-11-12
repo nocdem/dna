@@ -569,6 +569,14 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       }); writes = job; return job;
     },
     async checkLiveness() { const s = active(); if (s.client.state === 'ready') await s.client.checkLiveness(); },
+    // A failed RPC call (debug line `rpc call … outcome=error`, src/rpc-transport.js) as one line of this log, so the copied log
+    // names the host, method, duration and error name or status. The text is the debug line without its "nodus-debug <time>"
+    // prefix: that line is built without URL path, parameters or address (src/debug-log.js). Successful calls write nothing.
+    noteDebugLine({ area, event, line }) {
+      if (area !== 'rpc' || event !== 'call' || typeof line !== 'string' || !/ outcome=error(?: |$)/.test(line)) return;
+      const text = line.slice(line.indexOf(` ${area} ${event}`) + 1);
+      log.log('net', text, { error: true });
+    },
     getSessionLog() { return { entries: log.entries(), running: log.running(), startedAt: log.startedAt }; },
     getKeptBalances() {
       const s = active();
