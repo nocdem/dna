@@ -92,3 +92,33 @@ test('the permission controller starts empty and never reads an initial state fr
     assert.deepEqual(permissions.getAccounts('https://site.example'), []);
   } finally { permissions.controller.destroy(); approvals.destroy(); }
 });
+
+// Proves nodus_requestAccounts carries the account's chain name when the wallet has confirmed one for that address
+// (getAccountName), both on the first grant and on a later call, and leaves the field out otherwise; the stored grant
+// itself never holds the name (it is added to the answer only). Falsely passes if getAccountName were consulted for a
+// different address than the granted one: the stub answers only for the granted address.
+test('nodus_requestAccounts adds the confirmed chain name to the answer, never to the stored grant', async t => {
+  const messenger = new Messenger({ namespace: 'Background' }), lockCoordinator = createLockCoordinator();
+  const windows = { onRemoved: { addListener() {}, removeListener() {} }, async getAll() { return []; }, async getLastFocused() { return {}; },
+    async create(options) { return { ...options, id: 1 }; }, async update() {} };
+  const approvals = createApprovals({ messenger, windows, runtime: { id: 'fixture', getURL: path => path } });
+  const nodusAccount = { address: 'ab'.repeat(64), publicKey: `0x${'cd'.repeat(2592)}` };
+  let name = 'alice7';
+  const permissions = createPermissions({ messenger, approvals, lockCoordinator, runtime: { id: 'fixture' },
+    getNetworkState: () => ({ chainId: '0x1', networkVersion: '1', isConnected: true }),
+    getNodusAccount: () => nodusAccount, getAccountName: address => (address === nodusAccount.address ? name : '') });
+  await lockCoordinator.unlock(async () => {});
+  const engine = new JsonRpcEngine();
+  engine.push((req, _res, next) => { req.origin = 'https://site.example'; next(); });
+  engine.push(permissions.createPermissionMiddleware('https://site.example')); engine.push(permissions.createEip1193MethodMiddleware());
+  let id = 0;
+  const request = (method, params) => engine.handle({ id: ++id, jsonrpc: '2.0', method, params });
+  t.after(() => { engine.destroy(); approvals.destroy(); });
+  const first = request('nodus_requestAccounts'), pending = await pendingApproval(approvals);
+  await permissions.acceptPermissionsRequest(structuredClone(pending.requestData));
+  assert.deepEqual((await first).result, [{ ...nodusAccount, name: 'alice7' }]);
+  assert.deepEqual(permissions.getNodusAccounts('https://site.example'), [nodusAccount], 'the stored grant holds no name');
+  assert.deepEqual((await request('nodus_requestAccounts')).result, [{ ...nodusAccount, name: 'alice7' }]);
+  name = '';
+  assert.deepEqual((await request('nodus_requestAccounts')).result, [nodusAccount], 'no confirmed name: no name field');
+});

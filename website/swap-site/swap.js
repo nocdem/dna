@@ -162,8 +162,9 @@ connectBtn.addEventListener('click', async () => {
   try {
     const accounts = await extension.connect();
     flow.setAccounts(accounts);
-    connectBtn.textContent = `${short(accounts.nodus.address)} · ${short(accounts.ethereum)}`;
-    connectBtn.title = `Nodus ${accounts.nodus.address}\nEthereum ${accounts.ethereum}`;
+    // The chain name when the account has one, otherwise the two short addresses; the full addresses stay on hover.
+    connectBtn.textContent = accounts.nodus.name || `${short(accounts.nodus.address)} · ${short(accounts.ethereum)}`;
+    connectBtn.title = `${accounts.nodus.name ? `Name ${accounts.nodus.name}\n` : ''}Nodus ${accounts.nodus.address}\nEthereum ${accounts.ethereum}`;
     $('nodus-addr').textContent = short(accounts.nodus.address); $('nodus-addr').title = accounts.nodus.address;
     $('eth-addr').textContent = short(accounts.ethereum); $('eth-addr').title = accounts.ethereum;
     say($('connect-status'), 'Extension connected.');

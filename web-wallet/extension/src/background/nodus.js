@@ -550,6 +550,11 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       await releaseExpiredHolds(s);
       return rememberReview(s, await adapter.prepareStake({ ...params, kind, client: s.client, from: s.addresses.nodus, locked: heldInputs(s) }));
     },
+    // The chain name this unlocked session has confirmed for `address` (a lookup answered it), or ''. Reads only what is
+    // kept, never the network; used by the site account answer.
+    accountName(address) {
+      return session && session.addresses?.nodus === address ? confirmedOwnName(session, address) : '';
+    },
     async getOwnName() {
       // A name this session already confirmed for this address is answered at once; the network read runs in the
       // background and refreshes the kept name. Without a kept name the read below waits for the network as before.

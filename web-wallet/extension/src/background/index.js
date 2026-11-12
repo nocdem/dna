@@ -124,6 +124,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
   const stopDebugLines = onDebugLine(note => nodus.noteDebugLine(note));
   permissions = createPermissions({ messenger, approvals, runtime,
     getNetworkState: options => engine.getNetworkState(options), getNodusAccount: () => nodus.getAccount(),
+    getAccountName: address => nodus.accountName(address),
     rememberRevocation: (origin, names) => connectedSites.rememberRevocation(origin, names) });
   connectedSites = createConnectedSites({ storage, sessionStorage, controller: permissions.controller, messenger });
   evm = createEvm({ messenger, store, approvals, permissions, lockCoordinator, getWallet, keyring,

@@ -38,7 +38,7 @@ const unrestrictedMethods = [
   ...SWAP_METHOD_NAMES,
 ];
 
-export function createPermissions({ messenger, approvals, runtime, getNetworkState, getNodusAccount, rememberRevocation }) {
+export function createPermissions({ messenger, approvals, runtime, getNetworkState, getNodusAccount, getAccountName = () => '', rememberRevocation }) {
   let accounts = [];
   const locks = new Set();
   // Port: app/scripts/messenger-client-init/permission-controller-init.ts:37-78,
@@ -187,11 +187,16 @@ export function createPermissions({ messenger, approvals, runtime, getNetworkSta
   // Same flow and locked behavior as requestAccounts above: an existing
   // public grant returns immediately; a new grant waits in ApprovalController
   // until the wallet UI unlocks (ui/app.js render's !state.isUnlocked branch).
+  // The answer carries the account's chain name when this session has confirmed one; the name is public on chain for
+  // the address the site already receives. It is added to the answer only, never to the stored grant.
+  function withName(list) {
+    return list.map(account => { const name = getAccountName(account.address); return name ? { ...account, name } : account; });
+  }
   async function requestNodusAccounts(req, res, _next, end) {
     const permitted = getNodusAccounts(req.origin);
-    if (permitted.length) { res.result = permitted; return end(); }
+    if (permitted.length) { res.result = withName(permitted); return end(); }
     await waitForGrant(req.origin, { [NODUS_PERMISSION]: {} }, getNodusAccounts);
-    res.result = getNodusAccounts(req.origin); return end();
+    res.result = withName(getNodusAccounts(req.origin)); return end();
   }
 
   // Port: handlers/wallet-requestPermissions.ts:113-160.

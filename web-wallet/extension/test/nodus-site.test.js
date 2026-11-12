@@ -477,6 +477,23 @@ test('Nodus signature approval does not wait for a chain-name read and shows the
   f.background.approvals.reject(pendingSecond.id); assert.equal((await second).error.code, 4001);
 });
 
+// Proves the site account answer (nodus_requestAccounts) carries the chain name once the background has confirmed it,
+// and not before: the connect answer has no name, the later call after the confirmed lookup has { name: 'alice' }, and
+// no extra name lookup is made for the account answer. Can falsely pass if the name came from elsewhere than the
+// confirmed lookup; the only lookup in this test answers 'alice' and is counted.
+test('the site account answer carries the confirmed chain name', async t => {
+  const answer = deferred(), asked = [];
+  const f = await setup(t, { names: { nameOf: async args => { asked.push(args); return answer.promise; } } }), remote = f.site();
+  await f.connect(remote);
+  const first = remote.request('nodus_signMessage', ['one', address]), pendingFirst = await f.nextApproval(first);
+  f.background.approvals.reject(pendingFirst.id); await first;
+  answer.resolve({ found: true, name: 'alice', committedHeight: '5' });
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  const accounts = (await remote.request('nodus_requestAccounts')).result;
+  assert.equal(accounts.length, 1); assert.equal(accounts[0].address, address); assert.equal(accounts[0].name, 'alice');
+  assert.equal(asked.length, 1);
+});
+
 // Proves: an answer "no name" or a failed read never produces a name (empty accountName), and a failed read is asked
 // again at the next window. Can falsely pass if the test never reached the request; the asked counts check that.
 test('Nodus signature approval shows no name when none is confirmed', async t => {

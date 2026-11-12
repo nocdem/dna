@@ -44,7 +44,10 @@ export function createExtension({ window = globalThis.window, waitMs = 800, log 
         const n = Array.isArray(nodus) ? nodus[0] : null, e = Array.isArray(eth) ? eth[0] : null;
         if (!n?.address || !n?.publicKey || typeof e !== 'string') throw new Error('The extension returned no account.');
         L.info('connect', 'accounts', { nodus: n.address, ethereum: e.toLowerCase(), ms: ms() });
-        return { nodus: { address: n.address, publicKey: n.publicKey }, ethereum: e.toLowerCase() };
+        // The extension adds the account's chain name when it has confirmed one (3 to 36 of a-z and 0-9); anything else is
+        // left out and the page shows the address.
+        const name = typeof n.name === 'string' && /^[a-z0-9]{3,36}$/.test(n.name) ? n.name : '';
+        return { nodus: { address: n.address, publicKey: n.publicKey, ...(name ? { name } : {}) }, ethereum: e.toLowerCase() };
       } catch (err) {
         L.warn('connect', 'refused', { ...errorFields(err), ms: ms() });
         throw err;

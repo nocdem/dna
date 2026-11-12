@@ -46,7 +46,10 @@ if (!signInResponse.ok) throw new Error('Sign-in was refused.');
 
 `connect()` discovers the provider through `eip6963:announceProvider`,
 requests reannouncement with `eip6963:requestProvider`, then calls
-`nodus_requestAccounts` and returns the first account object. Discovery waits
+`nodus_requestAccounts` and returns the first account object: `address`,
+`publicKey` and, when the wallet has confirmed one for that address, the
+account's chain name `name` (3 to 36 of a-z and 0-9; the field is absent
+otherwise). Chain names are public on chain. Discovery waits
 for a matching announcement. The browser extension is named Nodus Connect.
 For compatibility, its provider discovery retains the legacy identity
 `name: "Nodus Wallet"`, `rdns: "io.nodusnetwork.wallet"`
