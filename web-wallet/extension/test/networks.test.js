@@ -28,7 +28,7 @@ test('listed mainnet defaults and testnet-only Nodus/Asentum choices persist', a
   });
   for (const chain of ['ethereum', 'bsc', 'solana', 'tron']) assert.equal(background.networks.get(chain).endpoint, CHAINS[chain].endpoint);
   // Ethereum's test network is 'sepolia' and BNB Smart Chain's is 'testnet' (evm-networks.js); a name that chain does not list is refused.
-  for (const [chain, id] of [['ethereum', 'testnet'], ['bsc', 'sepolia'], ['cellframe', 'testnet'], ['ixios', 'testnet']]) await assert.rejects(client.request('setChainNetwork', [chain, id]), /network/i);
+  for (const [chain, id] of [['ethereum', 'testnet'], ['bsc', 'sepolia'], ['cellframe', 'testnet'], ['ixios', 'devnet']]) await assert.rejects(client.request('setChainNetwork', [chain, id]), /network/i);
   await assert.rejects(client.request('setChainNetwork', ['nodus', 'mainnet']), /network/i);
   await client.request('setChainNetwork', ['solana', 'devnet']);
   const { createBackground } = await import('../src/background/index.js');
@@ -182,7 +182,7 @@ test('testnet discard refuses a wallet or saved activity changed during encrypti
 // Falsely passes only if getState reported defaults without the controller state.
 test('unlock resets every network choice to its listed default', async t => {
   const { background, client } = await setup(t);
-  const choices = { solana: 'devnet', tron: 'nile', algorand: 'testnet', ckb: 'testnet', qtc: 'testnet', xion: 'testnet', splendor: 'testnet' };
+  const choices = { solana: 'devnet', tron: 'nile', algorand: 'testnet', ckb: 'testnet', qtc: 'testnet', xion: 'testnet', splendor: 'testnet', ixios: 'testnet' };
   for (const [chain, id] of Object.entries(choices)) await client.request('setChainNetwork', [chain, id]);
   assert.deepEqual(Object.fromEntries(Object.keys(choices).map(chain => [chain, background.networks.get(chain).id])), choices);
   await background.lock(); await background.unlock(password, unlockOptions);
@@ -259,4 +259,30 @@ test('manual cooldown explains the provider limit and confirmation schedules one
     await background[chain].getHistory(); assert.equal(count(), before + 1);
     state.historyEntered = undefined; clock.mock.restore();
   }
+});
+
+// Ixios lists Mainnet first and the test network second (plan 9.3). Proves: the default stays mainnet; the test choice is
+// accepted by the real trusted port, resolves to the literal endpoint and survives a background restart; an id the chain does
+// not list is refused. The reset to mainnet on unlock is asserted for Ixios in 'unlock resets every network choice' above. The literals are written here, not read from CHAIN_NETWORKS, so a
+// wrong list or endpoint cannot satisfy them. Falsely passes if getState reported defaults without the controller state:
+// the background controller (`networks.get`) is read as well.
+test('Ixios lists Mainnet and Testnet: the choice is accepted and persists across a restart (the unlock reset is in the test above)', async t => {
+  const { background, client, fixture } = await setup(t);
+  assert.deepEqual(chainNetwork('ixios').id, 'mainnet');
+  assert.deepEqual(['mainnet', 'testnet'].map(id => chainNetwork('ixios', id)), [
+    { id: 'mainnet', label: 'Mainnet', endpoint: 'https://ixios-rpc.innova.limited' },
+    { id: 'testnet', label: 'Testnet', endpoint: 'https://nx-rpc.ixoflow.io' },
+  ]);
+  assert.equal((await client.request('getState')).networks.ixios, 'mainnet');
+  await client.request('setChainNetwork', ['ixios', 'testnet']);
+  assert.equal((await client.request('getState')).networks.ixios, 'testnet');
+  assert.equal(background.networks.get('ixios').endpoint, 'https://nx-rpc.ixoflow.io');
+  await assert.rejects(client.request('setChainNetwork', ['ixios', 'sepolia']), /network/i);
+  assert.equal(background.networks.get('ixios').id, 'testnet', 'a refused choice leaves the selection');
+  const { createBackground } = await import('../src/background/index.js');
+  const restarted = await createBackground(fixture);
+  try {
+    assert.equal(restarted.networks.getState().ixios, 'testnet');
+    assert.equal(restarted.lockCoordinator.isLocked, true);
+  } finally { await restarted.destroy(); }
 });

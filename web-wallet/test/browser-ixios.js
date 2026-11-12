@@ -33,7 +33,9 @@ import { BALANCES_KEY } from '../src/vault.js';
 // the same checksummed address), shows the stage "Testnet", keeps the Ixios note, keeps the send fields hidden and
 // makes no call to the main node; a wrong genesis (Ethereum's, and the main Ixios genesis) makes no balance call;
 // back to Mainnet gives today's eth_ calls and no test call; choosing Testnet, selecting another chain (Ethereum) and
-// then Ixios again shows Mainnet (chooser and stage) with only eth_ calls to the main node; with a SAVED wallet (the password flow of
+// then Ixios again shows Mainnet (chooser and stage) with only eth_ calls to the main node; a test read held in flight at
+// the test node while the page switches back to Mainnet leaves no test value in the Ixios row once released (the page
+// aborts that request; the check cannot see a late write that never reaches the row); with a SAVED wallet (the password flow of
 // test/browser-smoke.js), a balance read on Testnet before locking is not shown after unlocking, not even as
 // "Last read" while the main node fails its genesis check, and the reopened wallet is on Mainnet. Both nodes are
 // mocks answering by URL; the test node answers every other method (any eth_ name included) with -32601 as the real
@@ -211,6 +213,8 @@ const TEST_GENESIS = '0x33177fd0b2fb50907e5f6e17af05b3812881ab2d3effbf0a3493d9b6
 const TEST_BALANCE = '0x' + (7654321n * 10n ** 15n).toString(16), TEST_BALANCE_TEXT = '7,654.321 IXIOS', MAIN_BALANCE_TEXT = '1,234.567 IXIOS';
 const WALLET_PASSWORD = 'public-test-password-123';
 let testGenesis = TEST_GENESIS;
+// While set, the test node's ixios_getBalance answer waits for it (a read held in flight, see siteChecks).
+let testHold = null;
 // Every JSON-RPC call answered by the test node mock, in arrival order.
 const testCalls = [];
 async function testnetRead(route) {
@@ -221,7 +225,7 @@ async function testnetRead(route) {
   testCalls.push({ method: call.method, params: call.params });
   let result;
   if (call.method === 'ixios_getBlockByNumber') result = { number: '0x1', parentHash: testGenesis };
-  else if (call.method === 'ixios_getBalance') result = TEST_BALANCE;
+  else if (call.method === 'ixios_getBalance') { if (testHold) await testHold.promise; result = TEST_BALANCE; }
   else { await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, error: { code: -32601, message: `Fixture: the method ${call.method} does not exist/is not available` } } }); return true; }
   await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, result } });
   return true;
@@ -373,6 +377,20 @@ async function siteChecks(url, connect) {
     assert.deepEqual(testCalls, [], `${label}: no test node call after selecting Ixios again`);
     fresh = site.ixiosRequests.slice(mark);
     assert.ok(fresh.length > 0 && fresh.every(requestUrl => new URL(requestUrl).origin === mainOrigin), fresh.join());
+    // A test read still in flight when the network changes back (red-team note 2 of the plan review): its answer is held
+    // at the test node, the page switches to Mainnet, the mainnet balance is shown, and the released test answer
+    // (the page aborted that request) leaves no test value behind, shown now or after one more full read.
+    let release; testHold = { promise: new Promise(resolve => { release = resolve; }) };
+    const asked = page.waitForRequest(request => request.url().startsWith(TEST_RPC) && (request.postData() ?? '').includes('ixios_getBalance'));
+    await chooseEnvironment(page, 'testnet'); await asked;
+    ixiosCalls.length = 0;
+    await chooseEnvironment(page, 'mainnet');
+    await waitHolding(page, MAIN_BALANCE_TEXT);
+    testHold = null; release();
+    await refreshNow(page);
+    await waitHolding(page, MAIN_BALANCE_TEXT);
+    assert.doesNotMatch(await page.locator('.asset-group[data-chain="ixios"]').textContent(), /7,654\.321/, `${label}: a released in-flight test read shows nothing`);
+    assert.deepEqual(await stageLabels(page), ['Mainnet']);
     // Saved wallet: a test balance read before locking is neither kept nor shown after unlocking.
     await saveWallet(page);
     await page.waitForFunction(() => window.__balanceWrites > 0);

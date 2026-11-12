@@ -80,6 +80,25 @@ test('balance-only chains use exact deltas and never notify an unchanged or fail
   assert.equal(f.shown.at(-1).message, '1.0 BNB\nBNB Smart Chain (Mainnet)');
 });
 
+// Ixios incoming notices cover the main network only (plan D6). Proves: with Ixios on its test network no Ixios balance is
+// read and nothing is announced however its balance moves; the mainnet source returns when the selection returns, and a
+// real mainnet increase after that is announced once with today's text. The stub's `networks.get` resolves through the real
+// network table, so selecting 'testnet' for Ixios only works because the table lists it; a stub that always answered mainnet
+// would make the first assertion on `f.calls` fail (the Ixios source would be read). Falsely passes if the fixture's Ixios
+// balance never changed while on the test network: it is raised to 500 there on purpose, which would be a false notice
+// (499 IXIOS) if the source were still read.
+test('no Ixios incoming notice while Ixios is on its test network; the mainnet source returns with the selection', async t => {
+  const f = await fixture(t); f.selected.ixios = 'testnet'; await f.open();
+  f.balances.ixios[0].balance = '500.0'; await f.tick(); await f.tick();
+  assert.equal(f.calls.some(call => call.chain === 'ixios'), false, 'the Ixios balance is not read on the test network');
+  assert.deepEqual(f.shown, []);
+  f.balances.ixios[0].balance = '1.0'; f.selected.ixios = 'mainnet';
+  await f.tick(); await f.tick(); assert.ok(f.calls.some(call => call.chain === 'ixios'), 'the mainnet source is read again');
+  assert.deepEqual(f.shown, [], 'switching back announces nothing');
+  f.balances.ixios[0].balance = '4.25'; await f.tick(); await f.tick();
+  assert.deepEqual(f.shown.map(row => row.message), ['3.25 IXIOS\nIxios (Mainnet)']);
+});
+
 test('locked startup, unlock, another unlock and browser/worker restart do not replay funds', async t => {
   const f = await fixture(t);
   await f.tick(); assert.deepEqual(f.calls, []);

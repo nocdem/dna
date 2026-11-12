@@ -12,7 +12,7 @@ test('portfolio reads every chain through its own trusted background method', as
     assert.equal(value[0]?.symbol || value, chain === 'cellframe' ? 'CPUNK' : calls.at(-1)[0]);
   }
   assert.deepEqual(calls, [['getNodusBalances', []], ['getEvmBalances', ['ethereum']], ['getEvmBalances', ['bsc']],
-    ['getSolanaBalances', []], ['getTronBalances', []], ['getCpunkBalance', []], ['getIxiosBalance', []]]);
+    ['getSolanaBalances', []], ['getTronBalances', []], ['getCpunkBalance', []], ['getIxiosBalance', ['mainnet']]]);
   await assert.rejects(readers.readBalances('invented'), /Unsupported/);
 });
 
@@ -192,5 +192,59 @@ test('a Solana Testnet balance is not shown as the Devnet balance while Devnet i
     await page.evaluate(() => window.fixture.releaseSolana());
     await page.waitForFunction(() => [...document.querySelectorAll('.asset-group[data-chain="solana"] .holding-value strong')].some(node => node.textContent.trim() === '1,000 SOL'));
     assert.ok((await amounts()).some(text => text.trim() === '1,000 SOL'), 'positive control: the Devnet amount is found by the selector');
+  });
+});
+
+// Ixios kept balances across its two networks, through the real mounted screen (plan D9; red-team note 2,
+// docs/plans/2026-11-12-ixios-testnet-plan.redteam.md:61-67). The mainnet Ixios read answers 8 IXIOS (the fixture's), the test
+// network 777, supplied here by wrapping the fixture's request function (the fixture file itself is not changed).
+// Proves: (1) on the test network 777 IXIOS is shown, and no record saved from then on holds an Ixios entry at all (the
+// mainnet-only save filter); (2) after the switch back to mainnet with the mainnet read HELD, no amount of the Ixios group reads
+// 777 IXIOS, and no saved record holds the 777 units, under any network identity; (3) once released, the mainnet 8 IXIOS is
+// shown and saved under the main identity. Every record saved in the whole test (what an unlock would load) holds an Ixios entry
+// only as the mainnet value 8 IXIOS under 'main', so after a lock and an unlock no test-network value can be shown as the
+// mainnet one (the fixture cannot lock and unlock the screen, so this is asserted on the saved records themselves).
+// Positive controls: the same selector finds 777 IXIOS on the test network and 8 IXIOS after the release.
+// Falsely passes if: the filter and the identity both failed but no record was ever saved (the wait for a record saved after
+// the test-network read prevents that), or the group markup changed (the positive controls would fail). Not run by the builder.
+test('a test-network Ixios balance is not shown or saved as the mainnet balance', { timeout: 90_000 }, async () => {
+  const { withPortfolioPage } = await import('./fixtures/portfolio-page-checks.js');
+  await withPortfolioPage(async (page, origin) => {
+    await page.goto(`${origin}/test/fixtures/functions.html`);
+    await page.waitForFunction(() => window.fixture?.ready);
+    const amounts = () => page.locator('.asset-group[data-chain="ixios"] .holding-value strong').allTextContents();
+    const shown = text => page.waitForFunction(expected => [...document.querySelectorAll('.asset-group[data-chain="ixios"] .holding-value strong')].some(node => node.textContent.trim() === expected), text);
+    const saved = from => page.evaluate(start => window.fixture.calls.slice(start).filter(call => call[0] === 'keepBalances').map(call => call[1][0]), from);
+    await page.evaluate(() => {
+      const ui = window.fixture.ui, original = ui.request.bind(ui), waiting = []; let held = false;
+      window.fixture.holdIxios = value => { held = value; if (!value) for (const resolve of waiting.splice(0)) resolve(); };
+      ui.request = async (method, args = []) => {
+        if (method !== 'getIxiosBalance') return original(method, args);
+        window.fixture.calls.push([method, args]);
+        if (args[0] === 'testnet') return [{ symbol: 'IXIOS', balance: '777' }];
+        if (held) await new Promise(resolve => waiting.push(resolve));
+        return original(method, args);
+      };
+      window.fixture.state.networks.ixios = 'mainnet'; window.fixture.screen.update(); window.fixture.screen.loadBalances(true);
+    });
+    await shown('8 IXIOS');
+    const first = await page.evaluate(() => window.fixture.calls.length);
+    await page.evaluate(() => { window.fixture.state.networks.ixios = 'testnet'; window.fixture.screen.update(); });
+    await shown('777 IXIOS');
+    assert.ok((await amounts()).some(text => text.trim() === '777 IXIOS'), 'positive control: the test-network amount is found by the selector');
+    assert.ok((await page.evaluate(() => window.fixture.calls.filter(call => call[0] === 'getIxiosBalance').map(call => call[1][0]))).includes('testnet'), 'the portfolio asked for the test network');
+    await page.waitForFunction(from => window.fixture.calls.slice(from).some(call => call[0] === 'keepBalances'), first);
+    for (const record of await saved(first)) assert.equal(record['ixios:IXIOS'], undefined, 'a record saved on the test network holds an Ixios entry');
+    await page.evaluate(() => { window.fixture.holdIxios(true); window.fixture.state.networks.ixios = 'mainnet'; window.fixture.screen.update(); });
+    const second = await page.evaluate(() => window.fixture.calls.length);
+    await page.waitForFunction(from => window.fixture.calls.slice(from - 1).some(call => call[0] === 'getIxiosBalance' && call[1][0] === 'mainnet'), second);
+    const held = await amounts();
+    assert.ok(!held.some(text => text.trim() === '777 IXIOS'), `a test-network Ixios balance is shown as the mainnet balance (${held.join(' | ')})`);
+    for (const record of await saved(second)) assert.ok(record['ixios:IXIOS'] === undefined || record['ixios:IXIOS'].units !== '777000000000000000000', 'the test units were saved after the switch');
+    await page.evaluate(() => window.fixture.holdIxios(false));
+    await shown('8 IXIOS');
+    assert.ok((await amounts()).some(text => text.trim() === '8 IXIOS'), 'positive control: the mainnet amount is found by the selector');
+    await page.waitForFunction(from => window.fixture.calls.slice(from).some(call => call[0] === 'keepBalances' && call[1][0]['ixios:IXIOS']?.network === 'main' && call[1][0]['ixios:IXIOS'].units === '8000000000000000000'), second);
+    for (const record of await saved(0)) assert.ok(record['ixios:IXIOS'] === undefined || (record['ixios:IXIOS'].network === 'main' && record['ixios:IXIOS'].units === '8000000000000000000'), 'every saved Ixios value is the mainnet one');
   });
 });
