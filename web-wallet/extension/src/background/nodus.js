@@ -12,10 +12,10 @@ import { readIxiosBalance } from '../../../src/pq/ixios/balance.js';
 import { ixiosNetwork } from '../../../src/pq/ixios/network.js';
 import { prepareTransfer } from '../../../src/wallet.js';
 import { NODUS_ASSET, nodusTokens } from '../../../src/nodus/network.js';
-import { NODUS_HISTORY_LIMIT, localRowsToShow, nodusHistoryRow, nodusHistoryStatus } from '../../../src/nodus/history.js';
+import { NODUS_HISTORY_LIMIT, nodusHistoryRow, nodusHistoryStatus } from '../../../src/nodus/history.js';
 import { keepBusyEnvelope, canResubmit, dropSettledEnvelope, resubmitKept, NODUS_UNCERTAIN_NOTE, NODUS_SUBMITTED_NOTE } from '../../../src/nodus/resubmit.js';
 import { recordActivity, watchActivity, terminal, evmActivityText, publicActivityRow } from '../../../src/activity.js';
-import { activityKeyFor, parseActivity, serializeActivity, serializeWithoutQuarantined, requireSavedForEvm,
+import { sentRowsToShow, activityKeyFor, parseActivity, serializeActivity, serializeWithoutQuarantined, requireSavedForEvm,
   historyKeyFor, parseHistory, serializeHistory, balancesKeyFor, parseBalances, serializeBalances,
   addressBookKeyFor, parseAddressBook, serializeAddressBook, identityKeyFor, parseIdentity, serializeIdentity } from '../../../src/activity-storage.js';
 import { checkAddressBook } from '../../../src/address-book.js';
@@ -313,15 +313,50 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     try { s.assertReady?.(); } catch { return; }
     void reconcileQuarantine(s);
     if (s.stopTracking) return;
-    s.stopTracking = watchActivity(() => s.rows.filter(row => row.chain === 'nodus' && row.address === s.addresses.nodus), () => {
+    s.stopTracking = watchActivity(() => {
+      const rows = s.rows.filter(row => row.chain === 'nodus' && row.address === s.addresses.nodus);
+      // rows this pass will check: the account-history read waits for the last of them, so rows confirmed in one pass share one read
+      s.passLeft = rows.filter(row => !terminal(row.status)).length;
+      return rows;
+    }, () => {
       for (const row of s.rows) dropSettledEnvelope(row);
       // src/app.js:486, 587: display persist failures without changing activityBlocked.
       void persist(s).catch(error => { if (session === s) s.activityError = error.message; });
       void reconcileQuarantine(s);
-    }, { check: (row, { signal }) => adapter.checkNodusActivity(row, { signal, client: s.client }) });
+      if (--s.passLeft <= 0 && s.confirmedUnlisted) { s.confirmedUnlisted = false; void listConfirmed(s); }
+    }, { check: async (row, options) => {
+      const update = await adapter.checkNodusActivity(row, { ...options, client: s.client });
+      if (update.status === 'confirmed' && row.status !== 'confirmed') s.confirmedUnlisted = true;
+      return update;
+    } });
   }
-  function localRows(s, page) {
-    return localRowsToShow(s.rows.filter(row => row.chain === 'nodus' && row.address === s.addresses.nodus), page)
+  // src/app.js:660-663 + 559: once a send is confirmed the node's account history is read, and a confirmed row it lists is
+  // marked `listed`, so the saved activity drops it (src/activity-storage.js keptActivity) instead of verifying it on every unlock.
+  // One read at a time per session; confirmations arriving meanwhile cause one further read. Started after the check
+  // returned, never awaited by it. A failed read changes nothing and shows nothing: the next confirmation or history view tries again.
+  async function listConfirmed(s) {
+    if (s.listing) { s.listAgain = true; return; }
+    s.listing = true;
+    try {
+      do {
+        s.listAgain = false;
+        const page = await s.client.addrHistory({ limit: NODUS_HISTORY_LIMIT }, { signal: s.abort.signal }); current(s);
+        if (markListed(s, page).changed) await persist(s).catch(error => { if (session === s) s.activityError = error.message; });
+      } while (s.listAgain);
+    } catch (error) { debugLog('nodus-history', 'list-read-failed', errorFields(error)); }
+    finally { s.listing = false; }
+  }
+  // The "Sent from here" rows of this account under `page`; marks `listed` on the confirmed ones the page shows
+  // (sentRowsToShow, shared with the web wallet and the other networks of this extension).
+  function markListed(s, page) {
+    const rows = s.rows.filter(row => row.chain === 'nodus' && row.address === s.addresses.nodus);
+    const before = new Set(rows.filter(row => row.listed === true));
+    const shown = sentRowsToShow(rows, { nodus: true, nodusPage: page });
+    return { shown, changed: rows.some(row => row.listed === true && !before.has(row)) };
+  }
+  function localRows(s, page) { return rowsOf(markListed(s, page).shown); }
+  function rowsOf(shown) {
+    return shown
       .map(row => ({ hash: row.hash, to: row.to, amount: row.amount, symbol: row.symbol, status: row.status, note: row.note,
         kind: row.kind, name: row.name,
         ...(row.kind === 'evm' ? (() => { const text = evmActivityText(row); return { amountText: text.amount, detail: text.what }; })() : {}),
@@ -883,8 +918,12 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     async getHistory() {
       const s = active(); track(s);
       const page = await s.client.addrHistory({ limit: NODUS_HISTORY_LIMIT }, { signal: s.abort.signal }); current(s);
+      const { shown, changed } = markListed(s, page);
+      // rows the page now lists leave the saved activity (src/app.js:559 then the save)
+      if (changed) await persist(s).catch(error => { if (session === s) s.activityError = error.message; });
+      current(s);
       return { rows: page.entries.map(entry => nodusHistoryRow(entry, { tokens: nodusTokens(s.client.tokenPins()) })),
-        status: nodusHistoryStatus({ page, readAt: new Date().toLocaleString() }), local: localRows(s, page), activityError: s.activityError ?? '' };
+        status: nodusHistoryStatus({ page, readAt: new Date().toLocaleString() }), local: rowsOf(shown), activityError: s.activityError ?? '' };
     },
     getLocalHistory() { const s = active(); return localRows(s); },
   };
