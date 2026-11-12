@@ -7,7 +7,7 @@ import { createAdapter } from './adapter.js';
 import { createSwapFlow, stepText } from './flow.js';
 import { createLogger, errorFields } from './log.js';
 import {
-  USDT_DECIMALS, NODUS_DECIMALS, outputUnit, displayAmount, percentToBps, priceFromReserves, poolText, priceMovementPercent, waitText, refusalText, nodusWithCommas, STILL_PENDING_TEXT, approveEnabled,
+  USDT_DECIMALS, NODUS_DECIMALS, outputUnit, displayAmount, percentToBps, priceFromReserves, poolText, priceMovementPercent, waitText, refusalText, nodusWithCommas, STILL_PENDING_TEXT, approveEnabled, stateLabel,
 } from './swap-logic.js';
 
 const $ = id => document.getElementById(id);
@@ -110,15 +110,15 @@ function renderStatus(status) {
   $('d-price').textContent = p ? `1 USDT ≈ ${p.nodusPerUsdt} NODUS` : 'No price yet';
   const c = status.settings.commission;
   $('d-commission').textContent = c === '0' ? 'None' : `${c} (bot setting)`;
-  $('swap-limits').textContent = `Per swap, measured in USDT: at least ${displayAmount(BigInt(status.settings.swapMinUsdt), USDT_DECIMALS)}, ` +
-    `at most ${displayAmount(BigInt(status.settings.swapMaxUsdt), USDT_DECIMALS)}. The extension shows the request in full before you sign.`;
+  $('swap-limits').textContent = `Limits per swap, in USDT: at least ${displayAmount(BigInt(status.settings.swapMinUsdt), USDT_DECIMALS)}, ` +
+    `at most ${displayAmount(BigInt(status.settings.swapMaxUsdt), USDT_DECIMALS)}. The extension shows the full request before you sign.`;
   // The add minimum shown on the liquidity screen follows the bot's status (givens item 96); the bot's refusal governs.
   const minNote = document.querySelector('#panel-liq .field-foot span');
-  if (minNote) minNote.textContent = `Type one side; the bot computes the other side at the pool's current ratio. At least ${nodusWithCommas(flow.liquidityMin())} NODUS.`;
+  if (minNote) minNote.textContent = `Enter one side; the bot works out the other side at the pool's current ratio. At least ${nodusWithCommas(flow.liquidityMin())} NODUS.`;
   const notes = [];
-  if (status.stopped) notes.push('The bot has stopped taking new swaps.');
+  if (status.stopped) notes.push('The bot is not taking new swaps.');
   if (status.swapsPaused) notes.push('Swaps are paused.');
-  if (status.payoutsPaused) notes.push('Payouts are paused: swaps wait.');
+  if (status.payoutsPaused) notes.push('Payouts are paused; swaps wait.');
   if (status.liquidityPaused) notes.push('Liquidity changes are paused.');
   say($('bot-status'), notes.join(' '), true);
 }
@@ -146,7 +146,7 @@ async function loadStatus() {
 // No price or pair question before the extension is connected (givens item 68): the two ask buttons stay disabled and
 // a hint stands in the message line until a connect succeeds. flow.press and flow.pressAdd refuse as well.
 const connected = () => Boolean(flow.state.accounts);
-const ASK_HINT = { 'swap-msg': 'Connect the extension to ask for a price.', 'liq-msg': 'Connect the extension to ask for the pair.' };
+const ASK_HINT = { 'swap-msg': 'Connect the extension to get a price.', 'liq-msg': 'Connect the extension to get a pair.' };
 // Clears a message line; while not connected the line shows the connect hint instead.
 function clearMsg(id) { say($(id), connected() ? '' : ASK_HINT[id]); }
 function renderAskButtons() {
@@ -166,7 +166,7 @@ connectBtn.addEventListener('click', async () => {
     connectBtn.title = `Nodus ${accounts.nodus.address}\nEthereum ${accounts.ethereum}`;
     $('nodus-addr').textContent = short(accounts.nodus.address); $('nodus-addr').title = accounts.nodus.address;
     $('eth-addr').textContent = short(accounts.ethereum); $('eth-addr').title = accounts.ethereum;
-    say($('connect-status'), 'Connected to Nodus Connect.');
+    say($('connect-status'), 'Extension connected.');
     renderAskButtons();
     renderMinimum();
     renderWithdrawButton();   // a different account drops a kept signed withdrawal (flow.setAccounts)
@@ -175,7 +175,7 @@ connectBtn.addEventListener('click', async () => {
     if (error?.code === 'no_extension') {
       say($('connect-status'), 'The Nodus Connect extension was not found in this browser.');
       connectBtn.textContent = 'Get the extension'; connectBtn.onclick = () => { location.href = EXT_PAGE; };
-    } else if (error?.code === 4001) say($('connect-status'), 'The connection was rejected in the extension.');
+    } else if (error?.code === 4001) say($('connect-status'), 'You rejected the connection in the extension.');
     else if (error?.code === 4100) say($('connect-status'), 'Open the extension and accept its data notice first, then connect again.');
     else say($('connect-status'), 'The extension did not connect. Unlock it and try again.');
   }
@@ -228,7 +228,7 @@ $('swap-form').addEventListener('submit', async event => {
     $('step-approved').classList.add('done'); $('step-approved-t').textContent = time(Math.floor(Date.now() / 1000));
     button.hidden = true; $('approve-btn').hidden = false;
     renderMinimum();
-    say($('swap-msg'), 'Choose your tolerance, then approve in the extension.');
+    say($('swap-msg'), 'Choose a slippage tolerance, then approve in the extension.');
     await refreshStatus();
     if (flow.state.quote === q) renderMovement(q);   // only while this answer is still the one shown
   } finally { button.disabled = !connected(); }
@@ -241,7 +241,7 @@ function renderState({ info, answer }, unit) {
   const approvalEnd = info.state === 'approved' && typeof answer?.validUntil === 'string' && /^\d+$/.test(answer.validUntil)
     ? ` Approval time ends at ${time(answer.validUntil)}.` : '';
   $('state-text').textContent = info.text + approvalEnd;
-  $('state-word').textContent = info.state || '';
+  $('state-word').textContent = stateLabel(info.state);
   $('step-state').classList.toggle('done', info.final);
   $('step-state').classList.toggle('now', !info.final);
   const showResult = Boolean(answer) && (answer.output !== undefined || answer.reason !== undefined);
@@ -259,8 +259,8 @@ function renderState({ info, answer }, unit) {
 // handler no longer touch the panel, which always shows the request number being followed.
 async function followSwap(requestNumber, unit) {
   $('check-again').hidden = true; $('check-again').onclick = null; say($('state-note'), '');
-  $('follow-request').textContent = `Following request ${requestNumber}`; $('follow-request').hidden = false;
-  $('state-text').textContent = 'Reading the swap from the bot.'; $('state-word').textContent = '';
+  $('follow-request').textContent = `Request ${requestNumber}`; $('follow-request').hidden = false;
+  $('state-text').textContent = 'Checking your swap with the bot.'; $('state-word').textContent = stateLabel('');
   $('step-state').classList.remove('done'); $('step-state').classList.add('now'); $('result').hidden = true;
   const r = await flow.follow(requestNumber, update => renderState(update, unit));
   if (r.stopped) return;
@@ -277,7 +277,7 @@ $('approve-btn').addEventListener('click', async () => {
   log.info('ui', 'approve_click', { tab: 'swap', busy: sequenceBusy, tolerance: $('tol').value, requestNumber: flow.state.quote?.requestNumber });
   if (sequenceBusy) return;   // another approval (this tab or the liquidity tab) is running
   const t = percentToBps($('tol').value);
-  if (!t.ok) { say($('swap-msg'), 'Type a tolerance from 0 to 100 percent first.', true); return; }
+  if (!t.ok) { say($('swap-msg'), 'Enter a slippage tolerance from 0 to 100 percent first.', true); return; }
   say($('swap-msg'), stepText());
   setBusy(true);   // disables both approve buttons
   const unit = outputUnit(flow.state.quote?.direction ?? direction);   // the approved quote's own direction
@@ -298,7 +298,7 @@ $('approve-btn').addEventListener('click', async () => {
   }
   // Paid: the quote is spent (flow.confirm), so the approval is not offered again; a new price is asked for.
   $('approve-btn').hidden = true; $('ask-btn').hidden = false; renderToleranceHint();
-  say($('swap-msg'), 'Request sent and payment made by the extension.');
+  say($('swap-msg'), 'Payment sent. The bot is now handling your swap.');
   $('step-paid').classList.add('done'); $('step-paid-t').textContent = time(Math.floor(Date.now() / 1000));
   await followSwap(r.requestNumber, unit);
 });
@@ -341,7 +341,7 @@ $('liq-approve').addEventListener('click', async () => {
   }
   if (!r.ok) { say($('liq-msg'), r.text, true); return; }
   $('liq-approve').hidden = true; $('liq-ask').hidden = false;   // paid: the pair is spent (flow.confirmAdd)
-  say($('liq-msg'), 'Both requests were sent and both payments made by the extension. The add counts after 300 Ethereum blocks (at least one hour) and 3 Nodus blocks.');
+  say($('liq-msg'), 'Both requests were sent and both payments made. Your liquidity counts after 300 Ethereum blocks (at least one hour) and 3 Nodus blocks.');
 });
 
 // withdraw: nodus_signMessage (existing method) and a post by this site (plan 6.4.6, 6.4.7)
@@ -353,13 +353,13 @@ $('wd-form').addEventListener('submit', async event => {
   say($('wd-msg'), flow.pendingWithdrawNumber() ? 'Resending the same signed withdrawal; nothing new is signed.' : 'Approve the signature in the extension.');
   try {
     const r = await flow.withdraw({ basisPoints: bps });
-    const received = `The bot received your withdrawal (request ${r.requestNumber}). It acts after the Ethereum wait; nothing is paid by this step.`;
+    const received = `The bot received your withdrawal (request ${r.requestNumber}). It pays out after the Ethereum wait; this step itself pays nothing.`;
     say($('wd-msg'), r.ok ? (r.text ?? received) : r.text, !r.ok);
   } finally { $('wd-btn').disabled = false; renderWithdrawButton(); }
 });
 // A signed withdrawal whose answer did not arrive is resent unchanged by the same button; the label says so.
 function renderWithdrawButton() {
-  $('wd-btn').textContent = flow.pendingWithdrawNumber() ? 'Resend the same signed withdrawal' : 'Sign and send the withdrawal';
+  $('wd-btn').textContent = flow.pendingWithdrawNumber() ? 'Resend the signed withdrawal' : 'Sign and withdraw';
 }
 
 // Errors nobody caught: named fields only (never the error object or its stack).
