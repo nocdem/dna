@@ -18,7 +18,7 @@ This working-tree checkpoint is **not a release or deployment**. Older receive-o
 | ASE | Testnet candidate only | Testnet candidate only |
 | QTC | Mainnet structured-UTXO gateway candidate; eight-input/body bounds and provider-reported state | Send disabled; the page says "Send QTC from the extension." (operator 2026-11-03) |
 | Verona XION | Mainnet candidate; explicit non-quoted fee/gas and signed timeout, unknown outcome retained on expiry | Send disabled; the page says "Send XION from the extension." (operator 2026-11-03) |
-| IXIOS | Mainnet code candidate; native 1,000-gas ML-DSA-87, explicit cap and fail-closed fresh checks; live availability qualified | Send disabled; the page says "Send IXIOS from the extension." (operator 2026-11-03) |
+| IXIOS | Mainnet and test network code candidate, both selectable in the network selector (the test network is chain id 3); native 1,000-gas ML-DSA-87, explicit cap and fail-closed fresh checks; live availability qualified, test-node acceptance of a signed send not yet observed | Both networks are selectable and the balance is read, but send is disabled; the page says "Send IXIOS from the extension." (operator 2026-11-03) |
 | TDC | Send disabled: usable public balance/history/UTXO provider unavailable | Send disabled |
 
 Candidates require durable encrypted activity before exposing signed bytes, guarded one-use confirmation, and network/account checks. Where implemented, recovery is explicitly reviewed **same signed transaction**, never an automatic retry or new signature. History coverage is labelled per reader (local submissions or bounded provider-reported native net flow); unavailable/stale market data remains unavailable. No external dApp/PQSwap signing permissions are added.

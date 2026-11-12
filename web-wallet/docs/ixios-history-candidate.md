@@ -1,9 +1,22 @@
 # Ixios recent native history — trusted extension candidate
 
 `src/pq/ixios/history.js` is a read-only helper now wired through the trusted
-mainnet extension holder; Web Wallet does not use it. The separately reviewed
-mainnet trusted-extension send code candidate is enabled, but live provider
-availability and admission are not established. Provider history errors are
+extension holder (`extension/src/background/ixios.js` `getHistory`), which reads
+the history of the selected Ixios network (`networkId` and `endpoint` of the
+selected entry of `IXIOS_NETWORKS`); Web Wallet does not use it. The separately
+reviewed trusted-extension send code candidate is enabled, but live provider
+availability and admission are not established.
+
+Per network (`src/pq/ixios/network.js`): the Aegis start height is 32,400,000
+on the main network and 300 on the test network (300 is the reference's value
+for chain id 3; the height the running test node uses is not established). The
+helper fails with "Ixios post-Aegis history is unavailable." when the head is
+below that height. The account-code check around each candidate differs: the
+main network uses `eth_getCode` at height−1 and at height; the test network,
+which has no `getCode`, uses `ixios_getProof` at height−1 and at height and
+treats the account as empty when the answer's `codeHash` is the zero hash or
+the hash of empty code. A `getProof` answer is the provider's; its
+`accountProof` is not checked against a state root. Provider history errors are
 surfaced as unavailable while authenticated local submissions remain visible.
 `readIxiosRecentNativeHistory`
 accepts a 48-byte address, optional existing HTTPS endpoint, optional explicit
