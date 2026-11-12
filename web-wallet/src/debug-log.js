@@ -48,10 +48,13 @@ export function debugLog(area, event, fields = {}) {
 }
 
 // The only way a failure enters a line: its numeric or word code and its class name, never its message.
+// Each property is read inside its own guard (an accessor on a foreign error can throw): the log never changes the
+// error that goes on.
 export function errorFields(error) {
-  const code = error?.code;
-  return { outcome: 'error', code: typeof code === 'number' || (typeof code === 'string' && /^[A-Za-z0-9_.-]{1,40}$/.test(code)) ? code : undefined,
-    name: typeof error?.name === 'string' && /^[A-Za-z0-9_.-]{1,40}$/.test(error.name) ? error.name : undefined };
+  let code, name;
+  try { const value = error?.code; if (typeof value === 'number' || (typeof value === 'string' && /^[A-Za-z0-9_.-]{1,40}$/.test(value))) code = value; } catch { /* left out of the line */ }
+  try { const value = error?.name; if (typeof value === 'string' && /^[A-Za-z0-9_.-]{1,40}$/.test(value)) name = value; } catch { /* left out of the line */ }
+  return { outcome: 'error', code, name };
 }
 
 // The host of a URL; anything else gives 'invalid'. Never the path, the query or credentials.
@@ -91,7 +94,8 @@ export function logWebSocketsFor(hosts) {
   if (typeof Native !== 'function') return;
   if (installedFor) { for (const host of hosts) installedFor.add(host); return; }
   installedFor = new Set(hosts);
-  const size = data => (typeof data === 'string' ? new TextEncoder().encode(data).length : data?.byteLength ?? data?.size ?? 0);
+  // The size of a frame, read inside its own guard: 0 when it cannot be read; the frame itself is never touched otherwise.
+  const size = data => { try { return typeof data === 'string' ? new TextEncoder().encode(data).length : data?.byteLength ?? data?.size ?? 0; } catch { return 0; } };
   class LoggedWebSocket extends Native {
     constructor(url, protocols) {
       super(url, protocols);
@@ -99,11 +103,11 @@ export function logWebSocketsFor(hosts) {
       if (!installedFor.has(host)) return;
       const elapsed = stopwatch(); let lastSend;
       this.addEventListener('open', () => debugLog('nodus-ws', 'open', { host, ms: elapsed() }));
-      this.addEventListener('message', event => debugLog('nodus-ws', 'received', { host, bytes: size(event.data), ms_since_send: lastSend ? lastSend() : undefined }));
+      this.addEventListener('message', event => { try { debugLog('nodus-ws', 'received', { host, bytes: size(event.data), ms_since_send: lastSend ? lastSend() : undefined }); } catch { /* the log only records */ } });
       this.addEventListener('error', () => debugLog('nodus-ws', 'error', { host, ms: elapsed() }));
-      this.addEventListener('close', event => debugLog('nodus-ws', 'close', { host, code: event.code, ms: elapsed() }));
+      this.addEventListener('close', event => { try { debugLog('nodus-ws', 'close', { host, code: event.code, ms: elapsed() }); } catch { /* the log only records */ } });
       const send = this.send.bind(this);
-      this.send = data => { lastSend = stopwatch(); debugLog('nodus-ws', 'sent', { host, bytes: size(data) }); return send(data); };
+      this.send = data => { try { lastSend = stopwatch(); debugLog('nodus-ws', 'sent', { host, bytes: size(data) }); } catch { /* the log only records */ } return send(data); };
     }
   }
   globalThis.WebSocket = LoggedWebSocket;

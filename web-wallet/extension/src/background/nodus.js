@@ -101,7 +101,9 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     if (session !== s || !s.identityKey) return Promise.resolve();
     const next = { ...s.identity, ...change, addresses: { ...s.identity.addresses, ...keptAddresses(change.addresses) } };
     if (!next.name) delete next.name;
-    if (JSON.stringify(next) === JSON.stringify(s.identity)) return Promise.resolve();
+    // The same change again: nothing new to write, but the save of the earlier identical change may still be running,
+    // so the caller waits for that one.
+    if (JSON.stringify(next) === JSON.stringify(s.identity)) return s.identitySave ?? Promise.resolve();
     s.identity = next;
     const job = writes.catch(() => {}).then(async () => {
       current(s);
@@ -110,7 +112,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       if (saved[VAULT_KEY] !== s.vault) return;
       await storage.set({ [IDENTITY_KEY]: value });
     }).catch(error => { debugLog('identity', 'save-failed', errorFields(error)); /* kept again at the next change */ });
-    writes = job;
+    writes = job; s.identitySave = job;
     return job;
   }
   function keptOwnNameOf(s) {

@@ -6,17 +6,21 @@ export function mountNameBlock({ root, ui, selected, run, showReview }) {
   let generation = 0, quoteCheck = 0, quoted, identity, disposed = false;
   function clearQuote() { quoteCheck++; quoted = undefined; $('name-review').disabled = true; $('name-quote').textContent = ''; }
   function resetGreeting() { $('wallet-heading').hidden = false; $('wallet-title').textContent = 'Welcome back'; $('wallet-register-name').hidden = true; }
+  // The name kept from the last use (the background's public state; unconfirmed) on the greeting and the name line, with
+  // no lookup: shown at once after unlock, also while the Nodus connection is opening or unavailable.
+  function showKept(kept) {
+    $('wallet-title').textContent = `Welcome back, ${kept}`;
+    $('own-name').textContent = `Your chain name is "${kept}" (last known; confirming…). People can send NODUS to you by typing this name instead of your address.`;
+    debugLog('identity', 'kept-name-shown');
+  }
   async function refresh() {
     const check = ++generation; clearQuote(); resetGreeting();
     const current = () => !disposed && check === generation;
     // The name kept from the last use (the background's public state; unconfirmed) is shown at once; the lookup below
     // confirms or replaces it.
     const kept = ui.state.nodus?.keptOwnName;
-    if (kept) {
-      $('wallet-title').textContent = `Welcome back, ${kept}`;
-      $('own-name').textContent = `Your chain name is "${kept}" (last known; confirming…). People can send NODUS to you by typing this name instead of your address.`;
-      debugLog('identity', 'kept-name-shown');
-    } else $('own-name').textContent = 'Reading your chain name…';
+    if (kept) showKept(kept);
+    else $('own-name').textContent = 'Reading your chain name…';
     $('name-fields').hidden = true;
     try {
       const own = await ui.request('getOwnName'); if (!current()) return;
@@ -64,6 +68,6 @@ export function mountNameBlock({ root, ui, selected, run, showReview }) {
     const state = ui.state, visible = selected() === 'nodus' && state.nodus?.nameable;
     $('name-block').hidden = !visible;
     const key = `${state.addresses.nodus}:${state.nodus?.connection}:${state.nodus?.state}:${state.nodus?.nameable}:${state.nodus?.registrable}`;
-    if (key !== identity) { identity = key; generation++; clearQuote(); resetGreeting(); if (state.nodus?.nameable) void refresh(); }
+    if (key !== identity) { identity = key; generation++; clearQuote(); resetGreeting(); if (state.nodus?.nameable) void refresh(); else if (state.nodus?.keptOwnName) showKept(state.nodus.keptOwnName); }
   }, sent() { $('name-input').value = ''; clearQuote(); void refresh(); }, dispose() { disposed = true; generation++; clearQuote(); resetGreeting(); } };
 }

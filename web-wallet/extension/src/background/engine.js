@@ -42,6 +42,16 @@ function createDupeReqFilterStream() {
   });
 }
 
+// What a debug line may say about a request a web page chose: the method only when it is one of these fixed names (any
+// other text is written as 'other'), the id only as a number or the word for its kind. The page's own text, including
+// text it asks to have signed, can therefore not reach a line through either field.
+const LOGGED_METHODS = new Set(['eth_requestAccounts', 'eth_accounts', 'eth_chainId', 'net_version', 'eth_sendTransaction', 'eth_sendRawTransaction', 'personal_sign',
+  'eth_signTypedData_v4', 'wallet_switchEthereumChain', 'wallet_requestPermissions', 'wallet_getPermissions', 'wallet_revokePermissions', 'nodus_requestAccounts',
+  'nodus_signMessage', 'eth_blockNumber', 'eth_call', 'eth_estimateGas', 'eth_gasPrice', 'eth_getBalance', 'eth_getBlockByNumber', 'eth_getCode', 'eth_getLogs',
+  'eth_getTransactionByHash', 'eth_getTransactionCount', 'eth_getTransactionReceipt', 'eth_feeHistory', 'eth_getStorageAt', ...SWAP_METHOD_NAMES]);
+const loggedMethod = method => (typeof method === 'string' && LOGGED_METHODS.has(method) ? method : 'other');
+const loggedId = id => (Number.isSafeInteger(id) ? id : id === null || id === undefined ? 'none' : typeof id);
+
 export function createRequestEngine({ runtime, permissions, approvals, autoLockAlarm, trustedApi, getUiPorts, evm, nodus, swap, privacyConsent, networkClient: initialNetworkClient }) {
   if (typeof privacyConsent?.isGiven !== 'function') throw new Error('A privacy consent reader is required.');
   const connections = new Map(), ports = new Set();
@@ -104,7 +114,7 @@ export function createRequestEngine({ runtime, permissions, approvals, autoLockA
         if (!req.isNodusInternal) {
           log.info(`RPC (${origin}): ${req.method} -> ${res.error ? 'error' : 'success'}`);
           // Debug line: origin, method name, request id, duration, outcome and error code. Never params, result or error text.
-          debugLog('request', 'done', { origin, method: req.method, id: req.id, ms: elapsed(), outcome: res.error ? 'error' : 'success', code: res.error?.code });
+          debugLog('request', 'done', { origin, method: loggedMethod(req.method), id: loggedId(req.id), ms: elapsed(), outcome: res.error ? 'error' : 'success', code: res.error?.code });
         }
         done();
       });
