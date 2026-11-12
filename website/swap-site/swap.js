@@ -237,7 +237,10 @@ $('swap-form').addEventListener('submit', async event => {
 // `unit` is the output's unit of the swap being followed (NODUS for USDT -> NODUS, USDT for NODUS -> USDT), fixed
 // when the swap starts so a later flip of the direction does not change how its numbers are shown.
 function renderState({ info, answer }, unit) {
-  $('state-text').textContent = info.text;
+  // The bot's approval time, shown only while the request is unpaid (`approved`); describeSwapState stays a pure function of the state.
+  const approvalEnd = info.state === 'approved' && typeof answer?.validUntil === 'string' && /^\d+$/.test(answer.validUntil)
+    ? ` Approval time ends at ${time(answer.validUntil)}.` : '';
+  $('state-text').textContent = info.text + approvalEnd;
   $('state-word').textContent = info.state || '';
   $('step-state').classList.toggle('done', info.final);
   $('step-state').classList.toggle('now', !info.final);

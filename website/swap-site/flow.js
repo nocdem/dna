@@ -61,7 +61,7 @@ export function describeAdapterError(err, ctx = {}) {
     // the same sender and amount exists; its number is kept so the page follows that open swap.
     if (err.openRequestNumber != null) {
       out.openRequestNumber = String(err.openRequestNumber);
-      out.text = `This new request paid nothing. You already have an open swap with the same amount (request ${out.openRequestNumber}); it is shown below.`;
+      out.text = `This new request paid nothing. You already have an open swap with the same amount (request ${out.openRequestNumber}); it is shown below. The bot refuses a new swap of exactly this amount until that one is finished or has expired; a different amount can be swapped now.`;
       return out;
     }
     out.text = typeof err.reason === 'string' && err.answered
@@ -92,7 +92,7 @@ export function describeAdapterError(err, ctx = {}) {
     }
     out.text = err.paid === 'unknown'
       ? 'The payment may have been sent. Do not pay again; check the extension\'s activity.'
-      : 'The bot has your request but nothing was paid. Ask for a new price to try again.';
+      : 'The bot has your request but nothing was paid. The request stays open until its approval time has passed and the bot has checked that no payment came; this page then shows it as expired. Until then the bot refuses a new swap of exactly this amount; a different amount can be swapped now.';
     return out;
   }
   if (err?.openRequestNumber != null) out.openRequestNumber = String(err.openRequestNumber);

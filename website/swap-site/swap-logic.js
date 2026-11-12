@@ -438,7 +438,7 @@ const FINAL = {
   expired: { kind: 'expired', text: 'Expired. No payment was seen within the approval time.' },
 };
 const PENDING = {
-  approved: 'Waiting for your payment to be seen by the bot.',
+  approved: 'No payment seen by the bot yet. If you paid, wait: it shows here once the bot sees it. If you did not pay, this request expires unpaid once its approval time has passed and the bot has checked that no payment came.',
   paid_waiting_depth: 'Payment seen. Waiting for confirmations.',
   counted: 'Payment confirmed. The bot is deciding the swap.',
   payout_pending: 'The bot is sending your payout.',
