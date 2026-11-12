@@ -7,7 +7,10 @@ import { createIncomingNotifications, INCOMING_NOTIFICATIONS_ALARM, INCOMING_CHE
 
 // Public reader and Chrome API fixtures only. The production poller chooses
 // the real background method, network, receipt identity and notification text.
-async function fixture(t) {
+// `networks` (optional): a networks object to use instead of the stub that resolves `selected`; `ixiosArgs` records the
+// argument of every getIxiosBalance call.
+async function fixture(t, { networks } = {}) {
+  const ixiosArgs = [];
   const lockCoordinator = createLockCoordinator(), shown = [], scheduled = new Map(), listeners = new Set(), calls = [];
   const pages = Object.fromEntries(['nodus', 'ethereum', 'solana', 'tron', 'cellframe'].map(chain => [chain, { rows: [] }]));
   const balances = { bsc: [{ symbol: 'BNB', balance: '10.0' }, { symbol: 'USDT', balance: '25.0' }], ixios: [{ symbol: 'IXIOS', balance: '1.0' }] };
@@ -25,13 +28,13 @@ async function fixture(t) {
   const options = { alarms, lockCoordinator, now: () => clock,
     notifications: { async create(id, value) { if (refuse) throw new Error('Notification fixture unavailable.'); shown.push({ id, ...value }); return id; } },
     runtime: { getURL: path => `chrome-extension://incoming-test/${path}` },
-    networks: { get: chain => chainNetwork(chain, selected[chain]) },
-    nodus: { getHistory: () => read('nodus'), getChainHistory: (chain, options) => read(chain, options), getIxiosBalance: () => read('ixios') },
+    networks: networks ?? { get: chain => chainNetwork(chain, selected[chain]) },
+    nodus: { getHistory: () => read('nodus'), getChainHistory: (chain, options) => read(chain, options), getIxiosBalance: networkId => { ixiosArgs.push(networkId); return read('ixios'); } },
     evm: { getState: () => ({ endpoints: { bsc: 'https://bsc.example' } }), getBalances: chain => read(chain) },
     solana: { getHistory: options => read('solana', options) }, tron: { getHistory: options => read('tron', options) } };
   let notifier = await createIncomingNotifications(options);
   t.after(() => notifier.destroy());
-  return { pages, balances, selected, gates, failures, shown, scheduled, calls, lockCoordinator,
+  return { ixiosArgs, pages, balances, selected, gates, failures, shown, scheduled, calls, lockCoordinator,
     get notifier() { return notifier; },
     async open() { await lockCoordinator.unlock(async () => {}); await notifier.start(); },
     async lock() { const locking = lockCoordinator.lock(); await notifier.stop(); await locking; },
@@ -80,23 +83,27 @@ test('balance-only chains use exact deltas and never notify an unchanged or fail
   assert.equal(f.shown.at(-1).message, '1.0 BNB\nBNB Smart Chain (Mainnet)');
 });
 
-// Ixios incoming notices cover the main network only (plan D6). Proves: with Ixios on its test network no Ixios balance is
-// read and nothing is announced however its balance moves; the mainnet source returns when the selection returns, and a
-// real mainnet increase after that is announced once with today's text. The stub's `networks.get` resolves through the real
-// network table, so selecting 'testnet' for Ixios only works because the table lists it; a stub that always answered mainnet
-// would make the first assertion on `f.calls` fail (the Ixios source would be read). Falsely passes if the fixture's Ixios
-// balance never changed while on the test network: it is raised to 500 there on purpose, which would be a false notice
-// (499 IXIOS) if the source were still read.
-test('no Ixios incoming notice while Ixios is on its test network; the mainnet source returns with the selection', async t => {
-  const f = await fixture(t); f.selected.ixios = 'testnet'; await f.open();
+// Ixios incoming notices cover the main network only (plan D6). The selection is driven through the REAL networks controller
+// (createNetworks over the real persisted store, `select` as the trusted port's setChainNetwork does), not the `selected` stub.
+// Proves: with Ixios on its test network no Ixios balance is read and nothing is announced however its balance moves; the
+// mainnet source returns when the selection returns; every read asks for exactly 'mainnet'; a real mainnet increase is announced
+// once with today's text. Falsely passes if the balance never changed on the test network: it is raised to 500 there on purpose,
+// which would be a false notice (499 IXIOS) if the source were still read. The memory storage stands for chrome.storage.local.
+test('no Ixios incoming notice while Ixios is on its test network (real networks controller); the mainnet source returns with the selection', async t => {
+  const { Messenger } = await import('@metamask/messenger'), { createPersistedStore } = await import('../src/background/store.js'), { createNetworks } = await import('../src/background/networks.js');
+  const values = {}, storage = { async get(keys) { return Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, structuredClone(values[key])])); }, async set(items) { Object.assign(values, structuredClone(items)); } };
+  const messenger = new Messenger({ namespace: 'Background' }), store = await createPersistedStore({ storage, messenger }), networks = createNetworks({ messenger, store, onChanged() {} });
+  const f = await fixture(t, { networks });
+  await networks.select('ixios', 'testnet'); assert.equal(networks.get('ixios').id, 'testnet'); await f.open();
   f.balances.ixios[0].balance = '500.0'; await f.tick(); await f.tick();
   assert.equal(f.calls.some(call => call.chain === 'ixios'), false, 'the Ixios balance is not read on the test network');
-  assert.deepEqual(f.shown, []);
-  f.balances.ixios[0].balance = '1.0'; f.selected.ixios = 'mainnet';
+  assert.deepEqual(f.ixiosArgs, []); assert.deepEqual(f.shown, []);
+  f.balances.ixios[0].balance = '1.0'; await networks.select('ixios', 'mainnet');
   await f.tick(); await f.tick(); assert.ok(f.calls.some(call => call.chain === 'ixios'), 'the mainnet source is read again');
   assert.deepEqual(f.shown, [], 'switching back announces nothing');
   f.balances.ixios[0].balance = '4.25'; await f.tick(); await f.tick();
   assert.deepEqual(f.shown.map(row => row.message), ['3.25 IXIOS\nIxios (Mainnet)']);
+  assert.ok(f.ixiosArgs.length > 0 && f.ixiosArgs.every(arg => arg === 'mainnet'), `getIxiosBalance was asked for ${JSON.stringify(f.ixiosArgs)}`);
 });
 
 test('locked startup, unlock, another unlock and browser/worker restart do not replay funds', async t => {

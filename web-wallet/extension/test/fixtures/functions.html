@@ -13,8 +13,16 @@ const calls = []; let hold, release, price = '200000000', bscFails = true;
 // Ethereum row (3 ETH with its price) for this wallet. Both are off by default.
 let holdEvm = new URLSearchParams(location.search).has('holdevm'); const evmWaiting = [];
 let holdSolana = false; const solanaWaiting = [];   // fixture.holdSolana(true) holds Solana balance reads until releaseSolana()
-const keptRecord = () => new URLSearchParams(location.search).has('kept')
-  ? { 'ethereum:ETH': { units: '3000000000000000000', observedAt: Date.now() - 1000, address: state.addresses.ethereum, network: 'main', price: { units: price, observedAt: Date.now() - 1000 } } } : {};
+// `?keptixios=<JSON>`: the saved record also holds this Ixios entry (units, network identity; observedAt and address are filled in).
+// `?holdixios`: every Ixios balance read waits until fixture.releaseIxios(). The Ixios read answers 777 IXIOS for the test
+// network ('testnet', the request's argument) and 8 for mainnet. Both are off by default.
+let holdIxios = new URLSearchParams(location.search).has('holdixios'); const ixiosWaiting = [];
+const keptRecord = () => ({
+  ...(new URLSearchParams(location.search).has('kept')
+    ? { 'ethereum:ETH': { units: '3000000000000000000', observedAt: Date.now() - 1000, address: state.addresses.ethereum, network: 'main', price: { units: price, observedAt: Date.now() - 1000 } } } : {}),
+  ...(new URLSearchParams(location.search).has('keptixios')
+    ? { 'ixios:IXIOS': { observedAt: Date.now() - 1000, address: state.addresses.ixios, ...JSON.parse(new URLSearchParams(location.search).get('keptixios')) } } : {}),
+});
 if (new URLSearchParams(location.search).has('contracts')) Object.assign(state.nodus, { evmReadable: true, evmBuildable: true });
 const ui = { get state() { return state; },
   async request(method, args = []) {
@@ -40,7 +48,7 @@ const ui = { get state() { return state; },
     if (method === 'getEvmBalances') return ASSETS.filter(asset => asset.chain === args[0]).map(asset => ({ symbol: asset.symbol, balance: asset.symbol === 'ETH' ? (state.networks.ethereum === 'sepolia' ? '5' : '1') : asset.symbol === 'BNB' ? '3' : '0' }));
     if (method === 'getNodusBalances') return [{ symbol: 'NODUS', balance: '12' }];
     if (method === 'getCpunkBalance') return { balance: '7' };
-    if (method === 'getIxiosBalance') return [{ symbol: 'IXIOS', balance: '8' }];
+    if (method === 'getIxiosBalance') { const network = args[0]; if (holdIxios) await new Promise(resolve => { ixiosWaiting.push(resolve); }); return [{ symbol: 'IXIOS', balance: network === 'testnet' ? '777' : '8' }]; }
     if (method === 'getSolanaBalances' && holdSolana) await new Promise(resolve => { solanaWaiting.push(resolve); });
     // Solana Testnet answers 777 SOL, the default (devnet) 1000, so one network's amount cannot be mistaken for the other's.
     if (method === 'getSolanaBalances') return [{ symbol: 'SOL', balance: state.networks.solana === 'testnet' ? '777' : '1000' }];
@@ -55,6 +63,7 @@ screen = mountReferenceWallet({ document, window, root: document.getElementById(
   loadBalances: () => screen.loadBalances(true), lock() {}, reveal() {}, setAutoLock: value => run(() => ui.setAutoLock(value)), clearReveal() {} });
 window.fixture = { screen, state, ui, calls, hold() { hold = true; }, release() { hold = false; release?.(); }, price(value) { price = value; }, bscFails(value) { bscFails = value; },
   holdSolana(value) { holdSolana = value; }, releaseSolana() { holdSolana = false; for (const resolve of solanaWaiting.splice(0)) resolve(); },
+  holdIxios(value) { holdIxios = value; }, releaseIxios() { holdIxios = false; for (const resolve of ixiosWaiting.splice(0)) resolve(); },
   holdEvm(value) { holdEvm = value; }, releaseEvm() { holdEvm = false; for (const resolve of evmWaiting.splice(0)) resolve(); } };
 await screen.loadBalances(); window.fixture.ready = true;
 </script></body></html>
