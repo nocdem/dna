@@ -96,6 +96,7 @@
 #include "amm_eth_rpc.h"
 #include "client/nodus_evm_abi.h"
 #include "crypto/hash/keccak256.h"
+#include "nodus_log_shim.h"
 
 static int g_failures = 0;
 static int g_checks = 0;
@@ -1010,6 +1011,24 @@ static int run_chain(amm_eth_provider_t *p, uint64_t *u) {
     size_t n = fread(g_cap, 1, sizeof(g_cap) - 1, tmp);
     fclose(tmp);
     g_cap[n] = '\0';
+    /* The provider call also writes its INFO call line (operator order
+     * 2026-11-12: "[INF/AMM_RPC] <name>: <method>: answered in N ms ..."); this
+     * scenario is about the WARNING line, so the INFO lines are taken out of the
+     * capture. R13 checks the INFO line itself. */
+    {
+        size_t o = 0;
+        for (size_t i = 0; i < n;) {
+            const char *nl = memchr(g_cap + i, '\n', n - i);
+            size_t ll = nl ? (size_t)(nl - (g_cap + i)) + 1 : n - i;
+            if (strncmp(g_cap + i, "[INF/", 5) != 0) {
+                memmove(g_cap + o, g_cap + i, ll);
+                o += ll;
+            }
+            i += ll;
+        }
+        n = o;
+        g_cap[n] = '\0';
+    }
     g_cap_lines = 0;
     for (size_t i = 0; i < n; i++) g_cap_lines += (g_cap[i] == '\n');
     if (n > 0 && g_cap[n - 1] == '\n') g_cap[n - 1] = '\0';
@@ -1174,6 +1193,63 @@ static void r12_error_text(void) {
     amm_eth_rpc_free(r2);
 }
 
+/* R13  the call line in the log FILE (operator order 2026-11-12: full diagnostic
+ * log, and "never the provider URL: it may carry a key").
+ * PROVES: against a stub provider whose URL holds a secret-looking path and key
+ * ("https://eth.example.test/v1/SECRET-KEY-9f3a"), a successful call, a
+ * JSON-RPC error answer that ECHOES the URL, and a failed post each write a
+ * line to <dir>/nodus-amm.log that carries the provider name ("stub-1"), the
+ * method, the outcome (result / the error code / no usable answer) and a
+ * duration in ms; and neither the URL, its host-path nor the key appears
+ * anywhere in the file.
+ * FLAGS: default build. LEAVES BEHIND: nothing (the /tmp directory is removed).
+ * HOW IT CAN FALSELY PASS: the "no secret" checks pass vacuously if nothing was
+ * written; the positive checks on the same file rule that out. They cover the
+ * URL forms configured here only (no percent-encoded echo). */
+static void r13_log_file(void) {
+    printf("R13 the call line in the log file\n");
+    char dir[] = "/tmp/test_amm_rpc_log_XXXXXX";
+    if (!mkdtemp(dir)) { printf("FATAL mkdtemp\n"); exit(2); }
+    char path[128];
+    snprintf(path, sizeof(path), "%s/nodus-amm.log", dir);
+    CHECK(nodus_log_file_open(dir, 1 << 20, 1) == 0, "the log file opens");
+
+    amm_eth_rpc_cfg_t c = { .url = "https://eth.example.test/v1/SECRET-KEY-9f3a", .name = "stub-1",
+                            .post = stub_post, .post_ctx = NULL, .max_response = 65536 };
+    amm_eth_rpc_t *r = amm_eth_rpc_new(&c);
+    if (!r) { printf("FATAL rpc_new\n"); exit(2); }
+    amm_eth_provider_t p;
+    amm_eth_rpc_provider(r, &p);
+    uint64_t u = 0;
+
+    g_post_rc = AMM_ETH_OK;
+    result("\"0x1\"");
+    CHECK(p.chain_id(p.ctx, &u, 0) == AMM_ETH_OK && u == 1, "a result answer");
+    answer("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32014,\"message\":\"no block at "
+           "https://eth.example.test/v1/SECRET-KEY-9f3a\"}}");
+    CHECK(p.chain_id(p.ctx, &u, 0) == AMM_ETH_ERR, "an error answer that echoes the URL");
+    g_post_rc = AMM_ETH_ERR;
+    CHECK(p.chain_id(p.ctx, &u, 0) == AMM_ETH_ERR, "a failed post");
+    g_post_rc = AMM_ETH_OK;
+    nodus_log_file_close();
+    amm_eth_rpc_free(r);
+
+    char buf[16384];
+    FILE *f = fopen(path, "r");
+    size_t n = f ? fread(buf, 1, sizeof(buf) - 1, f) : 0;
+    if (f) fclose(f);
+    buf[n] = '\0';
+    CHECK(strstr(buf, "stub-1: eth_chainId: answered in") != NULL &&
+          strstr(buf, "ms with a result") != NULL, "the result line: name, method, ms, outcome");
+    CHECK(strstr(buf, "with the JSON-RPC error -32014") != NULL, "the error line carries the code");
+    CHECK(strstr(buf, "stub-1: eth_chainId: no usable answer (after") != NULL,
+          "the failed-post line carries the name and the duration");
+    CHECK(strstr(buf, "SECRET-KEY") == NULL && strstr(buf, "eth.example.test") == NULL &&
+          strstr(buf, "9f3a") == NULL, "neither the URL nor its key is anywhere in the log file");
+    unlink(path);
+    rmdir(dir);
+}
+
 int main(void) {
     printf("test_amm_eth_rpc\n");
     r1_requests();
@@ -1188,6 +1264,7 @@ int main(void) {
     r10_scalars();
     r11_config_transport();
     r12_error_text();
+    r13_log_file();
     if (g_r) amm_eth_rpc_free(g_r);
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

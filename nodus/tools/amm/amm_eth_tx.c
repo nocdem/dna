@@ -7,11 +7,15 @@
 
 #include <secp256k1.h>
 #include <secp256k1_recovery.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "crypto/hash/keccak256.h"
+#include "crypto/utils/qgp_log.h"
 #include "evm/trie/evm_trie_rlp.h"
+
+#define LOG_TAG "AMM_ETH_TX"
 
 #define TX_TYPE_FEE_MARKET 0x02    /* encode_transaction: b"\x02" + rlp  */
 
@@ -153,6 +157,9 @@ amm_signer_t *amm_signer_new(const uint8_t sk[32], const uint8_t blind[32]) {
         return NULL;
     }
     memcpy(s->sk, sk, 32);
+    char ax[41];
+    for (int i = 0; i < 20; i++) snprintf(ax + 2 * i, 3, "%02x", s->addr[i]);
+    QGP_LOG_INFO(LOG_TAG, "the Ethereum signer is ready: address 0x%s", ax);
     return s;
 }
 
@@ -179,23 +186,53 @@ int amm_tx1559_sign(const amm_signer_t *s, const amm_tx1559_t *tx,
     /* noncefp NULL = secp256k1_nonce_function_default (RFC 6979) */
     if (!secp256k1_ecdsa_sign_recoverable(s->ctx, &sig, sh, s->sk, NULL, NULL) ||
         !secp256k1_ecdsa_recoverable_signature_serialize_compact(s->ctx, rs,
-                                                                 &recid, &sig))
+                                                                 &recid, &sig)) {
+        QGP_LOG_ERROR(LOG_TAG, "signing failed for the transaction with nonce %llu",
+                      (unsigned long long)tx->nonce);
         return -1;
+    }
     /* transactions.py:725-726: y_parity must be 0 or 1 */
-    if (recid != 0 && recid != 1) return -1;
+    if (recid != 0 && recid != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "signing refused: the recovery id %d is not 0 or 1 "
+                      "(nonce %llu)", recid, (unsigned long long)tx->nonce);
+        return -1;
+    }
     /* the signature must recover to the signer, before anything leaves */
     secp256k1_pubkey rec;
     uint8_t raddr[20];
     if (!secp256k1_ecdsa_recover(s->ctx, &rec, &sig, sh) ||
-        address_of(s->ctx, &rec, raddr) != 0 || memcmp(raddr, s->addr, 20) != 0)
+        address_of(s->ctx, &rec, raddr) != 0 || memcmp(raddr, s->addr, 20) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "signing refused: the signature does not recover to the "
+                      "signer (nonce %llu)", (unsigned long long)tx->nonce);
         return -1;
+    }
     uint8_t *out = NULL;
     size_t n = 0;
-    if (amm_tx1559_encode(tx, recid, rs, rs + 32, &out, &n) != 0) return -1;
-    if (hash_out && amm_tx_hash(out, n, hash_out) != 0) {
+    if (amm_tx1559_encode(tx, recid, rs, rs + 32, &out, &n) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "the signed transaction with nonce %llu cannot be encoded",
+                      (unsigned long long)tx->nonce);
+        return -1;
+    }
+    uint8_t th[32];
+    const int have_hash = amm_tx_hash(out, n, th) == 0;
+    if (hash_out && !have_hash) {
         free(out);
         return -1;
     }
+    if (hash_out) memcpy(hash_out, th, 32);
+    /* one line: the fields, the hash, the first 16 hex characters of the
+     * signature's r; never the signed bytes or the key */
+    char hx[65], rx[17];
+    for (int i = 0; i < 32 && have_hash; i++) snprintf(hx + 2 * i, 3, "%02x", th[i]);
+    if (!have_hash) hx[0] = '\0';
+    for (int i = 0; i < 8; i++) snprintf(rx + 2 * i, 3, "%02x", rs[i]);
+    QGP_LOG_INFO(LOG_TAG, "transaction signed: chain %llu, nonce %llu, max priority fee "
+                 "%llu, max fee %llu, gas %llu, data %zu bytes, %zu bytes encoded, hash 0x%s, "
+                 "signature starts %s", (unsigned long long)tx->chain_id,
+                 (unsigned long long)tx->nonce,
+                 (unsigned long long)tx->max_priority_fee_per_gas,
+                 (unsigned long long)tx->max_fee_per_gas, (unsigned long long)tx->gas,
+                 tx->data_len, n, hx, rx);
     *raw = out;
     *raw_len = n;
     return 0;

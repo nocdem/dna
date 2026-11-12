@@ -50,6 +50,8 @@
 #include <unistd.h>
 
 #include "amm_http.h"
+#include "nodus_log_shim.h"
+#include <sys/stat.h>
 
 static int g_failures = 0;
 static int g_checks = 0;
@@ -673,6 +675,52 @@ static void h7_withdraw(void) {
     CHECK(route(&c, "POST", "/amm/liquidity/withdraw", body, big, sizeof(big)) == 400, "no backend wired: 400, no crash");
 }
 
+/* H8  the diagnostic log (operator order 2026-11-12): amm_http_route writes one
+ * line per request with the method, path, status, outcome word, request number
+ * and duration in ms, and the request's body (signatures) never reaches the log.
+ * FLAGS: a default build; one /tmp directory, removed at the end.
+ * HOW IT CAN FALSELY PASS: the checks read the file the logger shim appends to,
+ * so they prove the line is written through QGP_LOG_*, not that the line
+ * arrives on stderr; the "ms" check looks for the text " ms", not for a
+ * plausible number (the stub answers in well under 1 ms). The secret-body check
+ * passes vacuously if the logger wrote nothing at all, which the first two
+ * checks rule out. */
+static void h8_log(void) {
+    printf("H8 the request line in the log\n");
+    char dir[] = "/tmp/test_amm_http_log_XXXXXX";
+    if (!mkdtemp(dir)) { printf("FATAL mkdtemp\n"); exit(2); }
+    char path[128];
+    snprintf(path, sizeof(path), "%s/nodus-amm.log", dir);
+    CHECK(nodus_log_file_open(dir, 1 << 20, 1) == 0, "the log file opens");
+
+    amm_http_ctx_t c = mkctx();
+    char out[2048];
+    memset(&B, 0, sizeof(B));
+    B.quote_rc = AMM_Q_PAUSED;
+    CHECK(route(&c, "POST", "/amm/quote",
+                "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\"}", out, sizeof(out)) == 200,
+          "a refused quote answers 200");
+    CHECK(route(&c, "GET", "/amm/nothing", NULL, out, sizeof(out)) == 404, "an unknown path is 404");
+    CHECK(route(&c, "POST", "/amm/liquidity/withdraw",
+                "{\"text\":\"0x00\",\"publicKey\":\"0xSECRETKEYBYTES\",\"signature\":\"0x00\"}",
+                out, sizeof(out)) == 400, "a malformed withdrawal is 400");
+    nodus_log_file_close();
+
+    char buf[16384];
+    FILE *f = fopen(path, "r");
+    size_t n = f ? fread(buf, 1, sizeof(buf) - 1, f) : 0;
+    if (f) fclose(f);
+    buf[n] = '\0';
+    CHECK(strstr(buf, "POST /amm/quote answered 200 (paused)") != NULL,
+          "the quote line has the method, path, status and the refusal word");
+    CHECK(strstr(buf, "GET /amm/nothing answered 404 (not_found)") != NULL,
+          "the 404 line has the reason word not_found");
+    CHECK(strstr(buf, " ms") != NULL, "a request line carries its duration in ms");
+    CHECK(strstr(buf, "SECRETKEYBYTES") == NULL, "the request body is never written to the log");
+    unlink(path);
+    rmdir(dir);
+}
+
 int main(void) {
     printf("test_amm_http\n");
     h1_parser();
@@ -682,6 +730,7 @@ int main(void) {
     h5_server();
     h6_liquidity();
     h7_withdraw();
+    h8_log();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

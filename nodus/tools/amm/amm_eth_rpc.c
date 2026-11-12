@@ -452,7 +452,8 @@ static int rpc_call(amm_eth_rpc_t *r, const char *method, const char *params,
     if (!d->nodes) { doc_free(d); return -1; }
     int root = json_parse((const char *)d->resp, rl, d->nodes, cap);
     if (root != 0 || d->nodes[0].t != J_OBJ) {
-        QGP_LOG_WARN(LOG_TAG, "%s: %s: the answer is not strict JSON", r->name, method);
+        QGP_LOG_WARN(LOG_TAG, "%s: %s: the answer is not strict JSON (after %llu ms)",
+                     r->name, method, (unsigned long long)took);
         doc_free(d);
         return -1;
     }
@@ -469,15 +470,29 @@ static int rpc_call(amm_eth_rpc_t *r, const char *method, const char *params,
     if (jr < 0 || id < 0 || d->nodes[jr].t != J_STR || d->nodes[jr].len != 3 ||
         memcmp(d->nodes[jr].s, "2.0", 3) != 0 || d->nodes[id].t != J_INT ||
         d->nodes[id].i != REQ_ID || (res >= 0) == (er >= 0)) {
-        QGP_LOG_WARN(LOG_TAG, "%s: %s: not a valid JSON-RPC answer", r->name, method);
+        QGP_LOG_WARN(LOG_TAG, "%s: %s: not a valid JSON-RPC answer (after %llu ms)",
+                     r->name, method, (unsigned long long)took);
         doc_free(d);
         return -1;
     }
     if (er >= 0) {
+        /* the call line (operator order 2026-11-12: full diagnostic log); the
+         * params are never written: eth_sendRawTransaction carries the signed
+         * transaction in them */
+        int ec = d->nodes[er].t == J_OBJ ? obj_get(d->nodes, er, "code") : -1;
+        if (ec >= 0 && d->nodes[ec].t == J_INT)
+            QGP_LOG_INFO(LOG_TAG, "%s: %s: answered in %llu ms with the JSON-RPC error %lld",
+                         r->name, method, (unsigned long long)took,
+                         (long long)d->nodes[ec].i);
+        else
+            QGP_LOG_INFO(LOG_TAG, "%s: %s: answered in %llu ms with a JSON-RPC error "
+                         "without a code", r->name, method, (unsigned long long)took);
         log_rpc_error(r->name, r->url, method, d->nodes, er);
         doc_free(d);
         return -1;
     }
+    QGP_LOG_INFO(LOG_TAG, "%s: %s: answered in %llu ms with a result", r->name, method,
+                 (unsigned long long)took);
     d->result = res;
     return 0;
 }

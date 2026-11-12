@@ -4,7 +4,12 @@
  */
 #include "amm_ledger.h"
 
+#include <stdio.h>
 #include <string.h>
+
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "AMM_LEDGER"
 
 /* ── checked primitives ───────────────────────────────────────────────── */
 
@@ -66,6 +71,15 @@ int amm_to_u64(uint64_t *out, const evm_u256 *a) {
     return AMM_OK;
 }
 
+/* The decimal text of an amount for a log line: a u64 as its digits, a value
+ * above 2^64 as "above_2_64". */
+static const char *dec(char *buf, size_t cap, const evm_u256 *v) {
+    uint64_t u = 0;
+    if (amm_to_u64(&u, v) == AMM_OK) snprintf(buf, cap, "%llu", (unsigned long long)u);
+    else snprintf(buf, cap, "above_2_64");
+    return buf;
+}
+
 /* ── swap ─────────────────────────────────────────────────────────────── */
 
 /* Chain a failing step to the caller: every helper above leaves its result
@@ -120,7 +134,18 @@ int amm_pool_quote(const amm_pool_t *p, amm_dir_t dir, const evm_u256 *x,
     if (dir != AMM_USDT_TO_NODUS && dir != AMM_NODUS_TO_USDT) return AMM_E_RANGE;
     const evm_u256 *in_d, *out_d;
     sides(p, dir, &in_d, &out_d);
-    return amm_swap_output(out, in_d, x, out_d);
+    int rc = amm_swap_output(out, in_d, x, out_d);
+    char a[24], b[24], c[24], d[24];
+    if (rc == AMM_OK)
+        QGP_LOG_INFO(LOG_TAG, "pool quote %s: input %s against depths in %s / out %s gives "
+                     "output %s", dir == AMM_USDT_TO_NODUS ? "usdt_to_nodus" : "nodus_to_usdt",
+                     dec(a, sizeof(a), x), dec(b, sizeof(b), in_d), dec(c, sizeof(c), out_d),
+                     dec(d, sizeof(d), out));
+    else
+        QGP_LOG_INFO(LOG_TAG, "pool quote %s: input %s against depths in %s / out %s refused "
+                     "(ledger code %d)", dir == AMM_USDT_TO_NODUS ? "usdt_to_nodus" : "nodus_to_usdt",
+                     dec(a, sizeof(a), x), dec(b, sizeof(b), in_d), dec(c, sizeof(c), out_d), rc);
+    return rc;
 }
 
 int amm_pool_apply_swap(amm_pool_t *p, amm_dir_t dir, const evm_u256 *x,
@@ -137,6 +162,11 @@ int amm_pool_apply_swap(amm_pool_t *p, amm_dir_t dir, const evm_u256 *x,
     TRY(amm_sub(&new_out, out_d, paid));
     *in_d = new_in;
     *out_d = new_out;
+    char a[24], b[24], c[24], d[24];
+    QGP_LOG_INFO(LOG_TAG, "pool swap applied (%s): input %s, paid %s, depths now in %s / out %s",
+                 dir == AMM_USDT_TO_NODUS ? "usdt_to_nodus" : "nodus_to_usdt",
+                 dec(a, sizeof(a), x), dec(b, sizeof(b), paid), dec(c, sizeof(c), in_d),
+                 dec(d, sizeof(d), out_d));
     return AMM_OK;
 }
 
@@ -147,9 +177,14 @@ amm_payout_t amm_payout_after_fee(const evm_u256 *output, const evm_u256 *fee,
     evm_u256 n;
     amm_sub_sat(&n, output, fee);
     if (net) *net = n;
-    if (evm_u256_is_zero(&n)) return AMM_PAYOUT_BELOW_MIN;
-    if (evm_u256_cmp(&n, minimum) < 0) return AMM_PAYOUT_BELOW_MIN;
-    return AMM_PAYOUT_PAY;
+    char a[24], b[24], c[24], d[24];
+    amm_payout_t res = (evm_u256_is_zero(&n) || evm_u256_cmp(&n, minimum) < 0)
+                           ? AMM_PAYOUT_BELOW_MIN : AMM_PAYOUT_PAY;
+    QGP_LOG_INFO(LOG_TAG, "payout decision: output %s minus network fee %s leaves %s, minimum "
+                 "%s: %s", dec(a, sizeof(a), output), dec(b, sizeof(b), fee),
+                 dec(c, sizeof(c), &n), dec(d, sizeof(d), minimum),
+                 res == AMM_PAYOUT_PAY ? "pay" : "below the minimum, refund");
+    return res;
 }
 
 /* ── liquidity ────────────────────────────────────────────────────────── */
@@ -292,6 +327,11 @@ int amm_units_for_add(evm_u256 *s, evm_u256 *new_total, const evm_u256 *P,
     TRY(amm_add(&total, P, &units));
     *s = units;
     if (new_total) *new_total = total;
+    char t1[24], t2[24], t3[24], t4[24], t5[24], t6[24];
+    QGP_LOG_INFO(LOG_TAG, "liquidity add units: pool units %s, depths NODUS %s / USDT %s, "
+                 "adding NODUS %s and USDT %s gives %s units", dec(t1, sizeof(t1), P),
+                 dec(t2, sizeof(t2), R), dec(t3, sizeof(t3), A), dec(t4, sizeof(t4), r),
+                 dec(t5, sizeof(t5), a), dec(t6, sizeof(t6), &units));
     return AMM_OK;
 }
 
@@ -370,6 +410,11 @@ int amm_withdraw_calc(amm_withdraw_t *w, const amm_pool_t *p,
     w->units_after = after;
     w->out_n = out_n;
     w->out_u = out_u;
+    char t1[24], t2[24], t3[24], t4[24], t5[24];
+    QGP_LOG_INFO(LOG_TAG, "withdraw calculation: %u basis points of %s units claim %s units "
+                 "(%s left), pays NODUS %s and USDT %s", (unsigned)bp, dec(t1, sizeof(t1), lp_units),
+                 dec(t2, sizeof(t2), &claimed), dec(t3, sizeof(t3), &after),
+                 dec(t4, sizeof(t4), &out_n), dec(t5, sizeof(t5), &out_u));
     return AMM_OK;
 }
 
@@ -381,6 +426,10 @@ int amm_pool_apply_withdraw(amm_pool_t *p, const amm_withdraw_t *w) {
     p->depth_n = n;
     p->depth_u = u;
     p->units = units;
+    char a[24], b[24], c[24];
+    QGP_LOG_INFO(LOG_TAG, "pool withdraw applied: depths now NODUS %s / USDT %s, units %s",
+                 dec(a, sizeof(a), &p->depth_n), dec(b, sizeof(b), &p->depth_u),
+                 dec(c, sizeof(c), &p->units));
     return AMM_OK;
 }
 
@@ -388,8 +437,20 @@ int amm_pool_apply_withdraw(amm_pool_t *p, const amm_withdraw_t *w) {
 
 int amm_inflight_admit(uint64_t v, uint64_t sum_open, uint64_t swap_max,
                        uint64_t inflight_max) {
-    if (v > swap_max) return AMM_E_SWAP_LIMIT;
+    if (v > swap_max) {
+        QGP_LOG_INFO(LOG_TAG, "in-flight room: %llu is above the swap maximum %llu: refused",
+                     (unsigned long long)v, (unsigned long long)swap_max);
+        return AMM_E_SWAP_LIMIT;
+    }
     if (sum_open > UINT64_MAX - v) return AMM_E_OVERFLOW;
-    if (sum_open + v > inflight_max) return AMM_E_INFLIGHT;
+    if (sum_open + v > inflight_max) {
+        QGP_LOG_INFO(LOG_TAG, "in-flight room: %llu on top of %llu open is above the in-flight "
+                     "maximum %llu: no room", (unsigned long long)v,
+                     (unsigned long long)sum_open, (unsigned long long)inflight_max);
+        return AMM_E_INFLIGHT;
+    }
+    QGP_LOG_INFO(LOG_TAG, "in-flight room: %llu admitted on top of %llu open (maximum %llu)",
+                 (unsigned long long)v, (unsigned long long)sum_open,
+                 (unsigned long long)inflight_max);
     return AMM_OK;
 }

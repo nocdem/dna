@@ -322,6 +322,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (cfg.log_dir[0] != '\0' && setup_log_file(cfg.log_dir) != 0) return 1;
+    QGP_LOG_INFO(LOG_TAG, "nodus-amm starting with the config %s", cfg_path);
+    amm_cfg_log(&cfg);
 
     int rc = 1, lock_fd = -1;
     uint8_t sk[32];
