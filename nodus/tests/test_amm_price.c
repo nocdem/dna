@@ -318,8 +318,9 @@ static void p5_seam_and_config(void) {
     memset(&c, 0, sizeof(c));
     c.get = stub_get; c.get_ctx = &w; c.now_s = stub_now; c.now_ctx = &w;
     c.sources = AMM_PRICE_ALL; c.min_sources = 3; c.max_age_seconds = 180;
-    CHECK(amm_price_new(&c) != NULL, "the plan's values build");
-    amm_price_t *t;
+    amm_price_t *t = amm_price_new(&c);
+    CHECK(t != NULL, "the plan's values build");
+    amm_price_free(t);
     c.min_sources = 5; CHECK((t = amm_price_new(&c)) == NULL, "minimum above the sources refused"); amm_price_free(t);
     c.min_sources = 0; CHECK((t = amm_price_new(&c)) == NULL, "minimum 0 refused"); amm_price_free(t);
     c.min_sources = 3; c.max_age_seconds = 0; CHECK((t = amm_price_new(&c)) == NULL, "age 0 refused"); amm_price_free(t);

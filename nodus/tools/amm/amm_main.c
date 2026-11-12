@@ -19,7 +19,11 @@
  * refresh. Every engine call (HTTP or worker) is serialised by one mutex:
  * the payers' quote/sign and the engine's reads are not documented as safe
  * for two threads at once (reported). The journal and the node session have
- * their own mutexes.
+ * their own mutexes. Inside one group of Ethereum provider reads (the
+ * watcher's and the payer's, amm_eth_fanout.h) one short-lived thread per
+ * usable provider runs that provider's calls, always while the caller holds
+ * that mutex and until every call has returned; each provider's transport
+ * and RPC object have their own mutexes.
  *
  * REFUSALS TO START (nothing is invented around them): the settings file; a
  * second instance; a missing key; a Nodus address history that is off or
@@ -333,7 +337,7 @@ int main(int argc, char **argv) {
     amm_journal_t *journal = NULL;
     amm_node_real_t *real = NULL;
     amm_node_t node;
-    amm_rpc_curl_t *rpc_curl = NULL;
+    amm_rpc_curl_t *rpc_curl[AMM_MAX_PROVIDERS] = { NULL };   /* one transport per provider */
     amm_price_curl_t *price_curl = NULL;
     amm_eth_rpc_t *rpcs[AMM_MAX_PROVIDERS];
     amm_eth_provider_t provs[AMM_MAX_PROVIDERS];
@@ -370,16 +374,18 @@ int main(int argc, char **argv) {
 
     /* Ethereum providers over libcurl */
     if (amm_rpc_curl_global_init() != 0) goto done;
-    rpc_curl = amm_rpc_curl_new((uint32_t)cfg.rpc_timeout_ms);
     price_curl = amm_price_curl_new((uint32_t)cfg.rpc_timeout_ms);
-    if (!rpc_curl || !price_curl) goto done;
+    if (!price_curl) goto done;
     for (int i = 0; i < cfg.n_providers; i++) {
         amm_eth_rpc_cfg_t rc_;
         char nm[AMM_RPC_NAME_MAX];
         snprintf(nm, sizeof(nm), "provider-%d", i + 1);      /* the URL carries a key: never logged */
+        rpc_curl[i] = amm_rpc_curl_new((uint32_t)cfg.rpc_timeout_ms, nm);
+        if (!rpc_curl[i]) { QGP_LOG_ERROR(LOG_TAG, "provider %d transport refused", i + 1); goto done; }
         memset(&rc_, 0, sizeof(rc_));
         rc_.url = cfg.eth_providers[i]; rc_.name = nm; rc_.post = amm_rpc_curl_post;
-        rc_.post_ctx = rpc_curl; rc_.max_response = (size_t)cfg.eth_max_response;
+        rc_.post_ctx = rpc_curl[i]; rc_.max_response = (size_t)cfg.eth_max_response;
+        rc_.chain_id = cfg.eth_chain_id;                     /* checked on every connection */
         rpcs[n_rpc] = amm_eth_rpc_new(&rc_);
         if (!rpcs[n_rpc]) { QGP_LOG_ERROR(LOG_TAG, "provider %d refused", i + 1); goto done; }
         amm_eth_rpc_provider(rpcs[n_rpc], &provs[n_rpc]);
@@ -515,7 +521,7 @@ done:
     amm_price_free(price);
     for (int i = 0; i < n_rpc; i++) amm_eth_rpc_free(rpcs[i]);
     amm_price_curl_free(price_curl);
-    amm_rpc_curl_free(rpc_curl);
+    for (int i = 0; i < AMM_MAX_PROVIDERS; i++) amm_rpc_curl_free(rpc_curl[i]);
     amm_node_real_close(real);
     amm_journal_close(journal);
     nodus_identity_clear(&id);

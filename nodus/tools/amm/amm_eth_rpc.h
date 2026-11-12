@@ -2,7 +2,11 @@
  * @file amm_eth_rpc.h
  * @brief nodus-amm's real Ethereum provider: JSON-RPC over HTTPS behind the
  *        amm_eth.h seam table (ONE provider per object; the watcher and the
- *        payer hold several and apply their quorum).
+ *        payer hold several and apply their quorum). One libcurl transport
+ *        per provider: its handle is used by one thread at a time, enforced
+ *        by the transport's mutex (libcurl-thread(3), curl_easy_perform(3)),
+ *        and the provider's calls of one group run on that provider's own
+ *        thread (amm_eth_fanout.h).
  *
  * Governing text: docs/plans/2026-11-08-swap-bot-plan.nodus1.md (revision 4)
  * section 3 (the HTTPS library is chosen in the build package: system
@@ -70,6 +74,19 @@
  * refuses a URL that does not start with "https://".
  *
  * SECRETS: a provider URL usually carries an API key; it is never logged.
+ *
+ * CHAIN ID: swap bot plan section 9: "At start and on every reconnect each
+ * provider must report the chain id of the `eth_chain_id` setting ... else it
+ * is not used". The transport keeps one connection per provider, so a
+ * reconnect is a new connection libcurl opens inside any call. An answer
+ * counts only if the connection it came over is known to report the setting:
+ * a call other than eth_chainId that did not run on the connection that last
+ * reported it has its answer held while one eth_chainId is asked on the same
+ * handle, and the answer counts only if that check made no connection, ran on
+ * the same connection (compared by descriptor) and returned the setting;
+ * otherwise it is not counted (AMM_ETH_ERR). After a connection reported
+ * another chain id the provider's handle is re-created, which closes every
+ * connection of the old handle. The setting is cfg.chain_id.
  */
 #ifndef AMM_ETH_RPC_H
 #define AMM_ETH_RPC_H
@@ -90,10 +107,26 @@
  *  when the HTTP status is 200 and the whole response (<= resp_cap bytes) was
  *  received into `resp` (`*resp_len`); anything else is AMM_ETH_ERR (a
  *  response that would pass resp_cap included). `deadline_ms` as in
- *  amm_eth.h. */
+ *  amm_eth.h.
+ *
+ *  `drop_pool` (in): 1 = close every connection of this provider first, by
+ *  re-creating its handle. `xf` (out, written on EVERY return, never NULL):
+ *  how many connections this transfer made (`new_conns`) and the descriptor of
+ *  the connection it left in the handle's cache (`sock`, AMM_RPC_SOCK_NONE =
+ *  none: the connection was not kept, a transfer failed -- its handle is then
+ *  re-created -- or no transfer was started). A plain integer, so the seam
+ *  needs no libcurl header. */
+#define AMM_RPC_SOCK_NONE (-1)
+
+typedef struct {
+    long    new_conns;
+    int64_t sock;
+} amm_rpc_xfer_t;
+
 typedef int (*amm_rpc_post_fn)(void *ctx, const char *url, const uint8_t *body,
                                size_t body_len, uint8_t *resp, size_t resp_cap,
-                               size_t *resp_len, uint64_t deadline_ms);
+                               size_t *resp_len, uint64_t deadline_ms,
+                               int drop_pool, amm_rpc_xfer_t *xf);
 
 typedef struct {
     const char     *url;          /* "https://..." (copied)                  */
@@ -101,13 +134,14 @@ typedef struct {
     amm_rpc_post_fn post;
     void           *post_ctx;
     size_t          max_response; /* AMM_RPC_RESP_MIN .. AMM_RPC_RESP_CEIL   */
+    uint64_t        chain_id;     /* the eth_chain_id setting, >= 1 (CHAIN ID) */
 } amm_eth_rpc_cfg_t;
 
 typedef struct amm_eth_rpc amm_eth_rpc_t;
 
 /** NULL on a bad config (no post, a URL that is not https://, longer than
  *  AMM_URL_MAX - 1, or holding a byte outside 0x21..0x7e, a bound outside its
- *  range). */
+ *  range, chain_id 0). */
 amm_eth_rpc_t *amm_eth_rpc_new(const amm_eth_rpc_cfg_t *cfg);
 void amm_eth_rpc_free(amm_eth_rpc_t *r);
 
@@ -120,15 +154,28 @@ void amm_eth_rpc_provider(amm_eth_rpc_t *r, amm_eth_provider_t *out);
 typedef struct amm_rpc_curl amm_rpc_curl_t;
 
 /** curl_global_init, once; call it before any other thread starts (libcurl:
- *  not thread-safe). 0 / -1. */
+ *  not thread-safe; libcurl-thread(3), "curl_global_init" section). 0 / -1. */
 int amm_rpc_curl_global_init(void);
-/** `timeout_cap_ms` is the longest one POST may take whatever the deadline
- *  (> 0, required, no default). NULL on a bad argument. */
-amm_rpc_curl_t *amm_rpc_curl_new(uint32_t timeout_cap_ms);
+/** One transport per provider; it keeps ONE libcurl easy handle (so libcurl
+ *  can re-use the provider's open connection) and a mutex that serialises its
+ *  POSTs (libcurl-thread(3): a handle is used by one thread at a time).
+ *  `timeout_cap_ms` is the longest one POST may take whatever the deadline
+ *  (> 0, required, no default); `label` is the provider's log name (never the
+ *  URL; non-empty, shorter than AMM_RPC_NAME_MAX). NULL on a bad argument.
+ *  The handle is re-created when a POST asks for it (`drop_pool`) and after
+ *  every transfer that failed by timeout or transport error, so the
+ *  provider's next call opens a new connection. */
+amm_rpc_curl_t *amm_rpc_curl_new(uint32_t timeout_cap_ms, const char *label);
 void amm_rpc_curl_free(amm_rpc_curl_t *c);
 /** The amm_rpc_post_fn of the libcurl transport; `ctx` is an amm_rpc_curl_t. */
 int amm_rpc_curl_post(void *ctx, const char *url, const uint8_t *body,
                       size_t body_len, uint8_t *resp, size_t resp_cap,
-                      size_t *resp_len, uint64_t deadline_ms);
+                      size_t *resp_len, uint64_t deadline_ms,
+                      int drop_pool, amm_rpc_xfer_t *xf);
+/** Counters since construction: POSTs whose perform was started, connections
+ *  made, failed transfers, handle re-creations (both causes). Any pointer may
+ *  be NULL. */
+void amm_rpc_curl_counts(amm_rpc_curl_t *c, uint64_t *performs, uint64_t *new_conns,
+                         uint64_t *failures, uint64_t *drops);
 
 #endif /* AMM_ETH_RPC_H */

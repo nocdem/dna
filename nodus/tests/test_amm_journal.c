@@ -1494,6 +1494,7 @@ static void j21_attempts(void) {
           got.last_submit_tip == 0 && !strcmp(got.state, "signed"),
           "it reads back byte for byte");
     amm_attempt_free(&got);
+    amm_attempt_free(&at);                            /* the stored attempt built above */
     CHECK(mkenv(&at, s.seq, destu, 1000, 100, 2) && amm_journal_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
           "a second attempt while the first is signed: refused (replacement only after expiry)");
     amm_attempt_free(&at);
@@ -2016,6 +2017,7 @@ static void j24_eth_attempts(void) {
     CHECK(amm_journal_eth_attempt_by_hash(g_j, at.hash, &got) == 0 && got.swap_seq == s.seq && got.nonce == 5 &&
           !memcmp(got.raw, at.raw, at.raw_len), "the attempt survives a reopen, found by hash");
     amm_eattempt_free(&got);
+    amm_eattempt_free(&at);                           /* the attempt built at the write-ahead record above */
     CHECK(amm_journal_eth_next_nonce(g_j, 1, &nx) == 0 && nx == 6, "nonce uniqueness state survives a reopen");
 
     /* one attempt per swap; UNIQUE on the hash and on (chain, nonce) */
@@ -2305,7 +2307,7 @@ static void j25_quote_accept(void) {
      * paid and the booked swap above are never listed. */
     int64_t seqs[5];
     for (int i = 0; i < 5; i++) {
-        char inc[16];
+        char inc[32];                                 /* "nodus:p" + the worst case of %d */
         snprintf(inc, sizeof(inc), "nodus:p%d", i);
         amm_approve_t pa = mk_n2u((char)('1' + i), 3, 3, inc);
         amm_swap_t ps;
@@ -2440,7 +2442,7 @@ static void j27_revision12(void) {
     }
     CHECK(ok, "seven approvals (the book is empty: approvals hold nothing)");
     int took[7] = {0};
-    char key[16];
+    char key[32];                                     /* "nodus:r" + the worst case of %d */
     for (int i = 0; i < 7; i++) {
         snprintf(key, sizeof(key), "nodus:r%d", i);
         CHECK(amm_journal_swap_seen(g_j, sw[i].seq, key, NULL, 500000000ULL, 0, &took[i]) == 0, "recorded as seen");

@@ -3,6 +3,10 @@
  * @brief nodus-amm Ethereum observation: USDT payments to the Foundation
  *        address, seen through several providers with a quorum, kept in the
  *        journal with their block hashes, followed through reorganisations.
+ *        Every read of one question ("ask every usable provider for X") is
+ *        issued to all usable providers at once (amm_eth_fanout.h, one thread
+ *        per provider) and the answers are examined after all have returned, in
+ *        provider index order: the quorum rules below are unchanged.
  *
  * Governing text: docs/plans/2026-11-08-swap-bot-plan.nodus1.md (revision 4)
  * section 9 (all of it), section 7 (what counts, matching, "Only direct

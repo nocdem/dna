@@ -30,6 +30,18 @@ only when libcurl is found (`nodus/CMakeLists.txt:4046-4050`). The program talks
 to: its own local Nodus node (pinned identity), the configured Ethereum
 JSON-RPC providers and the ETH price sources over HTTPS (libcurl).
 
+Each Ethereum provider has one kept connection: one libcurl handle per provider,
+used by one request at a time, with at most one cached connection
+(`CURLOPT_MAXCONNECTS` 1; `amm_rpc_curl_new` / `amm_rpc_curl_post` in
+`tools/amm/amm_eth_rpc.c`). An answer of a provider counts only when the chain id
+was checked on the same connection that carried it (CHAIN ID in
+`tools/amm/amm_eth_rpc.h`): a new connection is checked once with `eth_chainId`,
+and an answer from a connection that was not kept, or whose check ran on another
+connection, does not count. After a transfer that fails (`curl_easy_perform` does
+not return `CURLE_OK`, for example a timeout or a transport error) the provider's
+handle is re-created, so its next request opens a new connection, and that
+connection is checked again.
+
 Two keys, both the operator's to place; **the bot creates no key**:
 
 - the Ethereum key: a file of exactly 64 hex digits, mode with no group or other
@@ -74,6 +86,18 @@ at `amm_http.c:696`). Any other path is 404, a wrong method is 405.
    stored before it is sent and resubmitted as the SAME bytes after a restart.
 5. In-flight USDT is limited to `inflight_max_usdt` (500 USDT); a payment that
    arrives at a full limit waits in line (givens item 94).
+
+**Ethereum provider reads run at the same time** (`tools/amm/amm_eth_fanout.h`).
+When the Ethereum watcher or the payer asks the usable providers one question
+(qualify, the tip, a block, a transaction record, the logs, a receipt, a balance,
+a gas estimate), it asks all of them at once, one short-lived thread per
+provider, and examines the answers in provider order only after every call has
+returned. The quorum rules that combine the answers are unchanged. A group
+therefore waits for every one of its calls; each request keeps its own transfer
+timeout, and no upper bound on the time of the whole group is set. If a thread
+cannot be started, that provider's call runs on the calling thread before the
+join, and the line `AMM_FANOUT: k of n provider calls ran on the calling thread`
+is written.
 
 **Liquidity add and withdraw** (`amm_engine.h`, "LIQUIDITY ADD" and "LIQUIDITY
 WITHDRAW"): others add and withdraw without stake. An add carries at least
@@ -160,7 +184,7 @@ is at most UINT64_MAX/4. Units: USDT raw = 10^-6, NODUS raw = 10^-8.
 | `journal_path`, `lock_path` | yes | — | path, < 256 bytes | plan section 17 |
 | `eth_key_path`, `nodus_key_dir` | yes | — | path, < 256 bytes | plan section 15 |
 | `foundation_eth` / `foundation_nodus` | yes | — | 40 / 128 lowercase hex | plan section 15 |
-| `eth_providers` | yes | — | 1..16 https URLs, comma separated, no duplicate | plan sections 9, 15 |
+| `eth_providers` | yes | — | 1..16 https URLs, comma separated, no duplicate | plan sections 9, 15; each provider gets one kept connection (section 1). Its log lines name it `provider-N`, never by its URL: "a new connection was made for this request", "post: transfer failed: … (new connections for this request: n; …); the handle re-created after the failure", and "every connection dropped, the handle re-created" (after a wrong chain id) |
 | `eth_quorum` | yes | — | 1..number of providers | givens item 58 |
 | `eth_reorg_window_blocks` | yes | — | >= `eth_conf_count_3` | plan sections 9, 15 |
 | `payout_final_depth_eth` | yes | — | >= 1 | plan section 10 |
@@ -174,7 +198,7 @@ is at most UINT64_MAX/4. Units: USDT raw = 10^-6, NODUS raw = 10^-8.
 | `nodus_expiry_ahead` | yes | — | 1..100 | — |
 | `eip712_name`, `expected_origin` | yes | — | printable ASCII, 1..127 | givens item 71 |
 | `held_keeps_room` | yes | — | 0 or 1 | plan (no default) |
-| `eth_chain_id` | no | 1 | >= 1 | givens item 77 |
+| `eth_chain_id` | no | 1 | >= 1 | givens item 77; checked on every provider connection that carries a counted answer (section 1). Lines: "chain id N checked on this connection: the answer counts", or "the answer does not count: …" with the reason (its connection was not kept, the chain id could not be read on this connection, the connection reports another chain id, the check needed another new connection, the check ran on another connection) |
 | `usdt_contract` | no | mainnet USDT `dac17f95…1ec7` | 40 lowercase hex | plan section 5 |
 | `eth_conf_bound_1_usdt` / `_2_usdt` | no | 100000000 / 1000000000 | >= 1, bound 1 below bound 2 | givens item 60 |
 | `eth_conf_count_1` / `_2` / `_3` | no | 3 / 5 / 33 | 1..100, not decreasing | givens item 60 |
@@ -191,7 +215,7 @@ is at most UINT64_MAX/4. Units: USDT raw = 10^-6, NODUS raw = 10^-8.
 | `round_rows_max` | no | 1000 | >= 1 | this build's proposal |
 | `commission` | no | 0 | 0 only | givens item 73 |
 | `eth_max_response` | no | 4194304 | 1024..16777216 (the provider client's limits) | givens item 26; the bound of one Ethereum provider answer, measured block answers up to 35,955 bytes; a proposal of this build |
-| `log_dir` | no | empty (no log file) | absolute path (starts with `/`), at most 200 bytes | operator 2026-11-11 "log DOSYASI!"; the bot also writes timestamped lines (`2026-11-11T18:12:40.123Z [WRN] AMM_RPC: text`, UTC) to `<log_dir>/nodus-amm.log`, rotated at 10 MiB to `nodus-amm.log.1` ... `.14` (oldest dropped; the sink is `nodus_log_file_open` in `src/nodus_log_shim.c`, opt-in, the stderr/journal lines stay); a file that cannot be opened refuses the start. The unit's `LogsDirectory=nodus-amm` gives `/var/log/nodus-amm` |
+| `log_dir` | no | empty (no log file) | absolute path (starts with `/`), at most 200 bytes | operator 2026-11-11 "log DOSYASI!"; the bot also writes timestamped lines (`2026-11-11T18:12:40.123Z [WRN] AMM_RPC: text`, UTC) to `<log_dir>/nodus-amm.log`, rotated at 10 MiB to `nodus-amm.log.1` ... `.14` (oldest dropped; the sink is `nodus_log_file_open` in `src/nodus_log_shim.c`, opt-in, the stderr/journal lines stay; each stderr/journal line is written whole, also when several provider threads log at once, because `qgp_log_ring_add` holds the stderr stream lock for the whole line); a file that cannot be opened refuses the start. The unit's `LogsDirectory=nodus-amm` gives `/var/log/nodus-amm` |
 | `eth_price_sources` | no | all four | names from kraken, binance, bitfinex, coinbase, each once | plan section 10 |
 | `eth_price_min_sources` | no | 3 | 1..4, <= number listed | givens item 74 |
 | `eth_price_max_age_seconds` | no | 180 | >= 1 | givens item 74 |

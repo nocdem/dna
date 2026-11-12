@@ -6,6 +6,8 @@
 #include "amm_eth_rpc.h"
 
 #include <curl/curl.h>
+#include <pthread.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -293,10 +295,17 @@ struct amm_eth_rpc {
     amm_rpc_post_fn post;
     void           *post_ctx;
     size_t          max_response;
+    /* the chain id rule (amm_eth_rpc.h CHAIN ID): all read and written only
+     * under `mu`, inside rpc_call */
+    uint64_t        chain_id;        /* the eth_chain_id setting                       */
+    pthread_mutex_t mu;              /* one call and its check are one unit on the handle */
+    int64_t         verified_sock;   /* descriptor of the connection that last reported
+                                      * the setting, AMM_RPC_SOCK_NONE if none          */
+    int             drop_next;       /* 1: the next POST re-creates the handle          */
 };
 
 amm_eth_rpc_t *amm_eth_rpc_new(const amm_eth_rpc_cfg_t *cfg) {
-    if (!cfg || !cfg->url || !cfg->post ||
+    if (!cfg || !cfg->url || !cfg->post || cfg->chain_id == 0 ||
         cfg->max_response < AMM_RPC_RESP_MIN || cfg->max_response > AMM_RPC_RESP_CEIL)
         return NULL;
     size_t ul = strlen(cfg->url);
@@ -312,10 +321,18 @@ amm_eth_rpc_t *amm_eth_rpc_new(const amm_eth_rpc_cfg_t *cfg) {
     r->post = cfg->post;
     r->post_ctx = cfg->post_ctx;
     r->max_response = cfg->max_response;
+    r->chain_id = cfg->chain_id;
+    r->verified_sock = AMM_RPC_SOCK_NONE;
+    r->drop_next = 0;
+    if (pthread_mutex_init(&r->mu, NULL) != 0) { free(r); return NULL; }
     return r;
 }
 
-void amm_eth_rpc_free(amm_eth_rpc_t *r) { free(r); }
+void amm_eth_rpc_free(amm_eth_rpc_t *r) {
+    if (!r) return;
+    pthread_mutex_destroy(&r->mu);
+    free(r);
+}
 
 typedef struct {
     uint8_t *resp;
@@ -421,9 +438,11 @@ static uint64_t mono_ms(void);
 /* A provider call that takes this long is written to the log. */
 #define RPC_SLOW_MS 3000
 
-static int rpc_call(amm_eth_rpc_t *r, const char *method, const char *params,
-                    uint64_t deadline_ms, doc_t *d) {
+static int rpc_once(amm_eth_rpc_t *r, const char *method, const char *params,
+                    uint64_t deadline_ms, doc_t *d, amm_rpc_xfer_t *xf) {
     memset(d, 0, sizeof(*d));
+    xf->new_conns = 0;
+    xf->sock = AMM_RPC_SOCK_NONE;
     size_t bl = strlen(method) + strlen(params) + 64;
     char *body = malloc(bl);
     if (!body) return -1;
@@ -434,10 +453,21 @@ static int rpc_call(amm_eth_rpc_t *r, const char *method, const char *params,
     if (!d->resp) { free(body); return -1; }
     size_t rl = 0;
     uint64_t t0 = mono_ms();
+    int drop = r->drop_next;
+    r->drop_next = 0;
     int pr = r->post(r->post_ctx, r->url, (const uint8_t *)body, (size_t)n,
-                     d->resp, r->max_response, &rl, deadline_ms);
+                     d->resp, r->max_response, &rl, deadline_ms, drop, xf);
     uint64_t took = mono_ms() - t0;
     free(body);
+    /* The keep rule, after EVERY post whatever its result: the verification
+     * stays only if this transfer made no connection and left the verified
+     * connection in the cache. A new connection can receive the number of a
+     * closed verified one, and its transfer can still fail at the bot's level
+     * (HTTP status, not JSON, an id that does not parse): without this reset
+     * the next call over that never-checked connection would pass. */
+    if (!(xf->new_conns == 0 && xf->sock != AMM_RPC_SOCK_NONE &&
+          xf->sock == r->verified_sock))
+        r->verified_sock = AMM_RPC_SOCK_NONE;
     if (took >= RPC_SLOW_MS)
         QGP_LOG_WARN(LOG_TAG, "%s: %s: the answer took %llu ms", r->name, method,
                      (unsigned long long)took);
@@ -495,6 +525,100 @@ static int rpc_call(amm_eth_rpc_t *r, const char *method, const char *params,
                  (unsigned long long)took);
     d->result = res;
     return 0;
+}
+
+/* The chain id rule (amm_eth_rpc.h CHAIN ID; plan 6.1 item 7 (f)). Holds the
+ * RPC object's mutex for the whole call, so the call, its check and the field
+ * updates are one unit on the provider's handle. `n` and `s` below are the
+ * request's xt.new_conns and xt.sock. */
+static void chain_warn(const amm_eth_rpc_t *r, const char *method, const char *why) {
+    QGP_LOG_WARN(LOG_TAG, "%s: %s: the answer does not count: %s", r->name, method, why);
+}
+
+static int rpc_call_locked(amm_eth_rpc_t *r, const char *method, const char *params,
+                           uint64_t deadline_ms, doc_t *d) {
+    doc_t t;
+    amm_rpc_xfer_t xt;
+    int rc = rpc_once(r, method, params, deadline_ms, &t, &xt);
+    if (strcmp(method, "eth_chainId") == 0) {
+        /* a chain-id request checks the connection it arrived on itself */
+        uint64_t id;
+        if (rc == 0 && q_u64(&t.nodes[t.result], &id) == 0) {
+            if (id == r->chain_id) {
+                r->verified_sock = xt.sock;            /* NONE when not kept */
+            } else {
+                r->verified_sock = AMM_RPC_SOCK_NONE;
+                r->drop_next = 1;
+            }
+        }
+        if (rc == 0) *d = t;
+        return rc;
+    }
+    if (rc != 0) return -1;                            /* nothing to count; t is freed */
+    if (r->verified_sock != AMM_RPC_SOCK_NONE) {       /* ran over the verified connection */
+        *d = t;
+        return 0;
+    }
+    if (xt.sock == AMM_RPC_SOCK_NONE) {                /* not kept: nothing can verify it */
+        chain_warn(r, method, "its connection was not kept");
+        doc_free(&t);
+        return -1;
+    }
+    if (deadline_ms != 0 && mono_ms() >= deadline_ms) {
+        chain_warn(r, method, "the deadline passed before the chain-id check");
+        doc_free(&t);
+        return -1;
+    }
+    /* hold T's answer; one check on the same handle, never a loop */
+    doc_t p;
+    amm_rpc_xfer_t xp;
+    int pc = rpc_once(r, "eth_chainId", "[]", deadline_ms, &p, &xp);
+    int have = 0;
+    uint64_t pid = 0;
+    if (pc == 0) {
+        have = q_u64(&p.nodes[p.result], &pid) == 0;
+        doc_free(&p);
+    }
+    if (have) {
+        if (pid == r->chain_id) {
+            r->verified_sock = xp.sock;                /* the connection the check ran on */
+        } else {
+            r->verified_sock = AMM_RPC_SOCK_NONE;
+            r->drop_next = 1;
+        }
+    }
+    int ok = 0;
+    if (!have) {
+        chain_warn(r, method, "the chain id could not be read on this connection");
+    } else if (pid != r->chain_id) {
+        char w[96];
+        snprintf(w, sizeof(w), "the connection reports chain id %llu, the setting is %llu",
+                 (unsigned long long)pid, (unsigned long long)r->chain_id);
+        chain_warn(r, method, w);
+    } else if (xp.new_conns != 0) {
+        chain_warn(r, method, "the chain-id check needed another new connection");
+    } else if (xp.sock != xt.sock) {
+        chain_warn(r, method, "the chain-id check ran on another connection");
+    } else {
+        ok = 1;
+    }
+    if (!ok) {
+        doc_free(&t);
+        return -1;
+    }
+    QGP_LOG_INFO(LOG_TAG, "%s: %s: chain id %llu checked on this connection: the answer counts",
+                 r->name, method, (unsigned long long)pid);
+    *d = t;
+    return 0;
+}
+
+static int rpc_call(amm_eth_rpc_t *r, const char *method, const char *params,
+                    uint64_t deadline_ms, doc_t *d) {
+    memset(d, 0, sizeof(*d));
+    pthread_mutex_lock(&r->mu);
+    int rc = rpc_call_locked(r, method, params, deadline_ms, d);
+    pthread_mutex_unlock(&r->mu);
+    return rc;
 }
 
 /* ═══ the calls ═══════════════════════════════════════════════════════ */
@@ -1016,8 +1140,17 @@ void amm_eth_rpc_provider(amm_eth_rpc_t *r, amm_eth_provider_t *out) {
 
 /* ═══ the libcurl transport ═══════════════════════════════════════════ */
 
+/* One transport per provider: ONE easy handle for its whole life (so libcurl
+ * re-uses the provider's open connection), re-created only when a POST asks
+ * for it (drop_pool) and after every failed transfer; one header list, one
+ * mutex that serialises the POSTs (libcurl-thread(3)), and counters. */
 struct amm_rpc_curl {
-    uint32_t cap_ms;
+    uint32_t           cap_ms;
+    char               label[AMM_RPC_NAME_MAX];   /* the provider's log name, never the URL */
+    CURL              *h;                         /* NULL only after a re-creation whose init failed */
+    struct curl_slist *hdr;
+    pthread_mutex_t    mu;
+    uint64_t           performs, new_conns, failures, drops;
 };
 
 static uint64_t mono_ms(void) {
@@ -1030,14 +1163,69 @@ int amm_rpc_curl_global_init(void) {
     return curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK ? 0 : -1;
 }
 
-amm_rpc_curl_t *amm_rpc_curl_new(uint32_t timeout_cap_ms) {
-    if (timeout_cap_ms == 0) return NULL;
+/* (Re)create the easy handle; CURLOPT_MAXCONNECTS = 1 is a bound on the
+ * connections (so the descriptors) one provider's handle keeps. mu held (or
+ * the object not yet shared). 0 / -1, c->h NULL on -1. */
+static int curl_handle_make(amm_rpc_curl_t *c) {
+    c->h = curl_easy_init();
+    if (!c->h) return -1;
+    if (curl_easy_setopt(c->h, CURLOPT_MAXCONNECTS, 1L) != CURLE_OK) {
+        curl_easy_cleanup(c->h);
+        c->h = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+/* Close every connection of the old handle (curl_easy_cleanup) and make a new
+ * one; counted in `drops`. mu held. 0 / -1. */
+static int curl_handle_recreate(amm_rpc_curl_t *c) {
+    if (c->h) curl_easy_cleanup(c->h);
+    c->h = NULL;
+    c->drops++;
+    return curl_handle_make(c);
+}
+
+amm_rpc_curl_t *amm_rpc_curl_new(uint32_t timeout_cap_ms, const char *label) {
+    if (timeout_cap_ms == 0 || !label || !*label || strlen(label) >= AMM_RPC_NAME_MAX)
+        return NULL;
     amm_rpc_curl_t *c = calloc(1, sizeof(*c));
-    if (c) c->cap_ms = timeout_cap_ms;
+    if (!c) return NULL;
+    c->cap_ms = timeout_cap_ms;
+    snprintf(c->label, sizeof(c->label), "%s", label);
+    c->hdr = curl_slist_append(NULL, "Content-Type: application/json");
+    if (!c->hdr || pthread_mutex_init(&c->mu, NULL) != 0) {
+        if (c->hdr) curl_slist_free_all(c->hdr);
+        free(c);
+        return NULL;
+    }
+    if (curl_handle_make(c) != 0) {
+        pthread_mutex_destroy(&c->mu);
+        curl_slist_free_all(c->hdr);
+        free(c);
+        return NULL;
+    }
     return c;
 }
 
-void amm_rpc_curl_free(amm_rpc_curl_t *c) { free(c); }
+void amm_rpc_curl_free(amm_rpc_curl_t *c) {
+    if (!c) return;
+    if (c->h) curl_easy_cleanup(c->h);
+    curl_slist_free_all(c->hdr);
+    pthread_mutex_destroy(&c->mu);
+    free(c);
+}
+
+void amm_rpc_curl_counts(amm_rpc_curl_t *c, uint64_t *performs, uint64_t *new_conns,
+                         uint64_t *failures, uint64_t *drops) {
+    if (!c) return;
+    pthread_mutex_lock(&c->mu);
+    if (performs) *performs = c->performs;
+    if (new_conns) *new_conns = c->new_conns;
+    if (failures) *failures = c->failures;
+    if (drops) *drops = c->drops;
+    pthread_mutex_unlock(&c->mu);
+}
 
 typedef struct {
     uint8_t *buf;
@@ -1057,30 +1245,72 @@ static size_t wr_cb(char *p, size_t sz, size_t nm, void *u) {
     return n;
 }
 
+/* The log lines of one post, composed under the transport's mutex and written
+ * after it is released (no log call under mu). All carry the label; the URL
+ * never. */
+#define POST_LINES 4
+typedef struct {
+    int  n;
+    int  warn[POST_LINES];
+    char txt[POST_LINES][400];
+} post_lines_t;
+
+static void pl_add(post_lines_t *l, int warn, const char *fmt, ...)
+    __attribute__((format(printf, 3, 4)));
+static void pl_add(post_lines_t *l, int warn, const char *fmt, ...) {
+    if (l->n >= POST_LINES) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(l->txt[l->n], sizeof(l->txt[l->n]), fmt, ap);
+    va_end(ap);
+    l->warn[l->n++] = warn;
+}
+
 int amm_rpc_curl_post(void *ctx, const char *url, const uint8_t *body, size_t body_len,
                       uint8_t *resp, size_t resp_cap, size_t *resp_len,
-                      uint64_t deadline_ms) {
+                      uint64_t deadline_ms, int drop_pool, amm_rpc_xfer_t *xf) {
     amm_rpc_curl_t *c = ctx;
-    if (!c || !url || !body || !resp || !resp_len || strncmp(url, "https://", 8) != 0)
+    if (!c || !url || !body || !resp || !resp_len || !xf || strncmp(url, "https://", 8) != 0)
         return AMM_ETH_ERR;
+    xf->new_conns = 0;
+    xf->sock = AMM_RPC_SOCK_NONE;
+    post_lines_t pl;
+    pl.n = 0;
+    int result = AMM_ETH_ERR;
+    wr_t w = { resp, resp_cap, 0 };
+
+    pthread_mutex_lock(&c->mu);
+    /* a re-creation asked for is done whenever it is asked, also when the
+     * deadline has already passed, so no wrong-chain connection survives a
+     * post that is refused for its deadline */
+    if (drop_pool) {
+        if (curl_handle_recreate(c) == 0)
+            pl_add(&pl, 0, "%s: every connection dropped, the handle re-created (%llu since start)",
+                   c->label, (unsigned long long)c->drops);
+        else
+            pl_add(&pl, 1, "%s: post: the handle could not be created", c->label);
+    }
+    if (!c->h && curl_handle_make(c) != 0) {
+        pl_add(&pl, 1, "%s: post: the handle could not be created", c->label);
+        goto out;
+    }
     uint64_t tmo = c->cap_ms;
     if (deadline_ms != 0) {
         uint64_t now = mono_ms();
-        if (now >= deadline_ms) return AMM_ETH_ERR;
+        if (now >= deadline_ms) goto out;
         if (deadline_ms - now < tmo) tmo = deadline_ms - now;
     }
-    CURL *h = curl_easy_init();
-    if (!h) return AMM_ETH_ERR;
-    wr_t w = { resp, resp_cap, 0 };
-    struct curl_slist *hdr = curl_slist_append(NULL, "Content-Type: application/json");
-    int ok = hdr != NULL;
-    if (ok) {
+    {
+        /* every option today's transport sets, on every call: options are
+         * sticky, so a call never inherits the previous call's body, buffer
+         * or timeout. CURLOPT_FRESH_CONNECT is never set. */
+        CURL *h = c->h;
         CURLcode rc = CURLE_OK;
         rc |= curl_easy_setopt(h, CURLOPT_URL, url);
         rc |= curl_easy_setopt(h, CURLOPT_POST, 1L);
         rc |= curl_easy_setopt(h, CURLOPT_POSTFIELDS, (const char *)body);
         rc |= curl_easy_setopt(h, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
-        rc |= curl_easy_setopt(h, CURLOPT_HTTPHEADER, hdr);
+        rc |= curl_easy_setopt(h, CURLOPT_HTTPHEADER, c->hdr);
         rc |= curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, wr_cb);
         rc |= curl_easy_setopt(h, CURLOPT_WRITEDATA, &w);
         /* TLS: peer and host verification ON, stated, never left to a default */
@@ -1093,24 +1323,65 @@ int amm_rpc_curl_post(void *ctx, const char *url, const uint8_t *body, size_t bo
         rc |= curl_easy_setopt(h, CURLOPT_NOSIGNAL, 1L);
         rc |= curl_easy_setopt(h, CURLOPT_TIMEOUT_MS, (long)tmo);
         rc |= curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT_MS, (long)tmo);
-        ok = (rc == CURLE_OK);
-    }
-    long code = 0;
-    if (ok) {
+        if (rc != CURLE_OK) goto out;                 /* no perform started: nothing re-created */
+
+        c->performs++;
+        uint64_t t0 = mono_ms();
         CURLcode pr = curl_easy_perform(h);
-        ok = pr == CURLE_OK &&
-             curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &code) == CURLE_OK &&
-             code == 200;
-        /* the cause, without the address (it may carry a key); the caller
-         * writes the provider's name on the next line */
-        if (pr != CURLE_OK)
-            QGP_LOG_WARN(LOG_TAG, "post: transfer failed: %s", curl_easy_strerror(pr));
-        else if (!ok)
-            QGP_LOG_WARN(LOG_TAG, "post: HTTP status %ld", code);
+        uint64_t took = mono_ms() - t0;
+        long code = 0;
+        int have_code = curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &code) == CURLE_OK;
+        /* read on the handle that made the transfer, before any re-creation */
+        long nc = 0;
+        if (curl_easy_getinfo(h, CURLINFO_NUM_CONNECTS, &nc) != CURLE_OK) nc = 1;   /* unknown: new */
+        xf->new_conns = nc;
+        c->new_conns += (uint64_t)nc;
+        curl_off_t t_dns = 0, t_conn = 0, t_tls = 0, t_first = 0, t_tot = 0;
+        (void)curl_easy_getinfo(h, CURLINFO_NAMELOOKUP_TIME_T, &t_dns);
+        (void)curl_easy_getinfo(h, CURLINFO_CONNECT_TIME_T, &t_conn);
+        (void)curl_easy_getinfo(h, CURLINFO_APPCONNECT_TIME_T, &t_tls);
+        (void)curl_easy_getinfo(h, CURLINFO_STARTTRANSFER_TIME_T, &t_first);
+        (void)curl_easy_getinfo(h, CURLINFO_TOTAL_TIME_T, &t_tot);
+        char ph[160];
+        snprintf(ph, sizeof(ph), "name lookup / connect / TLS / first byte / total %lld / %lld / %lld / %lld / %lld ms",
+                 (long long)(t_dns / 1000), (long long)(t_conn / 1000), (long long)(t_tls / 1000),
+                 (long long)(t_first / 1000), (long long)(t_tot / 1000));
+        if (pr != CURLE_OK) {
+            /* the cause, without the address (it may carry a key). The handle is
+             * re-created at once: over HTTP/2 libcurl keeps a timed-out
+             * connection, so the provider's next call would run on it again;
+             * today's sequence closes it when the failed call returns. */
+            c->failures++;
+            int rec = curl_handle_recreate(c);
+            if (rec == 0)
+                pl_add(&pl, 1, "%s: post: transfer failed: %s (new connections for this request: %ld; %s); "
+                       "the handle re-created after the failure (%llu re-creations since start)",
+                       c->label, curl_easy_strerror(pr), nc, ph, (unsigned long long)c->drops);
+            else
+                pl_add(&pl, 1, "%s: post: transfer failed: %s (new connections for this request: %ld; %s); "
+                       "the handle could not be re-created", c->label, curl_easy_strerror(pr), nc, ph);
+            goto out;                                  /* xf->sock stays NONE: nothing cached */
+        }
+        curl_socket_t as = CURL_SOCKET_BAD;
+        if (curl_easy_getinfo(h, CURLINFO_ACTIVESOCKET, &as) == CURLE_OK && as != CURL_SOCKET_BAD)
+            xf->sock = (int64_t)as;                    /* else NONE: an unknown connection is never a verified one */
+        if (took >= RPC_SLOW_MS)
+            pl_add(&pl, 1, "%s: post: took %llu ms (%s)", c->label, (unsigned long long)took, ph);
+        if (!have_code || code != 200) {
+            pl_add(&pl, 1, "%s: post: HTTP status %ld", c->label, have_code ? code : 0L);
+            goto out;
+        }
+        if (nc >= 1)
+            pl_add(&pl, 0, "%s: a new connection was made for this request (%llu since start)",
+                   c->label, (unsigned long long)c->new_conns);
+        *resp_len = w.len;
+        result = AMM_ETH_OK;
     }
-    curl_slist_free_all(hdr);
-    curl_easy_cleanup(h);
-    if (!ok) return AMM_ETH_ERR;
-    *resp_len = w.len;
-    return AMM_ETH_OK;
+out:
+    pthread_mutex_unlock(&c->mu);
+    for (int i = 0; i < pl.n; i++) {
+        if (pl.warn[i]) QGP_LOG_WARN(LOG_TAG, "%s", pl.txt[i]);
+        else QGP_LOG_INFO(LOG_TAG, "%s", pl.txt[i]);
+    }
+    return result;
 }

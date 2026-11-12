@@ -140,6 +140,8 @@
  *   and ignored by the stub).
  */
 #include <dirent.h>
+#include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -147,6 +149,8 @@
 #include <unistd.h>
 
 #include "amm_eth_watch.h"
+#include "amm_test_gate.h"
+#include "nodus_log_shim.h"
 
 static int g_failures = 0;
 static int g_checks = 0;
@@ -183,6 +187,20 @@ typedef struct {
     int has_also;               /* the provider also holds the block of height also_blk with  */
     uint64_t also_blk;          /* the hash made of 32 bytes of also_byte (W31, W32)           */
     uint8_t also_byte;
+    /* W33-W35 (plan 7.1.2): the stub's own index (the gate's provider index), an
+     * optional gate per method, calls per method, and the optional hold: this
+     * stub's hold_method calls wait until hold_ctr reaches hold_need per call
+     * (the other providers' "unit done" counter, bumped by their unit_method
+     * calls); hold_returned counts held calls that have returned. The gate and
+     * counter objects are the test's; this struct only points at them. */
+    int idx;
+    amm_gate_t *gate[6];
+    int mcalls[6];
+    int hold_method, hold_need, hold_k;
+    amm_ctr_t *hold_ctr;
+    int unit_method;
+    amm_ctr_t *unit_ctr;
+    atomic_int hold_returned;
 } sp_t;
 
 static const uint8_t USDT_B = 0xAA, FOUND_B = 0xF0, OTHER_TOKEN_B = 0xBB,
@@ -246,17 +264,17 @@ static void ch_pay(chain_t *c, uint8_t txb, uint32_t li, int blk, uint8_t from,
     ch_pay_full(c, txb, li, blk, from, from, USDT_B, FOUND_B, value, 1, TOPIC0);
 }
 
-static int sp_chain_id(void *ctx, uint64_t *out, uint64_t d) {
+static int sp_chain_id_impl(void *ctx, uint64_t *out, uint64_t d) {
     (void)d; sp_t *s = ctx; s->calls++;
     if (s->fail_all) return AMM_ETH_ERR;
     *out = s->chain_id; return AMM_ETH_OK;
 }
-static int sp_block_number(void *ctx, uint64_t *out, uint64_t d) {
+static int sp_block_number_impl(void *ctx, uint64_t *out, uint64_t d) {
     (void)d; sp_t *s = ctx; s->calls++;
     if (s->fail_all) return AMM_ETH_ERR;
     *out = s->tip_override ? s->tip_override : s->ch->tip; return AMM_ETH_OK;
 }
-static int sp_get_block(void *ctx, uint64_t n, amm_eth_block_t *o, uint64_t d) {
+static int sp_get_block_impl(void *ctx, uint64_t n, amm_eth_block_t *o, uint64_t d) {
     (void)d; sp_t *s = ctx; s->calls++;
     if (s->fail_all || s->fail_blocks) return AMM_ETH_ERR;
     if (n >= NB || n > s->ch->tip || !s->ch->b[n].exists) return AMM_ETH_NOT_FOUND;
@@ -268,9 +286,9 @@ static int sp_get_block(void *ctx, uint64_t n, amm_eth_block_t *o, uint64_t d) {
  * provider answers about the block of that hash if it holds it, else it is an
  * error (an unknown block). It holds the block when its own chain has that hash
  * at the height, or when the fixture says it also holds it (also_hash). */
-static int sp_get_logs(void *ctx, uint64_t blk, const uint8_t *bhash, const uint8_t *contract,
-                       const uint8_t *topic0, const uint8_t *to,
-                       amm_eth_log_t *out, int cap, int *n, uint64_t d) {
+static int sp_get_logs_impl(void *ctx, uint64_t blk, const uint8_t *bhash, const uint8_t *contract,
+                            const uint8_t *topic0, const uint8_t *to,
+                            amm_eth_log_t *out, int cap, int *n, uint64_t d) {
     (void)d; (void)contract; (void)topic0; (void)to; sp_t *s = ctx; s->calls++;
     if (blk < 64) s->asked[blk]++;
     if (s->fail_all || s->fail_logs) return AMM_ETH_ERR;
@@ -294,7 +312,7 @@ static stx_t *find_tx(chain_t *c, const uint8_t *h) {
         if (c->t[i].used && !memcmp(c->t[i].hash, h, 32)) return &c->t[i];
     return NULL;
 }
-static int sp_get_tx(void *ctx, const uint8_t *h, amm_eth_tx_t *o, uint64_t d) {
+static int sp_get_tx_impl(void *ctx, const uint8_t *h, amm_eth_tx_t *o, uint64_t d) {
     (void)d; sp_t *s = ctx; s->calls++;
     if (s->fail_all || s->fail_tx) return AMM_ETH_ERR;
     stx_t *t = find_tx(s->ch, h);
@@ -303,13 +321,66 @@ static int sp_get_tx(void *ctx, const uint8_t *h, amm_eth_tx_t *o, uint64_t d) {
     o->input_len = t->input_len; memcpy(o->input_head, t->head, 4);
     return AMM_ETH_OK;
 }
-static int sp_get_receipt(void *ctx, const uint8_t *h, amm_eth_receipt_t *o, uint64_t d) {
+static int sp_get_receipt_impl(void *ctx, const uint8_t *h, amm_eth_receipt_t *o, uint64_t d) {
     (void)d; sp_t *s = ctx; s->calls++;
     if (s->fail_all || s->fail_receipts) return AMM_ETH_ERR;
     stx_t *t = find_tx(s->ch, h);
     if (!t) return AMM_ETH_NOT_FOUND;
     o->status = t->status; o->block_number = t->bn; memcpy(o->block_hash, t->bh, 32);
     return AMM_ETH_OK;
+}
+
+/* The seam functions the providers expose: each runs the plain stub body
+ * above between the optional gate (tests/amm_test_gate.h), the optional hold
+ * (W34, W34b) and the per-method call counter. All of this is per stub and is
+ * touched only by the thread that calls the stub (one provider's calls are
+ * sequential), plus the test thread between steps. With no gate and no hold the
+ * wrappers do nothing but count: no existing assertion changes. */
+enum { GM_CHAIN, GM_TIP, GM_BLOCK, GM_LOGS, GM_TX, GM_RECEIPT, GM_N };
+static const char *const GM_NAME[GM_N] = { "chain_id", "block_number", "get_block", "get_logs", "get_tx", "get_receipt" };
+
+/* wait (bounded) until the counter says the other providers' units are done */
+static void sp_hold(sp_t *s, int gm) {
+    if (s->hold_method != gm || !s->hold_ctr) return;
+    s->hold_k++;
+    (void)amm_ctr_wait_ge(s->hold_ctr, s->hold_need * s->hold_k);
+}
+
+/* after the call: set this provider's "unit done" flag, count a held return */
+static void sp_after(sp_t *s, int gm) {
+    if (s->unit_method == gm && s->unit_ctr) amm_ctr_inc(s->unit_ctr);
+    if (s->hold_method == gm && s->hold_ctr) atomic_fetch_add(&s->hold_returned, 1);
+}
+
+#define SP_WRAP(GM, CALL)                                                    \
+    sp_t *s = ctx;                                                           \
+    int t = amm_gate_enter(s->gate[GM], s->idx);                             \
+    sp_hold(s, GM);                                                          \
+    s->mcalls[GM]++;                                                         \
+    int rc = (CALL);                                                         \
+    sp_after(s, GM);                                                         \
+    amm_gate_leave(s->gate[GM], s->idx, t);                                  \
+    return rc;
+
+static int sp_chain_id(void *ctx, uint64_t *out, uint64_t d) {
+    SP_WRAP(GM_CHAIN, sp_chain_id_impl(ctx, out, d))
+}
+static int sp_block_number(void *ctx, uint64_t *out, uint64_t d) {
+    SP_WRAP(GM_TIP, sp_block_number_impl(ctx, out, d))
+}
+static int sp_get_block(void *ctx, uint64_t n, amm_eth_block_t *o, uint64_t d) {
+    SP_WRAP(GM_BLOCK, sp_get_block_impl(ctx, n, o, d))
+}
+static int sp_get_logs(void *ctx, uint64_t blk, const uint8_t *bhash, const uint8_t *contract,
+                       const uint8_t *topic0, const uint8_t *to,
+                       amm_eth_log_t *out, int cap, int *n, uint64_t d) {
+    SP_WRAP(GM_LOGS, sp_get_logs_impl(ctx, blk, bhash, contract, topic0, to, out, cap, n, d))
+}
+static int sp_get_tx(void *ctx, const uint8_t *h, amm_eth_tx_t *o, uint64_t d) {
+    SP_WRAP(GM_TX, sp_get_tx_impl(ctx, h, o, d))
+}
+static int sp_get_receipt(void *ctx, const uint8_t *h, amm_eth_receipt_t *o, uint64_t d) {
+    SP_WRAP(GM_RECEIPT, sp_get_receipt_impl(ctx, h, o, d))
 }
 
 /* ── the fixture ──────────────────────────────────────────────────────── */
@@ -401,6 +472,7 @@ static void fresh(uint64_t window) {
     for (int i = 0; i < 3; i++) {
         memset(&g_sp[i], 0, sizeof(g_sp[i]));
         g_sp[i].ch = &g_chain; g_sp[i].chain_id = 1;
+        g_sp[i].idx = i; g_sp[i].hold_method = -1; g_sp[i].unit_method = -1;
     }
     memset(&g_chain, 0, sizeof(g_chain));
     static const int id[3] = {0, 1, 2};
@@ -1707,6 +1779,273 @@ static void w32_block_hash_answer(void) {
     }
 }
 
+/* ═══ W33-W35: the providers of a group are asked at the same time (plan
+ *     docs/plans/approved/2026-11-12-bot-round-latency.md 6.2.2, 7.0, 7.1.2) ═══
+ *
+ * PROVES
+ *   W33 arrival order changes nothing. Three scenarios (the shapes of W1: a
+ *       quorum record, a below-quorum candidate that is later resolved and a log
+ *       listed by one provider only; W8: a reorganisation and a moved record;
+ *       W17: the joint depth vote) run once with no gate and once for each method
+ *       with a counting gate in REVERSE mode (tests/amm_test_gate.h: k = 3; the
+ *       three providers' calls of a group are in flight at the same time and
+ *       return in descending provider index). Equal in every pair: the journal's
+ *       record rows (all states), the stored block rows, the cursor, each step's
+ *       result and counters, and the watcher's AMM_WATCH log lines in order
+ *       (read from a log file in the test's own mkdtemp directory, timestamps
+ *       stripped). timed_out == 0 in every gated run (all three providers were in
+ *       flight at once) and the gate saw one generation per group.
+ *       SCOPING (7.0): a method is gated in a scenario only when the ungated run
+ *       shows every provider called it equally often (once per usable provider
+ *       per group); such a pair is otherwise skipped and the test asserts that
+ *       every method was gated in at least one scenario.
+ *   W34 a provider that answers last with an error: provider 2's get_logs waits
+ *       until providers 0 and 1 have returned theirs, then fails; the step's
+ *       results, rows and log lines equal those of the run where provider 2 fails
+ *       at once; provider 2's held calls have all returned when the step returns.
+ *   W34b the unit is the bound: in verify_record, provider 2's get_tx returns at
+ *       once and its get_receipt waits until providers 0 and 1 have finished their
+ *       units; the step returns only after that second request (a serial run
+ *       passes this too; what it rules out is a join that waits for each unit's
+ *       first request only).
+ *   W35 every usable provider is still asked: the per-stub call counts and the
+ *       asked[] sets of W33's gated runs equal those of the ungated runs.
+ * FLAGS: none. ENVIRONMENT: none. LEAVES BEHIND: nothing (mkdtemp directories
+ *   under /tmp, removed).
+ * HOW THEY CAN FALSELY PASS: a pair excluded by the scoping rule is not gated (the
+ *   at-least-one assertion shows a method that no scenario gated); W34/W34b pass
+ *   on a serial implementation by construction; the log-line comparison proves the
+ *   lines are equal for these scenarios, not for every possible one; the gate
+ *   widens the interleavings that occur, it does not enumerate them. */
+static amm_gate_t g_wg;
+static amm_ctr_t  g_wc;
+static int        g_wg_ready;
+
+static void wg_ready(void) {
+    if (g_wg_ready) return;
+    amm_gate_init(&g_wg);
+    amm_ctr_init(&g_wc);
+    g_wg_ready = 1;
+}
+
+static void sig_add(char *sig, size_t cap, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+static void sig_add(char *sig, size_t cap, const char *fmt, ...) {
+    size_t n = strlen(sig);
+    if (n >= cap - 1) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(sig + n, cap - n, fmt, ap);
+    va_end(ap);
+}
+
+static char g_cdir[64];
+
+/* open a log file in a fresh mkdtemp directory */
+static void cap_begin(void) {
+    snprintf(g_cdir, sizeof(g_cdir), "/tmp/amm_watch_logXXXXXX");
+    if (!mkdtemp(g_cdir)) { printf("FATAL mkdtemp\n"); exit(2); }
+    if (nodus_log_file_open(g_cdir, 1 << 20, 1) != 0) { printf("FATAL log file\n"); exit(2); }
+}
+
+/* close it and append every AMM_WATCH line, its timestamp stripped */
+static void cap_end(char *sig, size_t cap) {
+    nodus_log_file_close();
+    char path[128];
+    snprintf(path, sizeof(path), "%s/nodus-amm.log", g_cdir);
+    FILE *f = fopen(path, "r");
+    char line[1100];
+    while (f && fgets(line, sizeof(line), f)) {
+        if (!strstr(line, "AMM_WATCH:")) continue;
+        const char *q = strstr(line, "Z [");
+        sig_add(sig, cap, "L:%s", q ? q + 2 : line);
+    }
+    if (f) fclose(f);
+    unlink(path);
+    rmdir(g_cdir);
+}
+
+/* the journal's rows, the stored blocks and the cursor, as text */
+static void state_sig(char *sig, size_t cap) {
+    static const char *const states[] = { "candidate", "seen", "deep", "held", "dropped", "reversed" };
+    amm_rec_t *r = calloc(256, sizeof(*r));
+    for (size_t k = 0; k < sizeof(states) / sizeof(states[0]); k++) {
+        int n = 0;
+        if (amm_journal_rec_list(g_j, 0, states[k], r, 256, &n) != 0) { sig_add(sig, cap, "R:%s:fault\n", states[k]); continue; }
+        for (int i = 0; i < n; i++)
+            sig_add(sig, cap, "R:%s tx%02x li%u blk%llu bh%02x from%02x v%02x\n", r[i].state, r[i].tx[0], r[i].log_index,
+                    (unsigned long long)r[i].block_number, r[i].block_hash[0], r[i].from[0], r[i].value[31]);
+    }
+    free(r);
+    for (uint64_t h = 1; h <= 20; h++) {
+        amm_blk_t b;
+        if (amm_journal_block_get(g_j, h, &b) == 0)
+            sig_add(sig, cap, "B:%llu %02x %02x %llu\n", (unsigned long long)h, b.hash[0], b.parent[0], (unsigned long long)b.ts);
+    }
+    sig_add(sig, cap, "C:%llu\n", (unsigned long long)cursor("eth_scan"));
+}
+
+static void step_sig(char *sig, size_t cap, int rc, const amm_eth_step_t *o) {
+    sig_add(sig, cap, "S:%d u%d t%llu b%d r%d n%d d%d x%d v%d k%d\n", rc, o->usable, (unsigned long long)o->tip,
+            o->blocks, o->reorgs, o->new_records, o->deep, o->dropped, o->reversed, o->unknown);
+}
+
+typedef struct {
+    char sig[16384];
+    char asked[2048];
+    int  mcalls[GM_N][3];
+    int  timed_out, gens;
+} w33_out_t;
+
+static w33_out_t g_w33_ref, g_w33_gat;
+
+static void w33_step(char *sig, size_t cap) {
+    amm_eth_step_t o;
+    int rc = step(&o);
+    step_sig(sig, cap, rc, &o);
+}
+
+/* One run of scenario `scen` (0: W1 shape, 1: W8 shape, 2: W17 shape); gm < 0: no
+ * gate, else every provider's gm method goes through the reverse gate (k = 3). */
+static void w33_run(int scen, int gm, w33_out_t *out) {
+    memset(out, 0, sizeof(*out));
+    fresh(20);
+    if (scen == 0) {
+        ch_build(&g_chain, 1, 13, 0, 0);
+        for (int i = 0; i < 3; i++) g_alt[i] = g_chain;
+        for (int i = 0; i < 3; i++) ch_pay(&g_alt[i], 0x31, 0, 10, 0x11, 5);     /* the quorum record */
+        ch_pay(&g_alt[0], 0x32, 0, 11, 0x11, 6);          /* listed by one provider only */
+        for (int i = 0; i < 3; i++) g_sp[i].ch = &g_alt[i];
+        g_sp[1].fail_logs = 1;
+    } else if (scen == 1) {
+        ch_build(&g_chain, 1, 15, 0, 0);
+        ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+        ch_pay(&g_chain, 0x32, 0, 13, 0x11, 7);
+    } else {
+        ch_build(&g_chain, 1, 14, 0, 0);
+        for (int i = 0; i < 3; i++) g_alt[i] = g_chain;
+        ch_pay(&g_alt[0], 0x31, 0, 10, 0x11, 5);
+        ch_pay(&g_alt[1], 0x31, 0, 10, 0x11, 5);
+        for (int i = 0; i < 3; i++) g_sp[i].ch = &g_alt[i];
+        g_sp[0].tip_override = 11;
+    }
+    if (gm >= 0) {
+        amm_gate_arm(&g_wg, 3, 1);
+        for (int i = 0; i < 3; i++) g_sp[i].gate[gm] = &g_wg;
+    }
+    cap_begin();
+    if (scen == 0) {
+        w33_step(out->sig, sizeof(out->sig));
+        w33_step(out->sig, sizeof(out->sig));            /* the candidate is retained */
+        g_sp[1].fail_logs = 0;
+        w33_step(out->sig, sizeof(out->sig));            /* the quorum forms: dropped */
+    } else if (scen == 1) {
+        w33_step(out->sig, sizeof(out->sig));
+        ch_build(&g_chain, 1, 16, 12, 1);                /* fork at 12 */
+        ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+        ch_pay(&g_chain, 0x32, 1, 14, 0x11, 7);
+        w33_step(out->sig, sizeof(out->sig));
+        ch_build(&g_chain, 1, 17, 12, 2);                /* a second reorganisation */
+        ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+        ch_pay(&g_chain, 0x32, 0, 15, 0x11, 7);
+        w33_step(out->sig, sizeof(out->sig));
+    } else {
+        w33_step(out->sig, sizeof(out->sig));
+        w33_step(out->sig, sizeof(out->sig));
+        g_sp[0].tip_override = 0;
+        w33_step(out->sig, sizeof(out->sig));
+    }
+    state_sig(out->sig, sizeof(out->sig));
+    cap_end(out->sig, sizeof(out->sig));
+    if (gm >= 0) {
+        amm_gate_disarm(&g_wg);
+        out->timed_out = amm_gate_timed_out(&g_wg);
+        out->gens = amm_gate_gens(&g_wg);
+    }
+    for (int i = 0; i < 3; i++) {
+        for (int m = 0; m < GM_N; m++) out->mcalls[m][i] = g_sp[i].mcalls[m];
+        sig_add(out->asked, sizeof(out->asked), "P%d calls%d:", i, g_sp[i].calls);
+        for (int h = 0; h < 64; h++)
+            if (g_sp[i].asked[h]) sig_add(out->asked, sizeof(out->asked), " %d=%d", h, g_sp[i].asked[h]);
+        sig_add(out->asked, sizeof(out->asked), "\n");
+    }
+}
+
+static void w33_arrival_order(void) {
+    printf("W33 the providers of a group in flight at once, returning in reverse order: nothing changes\n");
+    wg_ready();
+    int gated_runs[GM_N] = { 0 };
+    for (int scen = 0; scen < 3; scen++) {
+        w33_run(scen, -1, &g_w33_ref);
+        for (int gm = 0; gm < GM_N; gm++) {
+            const int *mc = g_w33_ref.mcalls[gm];
+            if (mc[0] == 0 || mc[0] != mc[1] || mc[0] != mc[2]) continue;      /* the scoping rule of 7.0 */
+            w33_run(scen, gm, &g_w33_gat);
+            gated_runs[gm]++;
+            char m[160];
+            snprintf(m, sizeof(m), "scenario %d, %s gated: all three providers in flight at once (no timeout)", scen, GM_NAME[gm]);
+            CHECK(g_w33_gat.timed_out == 0, m);
+            snprintf(m, sizeof(m), "scenario %d, %s gated: one gate generation per group (%d)", scen, GM_NAME[gm], mc[0]);
+            CHECK(g_w33_gat.gens == mc[0], m);
+            snprintf(m, sizeof(m), "scenario %d, %s gated: rows, blocks, cursor, step counters and log lines equal the ungated run",
+                     scen, GM_NAME[gm]);
+            CHECK(strcmp(g_w33_gat.sig, g_w33_ref.sig) == 0, m);
+            snprintf(m, sizeof(m), "W35 scenario %d, %s gated: every provider asked as before (calls and asked[] equal)", scen, GM_NAME[gm]);
+            CHECK(strcmp(g_w33_gat.asked, g_w33_ref.asked) == 0, m);
+        }
+    }
+    for (int gm = 0; gm < GM_N; gm++) {
+        char m[96];
+        snprintf(m, sizeof(m), "%s was gated in at least one scenario", GM_NAME[gm]);
+        CHECK(gated_runs[gm] > 0, m);
+    }
+}
+
+typedef struct { char sig[16384]; int returned, calls2; } w34_out_t;
+static w34_out_t g_w34_a, g_w34_b;
+
+/* hold = 0: the reference; 1: provider 2's hold_method waits for providers 0 and 1 */
+static void w34_run(int variant, int hold, w34_out_t *out) {
+    memset(out, 0, sizeof(*out));
+    fresh(20);
+    ch_build(&g_chain, 1, 13, 0, 0);
+    ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+    int gm = variant == 0 ? GM_LOGS : GM_RECEIPT;
+    if (variant == 0) g_sp[2].fail_logs = 1;                       /* W34: the last provider fails */
+    amm_ctr_reset(&g_wc);
+    if (hold) {
+        g_sp[2].hold_method = gm; g_sp[2].hold_need = 2; g_sp[2].hold_ctr = &g_wc;
+        for (int i = 0; i < 2; i++) { g_sp[i].unit_method = gm; g_sp[i].unit_ctr = &g_wc; }
+    }
+    cap_begin();
+    w33_step(out->sig, sizeof(out->sig));
+    if (variant == 0) w33_step(out->sig, sizeof(out->sig));
+    state_sig(out->sig, sizeof(out->sig));
+    cap_end(out->sig, sizeof(out->sig));
+    out->returned = atomic_load(&g_sp[2].hold_returned);
+    out->calls2 = g_sp[2].mcalls[gm];
+}
+
+static void w34_late_provider(void) {
+    printf("W34 a provider that answers last: the group waits for it, nothing changes\n");
+    wg_ready();
+    w34_run(0, 0, &g_w34_a);
+    w34_run(0, 1, &g_w34_b);
+    CHECK(g_w34_a.calls2 > 0 && strstr(g_w34_a.sig, "S:") != NULL, "setup: the logs are read from provider 2 (it fails at once)");
+    CHECK(amm_ctr_timed_out(&g_wc) == 0, "provider 2's get_logs waited for providers 0 and 1 (no timeout)");
+    CHECK(strcmp(g_w34_b.sig, g_w34_a.sig) == 0,
+          "the steps' results, the rows and the log lines equal the run where provider 2 fails at once");
+    CHECK(g_w34_b.returned == g_w34_b.calls2 && g_w34_b.calls2 > 0,
+          "every held get_logs of provider 2 had returned when the step returned (the join waited)");
+    printf("W34b the unit is the bound: provider 2's second request is waited for\n");
+    w34_run(1, 0, &g_w34_a);
+    w34_run(1, 1, &g_w34_b);
+    CHECK(g_w34_a.calls2 > 0, "setup: provider 2's get_receipt is called by verify_record");
+    CHECK(amm_ctr_timed_out(&g_wc) == 0, "provider 2's get_receipt waited for providers 0 and 1 to finish their units (no timeout)");
+    CHECK(strcmp(g_w34_b.sig, g_w34_a.sig) == 0, "the step's result, rows and log lines equal the ungated run");
+    CHECK(g_w34_b.returned == g_w34_b.calls2 && g_w34_b.calls2 > 0,
+          "the step returned only after provider 2's get_receipt returned (its flag is set)");
+}
+
 int main(void) {
     printf("test_amm_eth_watch\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_watch_testXXXXXX");
@@ -1744,6 +2083,8 @@ int main(void) {
     w30_moved_transaction_not_gone();
     w31_different_header_provider_listing();
     w32_block_hash_answer();
+    w33_arrival_order();
+    w34_late_provider();
 
     if (g_w) amm_eth_watch_free(g_w);
     if (g_j) amm_journal_close(g_j);

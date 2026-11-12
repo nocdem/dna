@@ -105,6 +105,7 @@
  */
 #include <dirent.h>
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -148,11 +149,14 @@ typedef struct {
     uint64_t coin_amt[4];
     uint64_t mono;                   /* the monotonic clock the questions' shared reads use, ms */
     uint64_t mono_step;              /* added to `mono` at every read of it (default 10000: no reuse) */
-    int      reads;                  /* every node and provider read of the engine's seams (E22) */
-    int      prov_reads;             /* the question path's Ethereum reads: balance, gas estimate, gas price */
+    /* the three counters incremented inside the Ethereum stubs are atomic: a
+     * provider group runs one call per provider on its own thread at the same
+     * time, and a lost increment would fail the exact-count assertions */
+    atomic_int reads;                /* every node and provider read of the engine's seams (E22) */
+    atomic_int prov_reads;           /* the question path's Ethereum reads: balance, gas estimate, gas price */
     int      nbal_reads;             /* the Nodus balance reads */
     int      erc20_fail;             /* 1: every provider's USDT balance read fails (E28) */
-    int      sends;                  /* every raw-transaction broadcast the providers were asked for (E38) */
+    atomic_int sends;                /* every raw-transaction broadcast the providers were asked for (E38) */
     int      send_ok;                /* 1: a provider takes a broadcast and answers its hash (E38) */
     int      rcpt_none;              /* 1: every provider answers "no receipt" (E38) */
 } world_t;

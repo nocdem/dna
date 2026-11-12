@@ -3987,6 +3987,7 @@ set(AMM_CORE_SOURCES
     tools/amm/amm_ledger.c
     tools/amm/amm_cfg.c
     tools/amm/amm_journal.c
+    tools/amm/amm_eth_fanout.c
     tools/amm/amm_eth_watch.c
     tools/amm/amm_eth_tx.c
     tools/amm/amm_eth_pay.c
@@ -3999,7 +4000,7 @@ set(AMM_CORE_SOURCES
 foreach(amm_test test_amm_ledger test_amm_cfg test_amm_journal
                  test_amm_eth_watch test_amm_eth_tx test_amm_eth_pay
                  test_amm_nodus_watch test_amm_nodus_pay test_amm_req
-                 test_amm_engine test_amm_http)
+                 test_amm_engine test_amm_http test_amm_eth_fanout)
     add_executable(${amm_test} tests/${amm_test}.c ${AMM_CORE_SOURCES})
     target_link_libraries(${amm_test} nodus dsa nodus Threads::Threads)
     target_compile_options(${amm_test} PRIVATE -Wall -Wextra -Wno-unused-parameter)

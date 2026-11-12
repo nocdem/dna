@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "amm_eth_fanout.h"
 #include "amm_eth_tx.h"
 #include "amm_ledger.h"
 #include "crypto/utils/qgp_log.h"
@@ -89,13 +90,32 @@ typedef struct {
 
 /* Providers used: the configured chain id only (setting eth_chain_id, givens
  * item 77). @return the number. */
+/* The helpers below ask every usable provider at once (amm_eth_fanout): a work
+ * unit runs one provider's call(s) on that provider's thread and writes only
+ * slot i of its job; the examination is today's loop, run on the calling thread
+ * after every unit has returned, in provider index order. A unit never takes
+ * p->mu or touches the journal (the payer's callers hold p->mu). */
+typedef struct {
+    const amm_eth_pay_t *p;
+    uint64_t             dl;
+    int                  rc[AMM_ETH_MAX_PROVIDERS];
+    uint64_t             id[AMM_ETH_MAX_PROVIDERS];
+} pq_job_t;
+
+static void pq_unit(void *arg, int i) {
+    pq_job_t *j = arg;
+    const amm_eth_provider_t *pr = &j->p->prov[i];
+    j->id[i] = 0;
+    j->rc[i] = pr->chain_id(pr->ctx, &j->id[i], j->dl);
+}
+
 static int qualify(amm_eth_pay_t *p, rd_t *rd) {
     int n = 0;
+    pq_job_t job;
+    job.p = p; job.dl = rd->dl;
+    amm_fanout_run(p->cfg.n_providers, NULL, pq_unit, &job);        /* every configured provider */
     for (int i = 0; i < p->cfg.n_providers; i++) {
-        uint64_t id = 0;
-        const amm_eth_provider_t *pr = &p->prov[i];
-        rd->use[i] = (pr->chain_id(pr->ctx, &id, rd->dl) == AMM_ETH_OK &&
-                      id == p->cfg.chain_id);
+        rd->use[i] = (job.rc[i] == AMM_ETH_OK && job.id[i] == p->cfg.chain_id);
         n += rd->use[i];
     }
     return n;
@@ -135,19 +155,34 @@ static int qth(amm_eth_pay_t *p, const rd_t *rd, rk_t k, uint64_t *out) {
 
 /* A balance: the SMALLEST answer, needing Q answers. erc != 0: the USDT
  * balanceOf of the bot, else its ether. @return 0 / 1. */
+typedef struct {
+    const amm_eth_pay_t *p;
+    uint64_t             dl;
+    int                  erc;
+    int                  rc[AMM_ETH_MAX_PROVIDERS];
+    uint8_t              w[AMM_ETH_MAX_PROVIDERS][32];
+} bal_job_t;
+
+static void bal_unit(void *arg, int i) {
+    bal_job_t *j = arg;
+    const amm_eth_pay_t *p = j->p;
+    const amm_eth_provider_t *pr = &p->prov[i];
+    j->rc[i] = j->erc ? pr->erc20_balance(pr->ctx, p->cfg.usdt, p->self, j->w[i], j->dl)
+                      : pr->get_balance(pr->ctx, p->self, j->w[i], j->dl);
+}
+
 static int min_balance(amm_eth_pay_t *p, const rd_t *rd, int erc, evm_u256 *out) {
     int n = 0;
     evm_u256 lo;
     memset(&lo, 0, sizeof(lo));
+    bal_job_t job;
+    job.p = p; job.dl = rd->dl; job.erc = erc;
+    amm_fanout_run(p->cfg.n_providers, rd->use, bal_unit, &job);
     for (int i = 0; i < p->cfg.n_providers; i++) {
         if (!rd->use[i]) continue;
-        const amm_eth_provider_t *pr = &p->prov[i];
-        uint8_t w[32];
-        int rc = erc ? pr->erc20_balance(pr->ctx, p->cfg.usdt, p->self, w, rd->dl)
-                     : pr->get_balance(pr->ctx, p->self, w, rd->dl);
-        if (rc != AMM_ETH_OK) continue;
+        if (job.rc[i] != AMM_ETH_OK) continue;
         evm_u256 v;
-        evm_u256_from_be(&v, w);
+        evm_u256_from_be(&v, job.w[i]);
         if (n == 0 || evm_u256_cmp(&v, &lo) < 0) lo = v;
         n++;
     }
@@ -161,17 +196,34 @@ static int min_balance(amm_eth_pay_t *p, const rd_t *rd, int erc, evm_u256 *out)
  * (and the fee deducted from the user) nor lower it below what Q providers
  * report. An error object ("execution reverted") is an unanswered provider.
  * @return 0 / 1 (not enough answers: the payout stays unsent). */
+typedef struct {
+    const amm_eth_pay_t *p;
+    uint64_t             dl;
+    const uint8_t       *cd;
+    size_t               cd_len;
+    int                  rc[AMM_ETH_MAX_PROVIDERS];
+    uint64_t             g[AMM_ETH_MAX_PROVIDERS];
+} est_job_t;
+
+static void est_unit(void *arg, int i) {
+    est_job_t *j = arg;
+    const amm_eth_pay_t *p = j->p;
+    const amm_eth_provider_t *pr = &p->prov[i];
+    j->g[i] = 0;
+    j->rc[i] = pr->estimate_gas(pr->ctx, p->self, p->cfg.usdt, j->cd, j->cd_len, &j->g[i], j->dl);
+}
+
 static int max_estimate(amm_eth_pay_t *p, const rd_t *rd, const uint8_t *cd,
                         size_t cd_len, uint64_t *out) {
     uint64_t v[AMM_ETH_MAX_PROVIDERS];
     int n = 0;
+    est_job_t job;
+    job.p = p; job.dl = rd->dl; job.cd = cd; job.cd_len = cd_len;
+    amm_fanout_run(p->cfg.n_providers, rd->use, est_unit, &job);
     for (int i = 0; i < p->cfg.n_providers; i++) {
         if (!rd->use[i]) continue;
-        const amm_eth_provider_t *pr = &p->prov[i];
-        uint64_t g = 0;
-        if (pr->estimate_gas(pr->ctx, p->self, p->cfg.usdt, cd, cd_len, &g,
-                             rd->dl) != AMM_ETH_OK || g == 0) continue;
-        v[n++] = g;
+        if (job.rc[i] != AMM_ETH_OK || job.g[i] == 0) continue;
+        v[n++] = job.g[i];
     }
     if (n < p->cfg.quorum) return 1;
     qsort(v, (size_t)n, sizeof(v[0]), cmp_desc);
@@ -189,19 +241,42 @@ typedef enum { RR_UNKNOWN, RR_FOUND, RR_NONE } rr_t;
  * `final_depth` above that block; `*deep` is 1 only when at least Q such
  * providers vote for the chosen receipt. A receipt with status 1 whose logs
  * differ between providers is a different receipt (no quorum). */
+typedef struct {
+    const amm_eth_pay_t *p;
+    uint64_t             dl;
+    const uint8_t       *hash;
+    int                  rc_r[AMM_ETH_MAX_PROVIDERS], rc_tip[AMM_ETH_MAX_PROVIDERS];
+    amm_eth_receipt_t    rcpt[AMM_ETH_MAX_PROVIDERS];
+    uint64_t             tip[AMM_ETH_MAX_PROVIDERS];
+} rcpt_job_t;
+
+/* one unit: the receipt, then (only if one came) the SAME provider's latest
+ * block, in today's per-provider order (the joint depth vote) */
+static void rcpt_unit(void *arg, int i) {
+    rcpt_job_t *j = arg;
+    const amm_eth_provider_t *pr = &j->p->prov[i];
+    j->rc_tip[i] = AMM_ETH_ERR;
+    j->tip[i] = 0;
+    j->rc_r[i] = pr->get_receipt(pr->ctx, j->hash, &j->rcpt[i], j->dl);
+    if (j->rc_r[i] == AMM_ETH_OK)
+        j->rc_tip[i] = pr->block_number(pr->ctx, &j->tip[i], j->dl);
+}
+
 static rr_t read_receipt(amm_eth_pay_t *p, const rd_t *rd, const uint8_t hash[32],
                          amm_eth_receipt_t *out, int *deep) {
     amm_eth_receipt_t *grp = calloc(AMM_ETH_MAX_PROVIDERS, sizeof(*grp));
-    amm_eth_receipt_t *r = calloc(1, sizeof(*r));
+    rcpt_job_t *job = calloc(1, sizeof(*job));
     int cnt[AMM_ETH_MAX_PROVIDERS], dv[AMM_ETH_MAX_PROVIDERS];
     int ng = 0, none = 0;
     rr_t res = RR_UNKNOWN;
     *deep = 0;
-    if (!grp || !r) goto out;
+    if (!grp || !job) goto out;
+    job->p = p; job->dl = rd->dl; job->hash = hash;
+    amm_fanout_run(p->cfg.n_providers, rd->use, rcpt_unit, job);
     for (int i = 0; i < p->cfg.n_providers; i++) {
         if (!rd->use[i]) continue;
-        const amm_eth_provider_t *pr = &p->prov[i];
-        int rc = pr->get_receipt(pr->ctx, hash, r, rd->dl);
+        const amm_eth_receipt_t *r = &job->rcpt[i];
+        int rc = job->rc_r[i];
         if (rc == AMM_ETH_NOT_FOUND) { none++; continue; }
         if (rc != AMM_ETH_OK) continue;
         int g;
@@ -212,8 +287,8 @@ static rr_t read_receipt(amm_eth_pay_t *p, const rd_t *rd, const uint8_t hash[32
                 !memcmp(grp[g].logs, r->logs, sizeof(r->logs[0]) * (size_t)r->n_logs)) break;
         if (g == ng) { grp[ng] = *r; cnt[ng] = 0; dv[ng] = 0; ng++; }
         cnt[g]++;
-        uint64_t tip = 0;
-        if (pr->block_number(pr->ctx, &tip, rd->dl) == AMM_ETH_OK &&
+        uint64_t tip = job->tip[i];
+        if (job->rc_tip[i] == AMM_ETH_OK &&
             tip >= r->block_number && tip - r->block_number >= p->cfg.final_depth)
             dv[g]++;
     }
@@ -229,7 +304,7 @@ static rr_t read_receipt(amm_eth_pay_t *p, const rd_t *rd, const uint8_t hash[32
     }
 out:
     free(grp);
-    free(r);
+    free(job);
     return res;
 }
 
