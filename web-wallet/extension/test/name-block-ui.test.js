@@ -54,6 +54,21 @@ test('the kept name is shown before the lookup answers; the answer replaces or r
   assert.equal(nodes['wallet-title'].textContent, 'Welcome back'); assert.equal(nodes['wallet-register-name'].hidden, false);
 });
 
+// Proves the kept name is on the greeting while the Nodus connection is still opening or unavailable (not nameable), with
+// no lookup asked, and that a later nameable state starts the lookup that confirms it. Could falsely pass if update() were
+// never reached with that state; the first assertion reads the greeting after update() and the request list stays empty.
+test('the kept name is shown at once while the connection is not ready', async () => {
+  const { nodes, names, ui, calls } = fixture(() => ({ found: true, name: 'keptname' }));
+  ui.state.nodus = { state: 'connecting', connection: 1, nameable: false, registrable: false, keptOwnName: 'keptname' };
+  names.update();
+  assert.equal(nodes['wallet-title'].textContent, 'Welcome back, keptname');
+  assert.match(nodes['own-name'].textContent, /"keptname" \(last known/);
+  assert.deepEqual(calls, []);
+  ui.state.nodus = { ...ui.state.nodus, state: 'ready', nameable: true };
+  names.update(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['getOwnName']);
+});
+
 test('wallet greeting uses the name returned by getOwnName', async () => {
   const { nodes, names, calls } = fixture(() => ({ found: true, name: 'publicname' }), false);
   await names.refresh();

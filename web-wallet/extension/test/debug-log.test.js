@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { setup, phrase, password, account, token, payTo, BOT, foundationNodus, nodusSignature } from './swap-fixture.js';
 import { nodusToUsdtText } from '../src/background/swap-texts.js';
 import { SWAP_METHODS } from '../src/constants/swap.js';
-import { DEBUG_LOG_PREFIX, debugLog, errorFields, hostOf, setDebugLogSink } from '../../src/debug-log.js';
+import { DEBUG_LOG_PREFIX, debugLog, errorFields, hostOf, logWebSocketsFor, setDebugLogSink, timed } from '../../src/debug-log.js';
 
 // Environment: Node >=22.14, the swap fixture (stub Ethereum RPC, stub bot, mock Nodus module); no flags, no network,
 // no files. The sink of the debug logger is replaced by a list for the test and put back afterwards.
@@ -61,4 +61,46 @@ test('debug lines cover a hold, a signed swap request and an EVM payment, and ca
     'signed text': text, 'signed text hex': Buffer.from(text).toString('hex'), 'typed field name': 'Nodus Swap', 'typed destination': destination, 'typed amount': '"amount"',
     'signed transaction': f.raw[0].replace(/^0x/, ''), 'bot url': `${BOT}/amm`, 'rpc path or key': '/v3/', 'nodus public key': '12'.repeat(40) };
   for (const [name, secret] of Object.entries(secrets)) assert.ok(!joined.includes(secret), `a debug line contains the ${name}`);
+});
+
+// Proves a property read done only for a log line never changes the result: an error whose code and name getters throw
+// still gives a line (without code and name) and timed() rethrows that very error. Could falsely pass if the getters were
+// not reached; the throw counters guard that.
+test('a throwing error property does not change what timed rethrows', async () => {
+  const lines = []; const restore = setDebugLogSink(line => lines.push(line)); let reads = 0;
+  const error = new Error('x'); for (const key of ['code', 'name']) Object.defineProperty(error, key, { get() { reads++; throw new Error('getter'); } });
+  try {
+    await assert.rejects(timed('test', 'work', {}, async () => { throw error; }), caught => caught === error);
+  } finally { restore(); }
+  assert.ok(reads >= 2); assert.equal(lines.length, 1); assert.match(lines[0], / test work ms=\d+ outcome=error$/);
+});
+
+// Proves a frame whose size cannot be read still reaches the native send and the send's result is returned: the log
+// reads the size inside its own guard. A fake native WebSocket (no network); could falsely pass if the wrapper were not
+// installed, in which case no 'sent' line would exist (asserted).
+test('a frame size that cannot be read does not stop the send', () => {
+  const lines = []; const restore = setDebugLogSink(line => lines.push(line)); const saved = globalThis.WebSocket, sent = [];
+  globalThis.WebSocket = class { constructor() {} addEventListener() {} send(data) { sent.push(data); return 'native-result'; } };
+  try {
+    logWebSocketsFor(['node.example:1234']);
+    const socket = new globalThis.WebSocket('wss://node.example:1234/');
+    const frame = { get byteLength() { throw new Error('size'); } };
+    assert.equal(socket.send(frame), 'native-result'); assert.deepEqual(sent, [frame]);
+    assert.equal(socket.send('abc'), 'native-result'); assert.ok(lines.some(line => line.includes('nodus-ws sent') && line.includes('bytes=3')));
+  } finally { restore(); globalThis.WebSocket = saved; }
+});
+
+// Proves what a web page chooses cannot reach a request line as free text: a string id and an unknown method carrying
+// marker text appear nowhere in the lines, which show a fixed form instead. Could falsely pass if the request never
+// reached the logging middleware; the fixed-form 'request done' line is asserted.
+test('a page-chosen request id and method are written in a fixed form only', async t => {
+  const lines = []; const restore = setDebugLogSink(line => lines.push(line)); t.after(restore);
+  const f = await setup(t), { engine } = f.background.engine.setupProviderEngineEip1193({ origin: 'https://site.example', subjectType: 'website' });
+  t.after(() => engine.destroy());
+  await engine.handle({ id: 'MARKER-ID-31337 text to sign', jsonrpc: '2.0', method: 'x_MARKER_METHOD_31337', params: [] });
+  await engine.handle({ id: 7, jsonrpc: '2.0', method: 'eth_chainId', params: [] });
+  const joined = lines.join('\n');
+  assert.ok(!joined.includes('MARKER'), 'page text reached a debug line');
+  assert.ok(lines.some(line => / request done /.test(line) && line.includes('method=other') && line.includes('id=string')));
+  assert.ok(lines.some(line => / request done /.test(line) && line.includes('method=eth_chainId') && line.includes('id=7')));
 });

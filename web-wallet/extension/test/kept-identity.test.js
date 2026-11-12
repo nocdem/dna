@@ -10,8 +10,20 @@ import { IDENTITY_KEY } from '../../src/vault.js';
 // controllable Nodus module (nameOf), in-memory storage; no flags, no network, nothing left on disk.
 const module = nameOf => ({ nameOf, async nameLookup() { return { found: false, committedHeight: '10' }; }, async profileAddress() { throw new Error('Unexpected profile read.'); } });
 const turns = async () => { for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve)); };
-// A kept record as an earlier use of the wallet would have left it.
-const seeded = name => async ({ values, id }) => { values[IDENTITY_KEY] = await serializeIdentity(id, { name, addresses: { nodus: address } }, await identityKeyFor(phrase, id)); };
+// A kept record with a name and NO addresses: the own addresses in a record read back later can only come from the save
+// the unlock makes.
+const seeded = name => async ({ values, id }) => { values[IDENTITY_KEY] = await serializeIdentity(id, { name, addresses: {} }, await identityKeyFor(phrase, id)); };
+// Waits until every save queued before it has finished: the background's saves share one ordered chain, and a balances save
+// joins the end of it. (No fixed number of event-loop turns: the encryption takes real time.)
+const flushed = nodus => nodus.keepBalances({});
+// Two lookups answering the same name at once: the second must not return before the record holds that name.
+test('a second answer with the same name returns only after the record is saved', async t => {
+  const { nodus, values, id } = await walletSession(t, { module: module(async () => ({ found: true, name: 'samename', committedHeight: '10' })) });
+  const first = nodus.getOwnName(), second = nodus.getOwnName();
+  await second;
+  assert.equal((await parseIdentity(values[IDENTITY_KEY], id, await identityKeyFor(phrase, id))).name, 'samename');
+  await first;
+});
 
 // Proves the kept name is in the public state the moment the wallet is unlocked, while the lookup is still pending, and
 // that the answer replaces it (found: the new name is saved; the saved record decrypts to it), while getOwnName itself
@@ -45,7 +57,7 @@ test('a failed lookup keeps the name, and the addresses are saved at unlock', as
   let reads = 0;
   const { nodus, values, id } = await walletSession(t, { beforeOpen: seeded('keptname'), module: module(async () => { reads++; throw new Error('network error'); }) });
   await assert.rejects(nodus.getOwnName(), /network error/); assert.equal(reads, 1);
-  assert.equal(nodus.getState().keptOwnName, 'keptname'); await turns();
+  assert.equal(nodus.getState().keptOwnName, 'keptname'); await flushed(nodus);
   const saved = await parseIdentity(values[IDENTITY_KEY], id, await identityKeyFor(phrase, id));
   assert.equal(saved.name, 'keptname'); assert.equal(saved.addresses.nodus, address);
 });
@@ -55,7 +67,7 @@ test('a failed lookup keeps the name, and the addresses are saved at unlock', as
 // checked to exist first.
 test('after lock the kept name is gone from the state and the stored record is only ciphertext', async t => {
   const { nodus, values, id, lockCoordinator } = await walletSession(t, { beforeOpen: seeded('keptname'), module: module(async () => ({ found: true, name: 'keptname', committedHeight: '10' })) });
-  assert.equal(nodus.getState().keptOwnName, 'keptname'); await turns();
+  assert.equal(nodus.getState().keptOwnName, 'keptname'); await flushed(nodus);
   assert.ok(values[IDENTITY_KEY]); await lockCoordinator.lock();
   assert.equal(nodus.getState().keptOwnName, '');
   assert.ok(!values[IDENTITY_KEY].includes('keptname') && !values[IDENTITY_KEY].includes(address));
