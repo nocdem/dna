@@ -2,6 +2,7 @@ import { groupNetworkEntries } from './network-groups.js';
 import { capabilitiesFor } from './capabilities.js';
 import { CHAINS } from './config.js';
 import { debugLog } from './debug-log.js';
+import { sessionLog } from './session-log.js';
 import { PQ_NETWORKS } from './pq/networks.js';
 import { ASSETS, chainBalances, balanceErrorDetail, unavailableBalanceLabel, holdingActions, sameAssetKeys, readPrices as defaultReadPrices, portfolioSnapshot, groupNetworks, usdText, displayAmount, createKeptBalances, networkIdOf } from './portfolio.js';
 
@@ -100,11 +101,35 @@ function groupedNetworkControls(entries, control, expanded) {
 // networkIdOf) — so the app can save it with a saved wallet; open(…, { kept })
 // shows such entries, for the network they were read on, until a fresh read
 // replaces them. An entry without a `network` is dropped.
+// The network's name for the session log: the stage the network carries (sites), else "Mainnet" or the test network's own id
+// ("Testnet", "Sepolia", "Devnet", "Nile"). Never the endpoint (networkIdOf holds its host; this does not use it) or an address.
+export function networkLabelOf(network) {
+  if (typeof network?.stage === 'string' && network.stage) return network.stage.slice(0, 24);
+  if (!network?.testnet) return 'Mainnet';
+  const id = typeof network.networkId === 'string' ? network.networkId.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 24) : '';
+  return id ? id[0].toUpperCase() + id.slice(1) : 'Testnet';
+}
+// One session-log line when a chain's balance read fails (the log a user sends us otherwise shows only the row's label).
+// Written again only when that chain's network or label changes, or after a read of it succeeded, so automatic refreshes
+// that fail the same way do not fill the log's 500 lines. The text is scrubbed by the log.
+export function createReadFailureNotes(log = sessionLog) {
+  const last = new Map();
+  return {
+    failed(chain, network, label) {
+      const key = `${networkLabelOf(network)}|${label}`;
+      if (last.get(chain) === key) return;
+      last.set(chain, key);
+      log.log('wallet', `${network?.name || chain} ${networkLabelOf(network)}: balance read failed: ${label}`, { error: true });
+    },
+    succeeded(chain) { last.delete(chain); },
+  };
+}
 export function createPortfolio({ readBalances, readPrices = defaultReadPrices, selectAsset, leadingNetworks = [], extraNetworks = [], onKept }) {
   const entries = (list) => Object.fromEntries(list.map(({ network, asset }) => [asset.chain, network]));
   const networks = { ...entries(leadingNetworks), ...CHAINS, ...entries(extraNetworks) };
   const baseAssets = [...leadingNetworks.map(({ asset }) => asset), ...ASSETS, ...extraNetworks.map(({ asset }) => asset)];
   let assets, chains;
+  const readFailures = createReadFailureNotes();
   // A leading network's own tokens (NODUS: the pinned tokens its send module
   // reports while ready — network.tokens, src/nodus/network.js nodusTokens;
   // design docs/plans/2026-10-22-connect-native-tokens-design.md §6) are rows
@@ -290,10 +315,15 @@ export function createPortfolio({ readBalances, readPrices = defaultReadPrices, 
         const result = chainBalances(chain, rows, Date.now(), assets);
         Object.assign(balances, result);
         keepRead(chain, result);
+        readFailures.succeeded(chain);
         return true;
       }
     } catch (error) {
-      if (session === current && !controller.signal.aborted) for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error', error: balanceErrorDetail(error) };
+      if (session === current && !controller.signal.aborted) {
+        const label = balanceErrorDetail(error);
+        for (const asset of assets.filter(a => a.chain === chain)) balances[asset.key] = { state: 'error', error: label };
+        readFailures.failed(chain, networks[chain], label);
+      }
     } finally { backgroundJobs.delete(controller); if (session === current) { if (jobs.get(chain) === controller) jobs.delete(chain); render(); } }
     return false;
   }
