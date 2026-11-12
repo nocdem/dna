@@ -1403,9 +1403,9 @@ static void w26_logs_only_from_quorum_header_providers(void) {
     }
 }
 
-/* W27  a provider whose header read FAILED at h is the fallback evidence: it is
- * asked for the logs of h only when fewer than `quorum` of the providers that
- * hold the quorum header answered (Sol's case, 2026-11-12).
+/* W27  a provider whose header read FAILED at h is still asked for the logs of
+ * h: every usable provider except one with a different header is asked, in
+ * provider index order, as at the parent (Sol's case, 2026-11-12).
  * PROVES: (a) A and B hold the header, B's get_logs fails, C's header read
  * fails but its logs are those of the quorum block: C IS asked, two providers
  * answer and the payment counts (the parent's behaviour); (b) CHANGED 2026-11-12
@@ -1446,7 +1446,7 @@ static void w27_failed_header_provider_is_fallback(void) {
  * PROVES: quorum 2; A and B return the quorum header at height 10, C's header
  * read fails; A and C list the same valid payment, B lists nothing. In ONE step
  * the payment is stored as counted (state seen or deep, never candidate): C was
- * asked because the first pass (A: payment, B: empty) was not unanimous.
+ * asked (every usable provider without another header is asked, in index order).
  * HOW IT CAN FALSELY PASS: C's header failure is the stub switch fail_blocks for
  * every height; the check is on the record state after one step, so a later
  * step that happens to reach C would not hide it (a single step is run). On
@@ -1474,9 +1474,11 @@ static void w28_disagreement_asks_failed_header_provider(void) {
  * 2026-11-12: skipping it changed verdicts against the parent's evidence set).
  * PROVES: quorum 2; A and B return the quorum header and EMPTY lists, C's header
  * read fails but C lists a payment in block 10: C is asked, and its below-quorum
- * listing is kept as a candidate (the parent's verdict; with C skipped the
- * payment is not recorded at all, and for a moved transaction the same skip
- * turns find_tx_record's "unknown" into "gone").
+ * listing is created as a candidate and dropped again in the same step (A and B
+ * answered without it), never counted, exactly as at the parent; with C skipped
+ * the payment is not recorded at all, and for a moved transaction the same skip
+ * turns find_tx_record's "unknown" into "gone". The asserted facts: C's
+ * get_logs counter for block 10, no seen/deep record, no candidate left.
  * HOW IT CAN FALSELY PASS: this is the eval_block form of Sol's counterexample
  * (a provider-only log), not the moved-transaction form through find_tx_record,
  * which needs a reorganisation fixture; both depend on the same gather_logs rule.

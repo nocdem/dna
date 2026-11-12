@@ -263,10 +263,10 @@ static void why_block(amm_eth_watch_t *w, const step_t *st, uint64_t h, const ch
 
 /* How a usable provider's header read at h compares with the quorum header
  * (`agree[i]`, 0 for an unusable provider and for all when the result is 1):
- * the logs of the block are asked of the AGREE_QUORUM providers first, then of
- * the AGREE_NO_HEADER ones (their header read failed, so their logs may still
- * be those of the quorum block, log_ok checks the block hash); the AGREE_OTHER
- * ones (another header at h) are never asked. */
+ * the logs of the block are asked of every usable provider in index order,
+ * the AGREE_NO_HEADER ones included (their header read failed, so their logs
+ * may still be those of the quorum block, log_ok checks the block hash); the
+ * AGREE_OTHER ones (another header at h) are never asked. */
 #define AGREE_QUORUM    1
 #define AGREE_NO_HEADER 2
 #define AGREE_OTHER     3
@@ -444,14 +444,13 @@ static int gather_logs(amm_eth_watch_t *w, const step_t *st,
     int asked[AMM_ETH_MAX_PROVIDERS];
     memset(ans, 0, sizeof(int) * AMM_ETH_MAX_PROVIDERS);
     memset(asked, 0, sizeof(asked));
-    /* pass 0: the providers that returned the quorum header; pass 1: the
-     * providers whose header read failed. No early stop: every usable provider
-     * is asked except those that returned ANOTHER header at this height (the
-     * parent's evidence set minus those), so no verdict differs from the
-     * parent's because a provider able to answer was skipped. */
-    for (int pass = 0; pass < 2; pass++) {
+    /* The parent's single loop in provider index order, no early stop: every
+     * usable provider is asked except those that returned ANOTHER header at this
+     * height, so no verdict differs from the parent's because a provider able
+     * to answer was skipped. */
+    {
       for (int i = 0; i < w->cfg.n_providers; i++) {
-        if (!st->use[i] || agree[i] != (pass == 0 ? AGREE_QUORUM : AGREE_NO_HEADER)) continue;
+        if (!st->use[i] || agree[i] == AGREE_OTHER) continue;
         asked[i] = 1;
         const amm_eth_provider_t *p = &w->prov[i];
         amm_eth_log_t *buf = w->logbuf + (size_t)i * AMM_ETH_LOGS_MAX;
