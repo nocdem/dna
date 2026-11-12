@@ -453,10 +453,9 @@ static int rpc_once(amm_eth_rpc_t *r, const char *method, const char *params,
     if (!d->resp) { free(body); return -1; }
     size_t rl = 0;
     uint64_t t0 = mono_ms();
-    int drop = r->drop_next;
-    r->drop_next = 0;
     int pr = r->post(r->post_ctx, r->url, (const uint8_t *)body, (size_t)n,
-                     d->resp, r->max_response, &rl, deadline_ms, drop, xf);
+                     d->resp, r->max_response, &rl, deadline_ms, r->drop_next, xf);
+    r->drop_next = 0;                       /* the request has been posted with it (under r->mu) */
     uint64_t took = mono_ms() - t0;
     free(body);
     /* The keep rule, after EVERY post whatever its result: the verification
@@ -1270,10 +1269,12 @@ int amm_rpc_curl_post(void *ctx, const char *url, const uint8_t *body, size_t bo
                       uint8_t *resp, size_t resp_cap, size_t *resp_len,
                       uint64_t deadline_ms, int drop_pool, amm_rpc_xfer_t *xf) {
     amm_rpc_curl_t *c = ctx;
+    if (xf) {                                  /* written on every return, a refusal included */
+        xf->new_conns = 0;
+        xf->sock = AMM_RPC_SOCK_NONE;
+    }
     if (!c || !url || !body || !resp || !resp_len || !xf || strncmp(url, "https://", 8) != 0)
         return AMM_ETH_ERR;
-    xf->new_conns = 0;
-    xf->sock = AMM_RPC_SOCK_NONE;
     post_lines_t pl;
     pl.n = 0;
     int result = AMM_ETH_ERR;
@@ -1287,8 +1288,12 @@ int amm_rpc_curl_post(void *ctx, const char *url, const uint8_t *body, size_t bo
         if (curl_handle_recreate(c) == 0)
             pl_add(&pl, 0, "%s: every connection dropped, the handle re-created (%llu since start)",
                    c->label, (unsigned long long)c->drops);
-        else
+        else {
+            /* this post fails; c->h stays NULL and the NEXT post that finds it
+             * NULL tries curl_easy_init again */
             pl_add(&pl, 1, "%s: post: the handle could not be created", c->label);
+            goto out;
+        }
     }
     if (!c->h && curl_handle_make(c) != 0) {
         pl_add(&pl, 1, "%s: post: the handle could not be created", c->label);

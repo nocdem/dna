@@ -1828,14 +1828,23 @@ static void wg_ready(void) {
     g_wg_ready = 1;
 }
 
+/* set when a signature did not fit its buffer: a truncated signature must FAIL
+ * the test (checked after every compared pair), never pass it */
+static int g_sig_overflow;
+
 static void sig_add(char *sig, size_t cap, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 static void sig_add(char *sig, size_t cap, const char *fmt, ...) {
     size_t n = strlen(sig);
-    if (n >= cap - 1) return;
+    if (n >= cap - 1) { g_sig_overflow = 1; return; }
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(sig + n, cap - n, fmt, ap);
+    int w = vsnprintf(sig + n, cap - n, fmt, ap);
     va_end(ap);
+    if (w < 0 || (size_t)w >= cap - n) g_sig_overflow = 1;
+}
+
+static void sig_hex(char *sig, size_t cap, const uint8_t *b, size_t n) {
+    for (size_t i = 0; i < n; i++) sig_add(sig, cap, "%02x", b[i]);
 }
 
 static char g_cdir[64];
@@ -1871,15 +1880,30 @@ static void state_sig(char *sig, size_t cap) {
     for (size_t k = 0; k < sizeof(states) / sizeof(states[0]); k++) {
         int n = 0;
         if (amm_journal_rec_list(g_j, 0, states[k], r, 256, &n) != 0) { sig_add(sig, cap, "R:%s:fault\n", states[k]); continue; }
-        for (int i = 0; i < n; i++)
-            sig_add(sig, cap, "R:%s tx%02x li%u blk%llu bh%02x from%02x v%02x\n", r[i].state, r[i].tx[0], r[i].log_index,
-                    (unsigned long long)r[i].block_number, r[i].block_hash[0], r[i].from[0], r[i].value[31]);
+        /* every field of amm_rec_t, field by field (no struct memcmp: padding never enters) */
+        for (int i = 0; i < n; i++) {
+            sig_add(sig, cap, "R:%s tx=", r[i].state);
+            sig_hex(sig, cap, r[i].tx, 32);
+            sig_add(sig, cap, " li=%u blk=%llu bh=", r[i].log_index, (unsigned long long)r[i].block_number);
+            sig_hex(sig, cap, r[i].block_hash, 32);
+            sig_add(sig, cap, " ts=%llu from=", (unsigned long long)r[i].block_ts);
+            sig_hex(sig, cap, r[i].from, 20);
+            sig_add(sig, cap, " to=");
+            sig_hex(sig, cap, r[i].to, 20);
+            sig_add(sig, cap, " v=");
+            sig_hex(sig, cap, r[i].value, 32);
+            sig_add(sig, cap, "\n");
+        }
     }
     free(r);
     for (uint64_t h = 1; h <= 20; h++) {
         amm_blk_t b;
-        if (amm_journal_block_get(g_j, h, &b) == 0)
-            sig_add(sig, cap, "B:%llu %02x %02x %llu\n", (unsigned long long)h, b.hash[0], b.parent[0], (unsigned long long)b.ts);
+        if (amm_journal_block_get(g_j, h, &b) != 0) continue;
+        sig_add(sig, cap, "B:%llu hash=", (unsigned long long)b.height);
+        sig_hex(sig, cap, b.hash, 32);
+        sig_add(sig, cap, " parent=");
+        sig_hex(sig, cap, b.parent, 32);
+        sig_add(sig, cap, " ts=%llu\n", (unsigned long long)b.ts);
     }
     sig_add(sig, cap, "C:%llu\n", (unsigned long long)cursor("eth_scan"));
 }
@@ -1890,7 +1914,7 @@ static void step_sig(char *sig, size_t cap, int rc, const amm_eth_step_t *o) {
 }
 
 typedef struct {
-    char sig[16384];
+    char sig[65536];                  /* full-field rows and blocks, hex; sig_add flags an overflow */
     char asked[2048];
     int  mcalls[GM_N][3];
     int  timed_out, gens;
@@ -1988,7 +2012,7 @@ static void w33_arrival_order(void) {
             CHECK(g_w33_gat.gens == mc[0], m);
             snprintf(m, sizeof(m), "scenario %d, %s gated: rows, blocks, cursor, step counters and log lines equal the ungated run",
                      scen, GM_NAME[gm]);
-            CHECK(strcmp(g_w33_gat.sig, g_w33_ref.sig) == 0, m);
+            CHECK(strcmp(g_w33_gat.sig, g_w33_ref.sig) == 0 && !g_sig_overflow, m);
             snprintf(m, sizeof(m), "W35 scenario %d, %s gated: every provider asked as before (calls and asked[] equal)", scen, GM_NAME[gm]);
             CHECK(strcmp(g_w33_gat.asked, g_w33_ref.asked) == 0, m);
         }
@@ -2000,7 +2024,7 @@ static void w33_arrival_order(void) {
     }
 }
 
-typedef struct { char sig[16384]; int returned, calls2; } w34_out_t;
+typedef struct { char sig[65536]; int returned, calls2; } w34_out_t;
 static w34_out_t g_w34_a, g_w34_b;
 
 /* hold = 0: the reference; 1: provider 2's hold_method waits for providers 0 and 1 */
@@ -2032,7 +2056,7 @@ static void w34_late_provider(void) {
     w34_run(0, 1, &g_w34_b);
     CHECK(g_w34_a.calls2 > 0 && strstr(g_w34_a.sig, "S:") != NULL, "setup: the logs are read from provider 2 (it fails at once)");
     CHECK(amm_ctr_timed_out(&g_wc) == 0, "provider 2's get_logs waited for providers 0 and 1 (no timeout)");
-    CHECK(strcmp(g_w34_b.sig, g_w34_a.sig) == 0,
+    CHECK(strcmp(g_w34_b.sig, g_w34_a.sig) == 0 && !g_sig_overflow,
           "the steps' results, the rows and the log lines equal the run where provider 2 fails at once");
     CHECK(g_w34_b.returned == g_w34_b.calls2 && g_w34_b.calls2 > 0,
           "every held get_logs of provider 2 had returned when the step returned (the join waited)");
@@ -2041,7 +2065,7 @@ static void w34_late_provider(void) {
     w34_run(1, 1, &g_w34_b);
     CHECK(g_w34_a.calls2 > 0, "setup: provider 2's get_receipt is called by verify_record");
     CHECK(amm_ctr_timed_out(&g_wc) == 0, "provider 2's get_receipt waited for providers 0 and 1 to finish their units (no timeout)");
-    CHECK(strcmp(g_w34_b.sig, g_w34_a.sig) == 0, "the step's result, rows and log lines equal the ungated run");
+    CHECK(strcmp(g_w34_b.sig, g_w34_a.sig) == 0 && !g_sig_overflow, "the step's result, rows and log lines equal the ungated run");
     CHECK(g_w34_b.returned == g_w34_b.calls2 && g_w34_b.calls2 > 0,
           "the step returned only after provider 2's get_receipt returned (its flag is set)");
 }

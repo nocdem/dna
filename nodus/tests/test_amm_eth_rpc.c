@@ -1632,6 +1632,25 @@ static void r15_threads(void) {
     amm_rpc_curl_free(shared);
 }
 
+/* R14d a refused argument still reports: with a non-NULL xf holding other
+ * values, a URL that is not https:// is refused (AMM_ETH_ERR) and xf reads
+ * new_conns 0 and AMM_RPC_SOCK_NONE (xf is written on every return). Falsely
+ * passes if xf already held those values: it is preset to others. */
+static void r14d_refused_reports(void) {
+    printf("R14d a refused argument writes the transfer report\n");
+    amm_rpc_curl_t *cu = amm_rpc_curl_new(1000, "t");
+    amm_rpc_xfer_t xf = { .new_conns = 77, .sock = 99 };
+    uint8_t resp[16], body[2] = {'{', '}'};
+    size_t rl = 0;
+    CHECK(amm_rpc_curl_post(cu, "http://127.0.0.1:9/", body, 2, resp, sizeof(resp), &rl, 0, 0, &xf) == AMM_ETH_ERR,
+          "a URL that is not https:// is refused");
+    CHECK(xf.new_conns == 0 && xf.sock == AMM_RPC_SOCK_NONE, "  and the report reads 0 connections, no descriptor");
+    xf.new_conns = 77; xf.sock = 99;
+    CHECK(amm_rpc_curl_post(cu, NULL, body, 2, resp, sizeof(resp), &rl, 0, 0, &xf) == AMM_ETH_ERR &&
+          xf.new_conns == 0 && xf.sock == AMM_RPC_SOCK_NONE, "a missing URL: refused, the report is written too");
+    amm_rpc_curl_free(cu);
+}
+
 /* R16 .. R28: the chain-id rule */
 
 static void r16_verified_path(void) {
@@ -1887,6 +1906,7 @@ int main(void) {
     r14b_real_connections();
     r14c_recreation();
     r15_threads();
+    r14d_refused_reports();
     r16_verified_path();
     r17_hold_and_accept();
     r18_wrong_chain();
