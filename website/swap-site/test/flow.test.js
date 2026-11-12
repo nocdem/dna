@@ -228,12 +228,29 @@ test('a changed amount clears the old price: its yes cannot be given', async () 
 // must not tell the user to ask a new price for the same amount.
 const DELIVERED_UNPAID_TEXT = 'The bot has your request but nothing was paid. The request stays open until its approval time has passed and the bot has checked that no payment came; this page then shows it as expired. Until then the bot refuses a new swap of exactly this amount; a different amount can be swapped now.';
 
-// Proves the open_approval refusal text names the open request and says the same amount stays refused. Cannot prove the
-// bot's behaviour; only the wording of the page.
-test('the open_approval refusal names the open request and says the same amount stays refused', () => {
-  const out = describeAdapterError({ delivered: false, paid: false, answered: true, reason: 'open_approval', openRequestNumber: '77' });
-  assert.equal(out.openRequestNumber, '77');
-  assert.equal(out.text, 'This new request paid nothing. You already have an open swap with the same amount (request 77); it is shown below. The bot refuses a new swap of exactly this amount until that one\'s payment is confirmed or it has expired; a different amount can be swapped now.');
+// The same for a liquidity add (flow 'add'): an unpaid add stays open and the bot refuses a new add or a USDT to NODUS
+// swap with the same Ethereum address and USDT amount (amm_journal.c:1055-1069, :2794-2812).
+const DELIVERED_UNPAID_ADD_TEXT = 'The bot has your liquidity add but nothing was paid. The add stays open until its approval time has passed and the bot has checked that no payment came. Until then the bot refuses a new liquidity add or a USDT to NODUS swap with exactly this USDT amount from your Ethereum address; a different amount can be used now.';
+
+// Proves the open_approval refusal text names the open request and says the same amount stays refused, for the swap flow
+// and for the liquidity add flow (the open request can be a swap or an add). Cannot prove the bot's behaviour; only the
+// wording of the page.
+test('the open_approval refusal names the open request and says the same amount stays refused (swap and add)', () => {
+  const err = { delivered: false, paid: false, answered: true, reason: 'open_approval', openRequestNumber: '77' };
+  const swap = describeAdapterError(err);
+  assert.equal(swap.openRequestNumber, '77');
+  assert.equal(swap.text, 'This new request paid nothing. You already have an open request with the same amount (request 77). The bot refuses this exact amount again until it has seen that request\'s payment (a swap\'s payment must also be confirmed) or the request has expired; a different amount can be used now. If request 77 is a swap, it is shown below.');
+  const add = describeAdapterError(err, { flow: 'add' });
+  assert.equal(add.openRequestNumber, '77');
+  assert.equal(add.text, 'This new request paid nothing. You already have an open request with the same USDT amount (request 77), a swap or a liquidity add. The bot refuses this exact USDT amount again until it has seen that request\'s payment (a swap\'s payment must also be confirmed) or the request has expired; a different amount can be used now.');
+});
+
+// Proves the delivered/unpaid text of the add flow differs from the swap flow's and that the swap flow keeps its own.
+test('delivered and unpaid: the add flow has its own text, the swap flow keeps its text', () => {
+  const err = { delivered: true, paid: false };
+  assert.equal(describeAdapterError(err, { flow: 'add' }).text, DELIVERED_UNPAID_ADD_TEXT);
+  assert.equal(describeAdapterError(err).text, DELIVERED_UNPAID_TEXT);
+  assert.equal(describeAdapterError(err, { flow: 'swap' }).text, DELIVERED_UNPAID_TEXT);
 });
 
 test('the adapter\'s failure ends the flow in plain words: not configured, no extension, rejected, passed-on refusal', async () => {
@@ -324,16 +341,29 @@ test('follow stops at the first final state', async () => {
   assert.equal(r.answer.paid, '9');
 });
 
-test('follow: a refund is final and carries the bot\'s reason; an unknown number or an unreachable bot is pending', async () => {
+// PROVES: a number the bot answers 404 unknown_number (amm_http.c:621-629; an open request with the same USDT amount can
+//   be a liquidity add, not a swap) stops the follow after ONE read with the unknown text, instead of waiting for
+//   every poll. FALSE PASS: the bot is the fetch stub; only the 404 + reason shape is exercised, not the real bot.
+test('follow: a 404 unknown_number answer ends the follow at once with the unknown text', async () => {
+  const { flow, fetch, sleeps } = makeFlow({ pollMax: 5, routes: { 'GET /amm/swap/*': [404, { found: false, reason: 'unknown_number' }] } });
+  const seen = [];
+  const u = await flow.follow('9', x => seen.push(x));
+  assert.equal(u.final, false);
+  assert.equal(u.unknown, true);
+  assert.equal(u.exhausted, undefined);
+  assert.equal(u.info.kind, 'unknown');
+  assert.equal(fetch.calls.filter(c => c.key.startsWith('GET /amm/swap/')).length, 1);   // no further swapState call
+  assert.equal(sleeps.length, 0);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].info.text, 'The bot has no swap with this request number. An open request with the same USDT amount can be a liquidity add, which this page does not follow.');
+});
+
+test('follow: a refund is final and carries the bot\'s reason; an unreachable bot is pending', async () => {
   const refund = makeFlow({ routes: { 'GET /amm/swap/*': [200, { requestNumber: '4242', state: 'refunded', reason: 'below your minimum' }] } });
   const r = await refund.flow.follow('4242');
   assert.equal(r.final, true);
   assert.equal(r.info.kind, 'refunded');
   assert.equal(r.answer.reason, 'below your minimum');
-  const unknown = makeFlow({ pollMax: 2, routes: { 'GET /amm/swap/*': [404, { found: false, reason: 'unknown_number' }] } });
-  const u = await unknown.flow.follow('9');
-  assert.equal(u.final, false);
-  assert.equal(u.info.kind, 'pending');
   const down = makeFlow({ pollMax: 2, routes: { 'GET /amm/swap/*': 'network-error' } });
   const d = await down.flow.follow('9');
   assert.equal(d.final, false);
@@ -653,7 +683,7 @@ test('liquidity add, NODUS "unknown" and USDT "unknown": both may have been sent
   await t.flow.loadStatus(); await t.flow.pressAdd({ side: 'nodus', amountText: '100000' });
   r = await t.flow.confirmAdd();
   assert.equal(r.oneSided, undefined);
-  assert.equal(r.text, DELIVERED_UNPAID_TEXT);
+  assert.equal(r.text, DELIVERED_UNPAID_ADD_TEXT);
 });
 
 // PROVES (correction 2): an open-approval refusal (delivered false, openRequestNumber) keeps the open swap's number so
