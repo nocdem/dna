@@ -516,6 +516,137 @@ test('no extra tip read is made when no hold exists', async t => {
   assert.equal(listReads(f) - before, withoutHold + 1); f.background.nodus.cancelSend(second.id);
 });
 
+// ---- the module queue during a hold ----
+
+// Tests of the Nodus module queue around the swap steps (plan 2026-11-12-connect-queue, section 8.2): a step the user
+// started goes ahead of waiting background work and no background call starts between two of its steps; the approval
+// window is not part of any such stretch. Environment: swap-fixture.js (the mock module's gates and log, the background's
+// own client); the background calls are `connect` slots that write their own marker to the module log, so every
+// assertion uses only those markers and the module's own `:start` / `:end` entries. Leftovers: none (the fixture
+// destroys the background). False pass: an order would also hold if the gate did not hold the call it names; each
+// test asserts that exactly one new call of that name has started before it enqueues its marker.
+const backgroundClient = f => f.background.walletKeys.getEvmWallet().nodusClient;
+const markerOn = (f, name) => backgroundClient(f).connect(async () => { f.nodusMock.log.push(name); return {}; });
+const countOf = (f, entry) => f.nodusMock.log.filter(item => item === entry).length;
+async function until(condition, what) {
+  for (let turn = 0; turn < 200 && !condition(); turn++) await new Promise(resolve => setImmediate(resolve));
+  assert.ok(condition(), what);
+}
+const holdRequest = (remote, nodusAccount, amount = '200000000') => remote.request(SWAP_METHODS.holdTransfer, [{ account: nodusAccount.address, to: foundationNodus, amount }]);
+const queueTimeout = { timeout: 20000 };
+
+// Proves a background call enqueued while the hold's first step runs does not start between the hold's steps (it runs
+// after the build), and that no lease spans the approval window: a second background call enqueued while the window is
+// open runs before the window is answered. Base: marker A runs between the balance and the list.
+test('E1: a swap hold runs its calls back to back; background work runs after them and while the window is open', queueTimeout, async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote), log = f.nodusMock.log;
+  const before = countOf(f, 'balance:start'), open = f.nodusMock.gate('balance');
+  const holding = holdRequest(remote, nodusAccount);
+  await until(() => countOf(f, 'balance:start') > before, 'the hold started its balance read');
+  assert.equal(countOf(f, 'balance:start'), before + 1, 'exactly one new balance read');
+  const markerA = markerOn(f, 'E1-A');
+  open();
+  const pending = await f.nextApproval(holding);
+  assert.equal(pending.type, 'nodus_swapPayment');
+  await markerOn(f, 'E1-B'); // the window is open: this call must be able to run now
+  await f.background.approvals.controller.acceptRequest(pending.id, true);
+  const answer = await holding; assert.equal(answer.error, undefined);
+  await markerA;
+  assert.ok(log.indexOf('E1-A') > log.lastIndexOf('buildAndSign:end'), 'marker A ran after the hold\'s last call');
+  assert.ok(log.indexOf('E1-B') >= 0);
+  assert.equal(f.nodusMock.state.overlap, false);
+});
+
+// Proves a failed hold closes its lease: a background call enqueued during it runs afterwards. Passes on the base:
+// it guards against a leaked lease and does not discriminate.
+test('E2: a failed hold closes its lease', queueTimeout, async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote);
+  f.nodusMock.state.busy.add('list');
+  const before = countOf(f, 'balance:start'), open = f.nodusMock.gate('balance');
+  const holding = holdRequest(remote, nodusAccount);
+  await until(() => countOf(f, 'balance:start') > before, 'the hold started its balance read');
+  assert.equal(countOf(f, 'balance:start'), before + 1, 'exactly one new balance read');
+  const marker = markerOn(f, 'E2-A');
+  open();
+  const answer = await holding; assert.ok(answer.error, 'the hold failed');
+  await marker;
+  assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {});
+  f.nodusMock.state.busy.delete('list');
+});
+
+// Proves sendHeld's tip read, the record and the submission run with no background call between them: a marker
+// enqueued while the tip read is in flight runs only after the submission, and the submission happens once for the hold.
+// Base: the marker runs between the tip read and the submission.
+test('E3: a held payment is sent with no background call between the tip read and the submission', queueTimeout, async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote), { answer: held } = await hold(f, remote, nodusAccount), log = f.nodusMock.log;
+  const before = countOf(f, 'list:start'), open = f.nodusMock.gate('list');
+  const sending = f.background.nodus.sendHeld(remote.origin, held.holdId);
+  await until(() => countOf(f, 'list:start') > before, 'the tip read started');
+  assert.equal(countOf(f, 'list:start'), before + 1, 'exactly one new tip read');
+  const marker = markerOn(f, 'E3-A');
+  open();
+  const sent = await sending; await marker;
+  assert.equal(sent.transferId, wireId);
+  assert.equal(f.nodusMock.state.submissions.length, 1);
+  assert.ok(log.indexOf('E3-A') > log.lastIndexOf('submit:end'), 'the marker ran after the submission');
+  assert.equal(f.nodusMock.state.overlap, false);
+});
+
+// Proves the expiry read of a send preparation and the whole preparation run back to back while a hold exists: a marker
+// enqueued while the expiry read is in flight runs after the build. Base: the marker runs between the expiry read and the
+// balance read.
+test('E4: a popup send preparation reads the expiry and prepares with no background call between', queueTimeout, async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote); await hold(f, remote, nodusAccount);
+  const log = f.nodusMock.log, before = countOf(f, 'list:start'), open = f.nodusMock.gate('list');
+  const preparing = f.background.nodus.prepareSend({ to: foundationNodus, amount: '1', tokenId: NODUS_TOKEN_ID });
+  await until(() => countOf(f, 'list:start') > before, 'the expiry read started');
+  assert.equal(countOf(f, 'list:start'), before + 1, 'exactly one new list read');
+  const marker = markerOn(f, 'E4-A');
+  open();
+  const review = await preparing; await marker;
+  assert.ok(log.indexOf('E4-A') > log.lastIndexOf('buildAndSign:end'), 'the marker ran after the preparation\'s build');
+  assert.equal(f.nodusMock.state.overlap, false);
+  f.background.nodus.cancelSend(review.id);
+});
+
+// Proves a hold whose client was stopped is refused and dropped with today's text, nothing is sent, and the hold is
+// gone afterwards (the cleanup of checkHold runs although the new flow wraps it). Passes on the base: it guards against
+// a flow that refuses a stopped client with another text and does not discriminate. False pass: the reconnect that the
+// lock schedules (first wait 5 s) dropping the hold first; sendHeld is called right after the lock and the fixture's
+// teardown locks the session, which clears that timer.
+test('E5: sendHeld on a stopped client drops the hold with today\'s text and sends nothing', queueTimeout, async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote), { answer: held } = await hold(f, remote, nodusAccount);
+  const client = backgroundClient(f); client.lock();
+  assert.equal(client.state, 'locked');
+  await assert.rejects(f.background.nodus.sendHeld(remote.origin, held.holdId), /could not be read.*dropped; nothing was sent/);
+  assert.throws(() => f.background.nodus.getHold(remote.origin, held.holdId), { code: -32602 });
+  assert.equal(f.nodusMock.state.submissions.length, 0);
+});
+
+// Proves the popup confirmation's tip read (made only while a hold exists) is user class: a marker enqueued while another
+// call is in flight, before the confirmation, runs after the confirmation's tip read, not before it. The marker's position
+// against the submission is not asserted (the gap between the tip read and the submission is by design). Base: the marker
+// runs first.
+test('E6: the popup confirmation\'s tip read passes a waiting background call', queueTimeout, async t => {
+  const f = await setup(t), remote = f.site(), nodusAccount = await connectBoth(f, remote); await hold(f, remote, nodusAccount);
+  const review = await f.background.nodus.prepareSend({ to: foundationNodus, amount: '1', tokenId: NODUS_TOKEN_ID });
+  const log = f.nodusMock.log, from = log.length, before = countOf(f, 'balance:start'), open = f.nodusMock.gate('balance');
+  const reading = backgroundClient(f).balance();
+  await until(() => countOf(f, 'balance:start') > before, 'the gated balance read started');
+  assert.equal(countOf(f, 'balance:start'), before + 1, 'exactly one new balance read');
+  const marker = markerOn(f, 'E6-A');
+  const confirming = f.background.nodus.confirmSend(review.id);
+  await new Promise(resolve => setImmediate(resolve)); // the tip read is queued behind the gated call before it opens
+  open();
+  await Promise.all([reading, marker, confirming]);
+  const listReadsAfterGate = log.slice(from).filter(entry => entry === 'list:start').length;
+  assert.equal(listReadsAfterGate, 1, 'exactly one tip read after the gate');
+  const readAt = log.indexOf('list:start', from);
+  assert.ok(readAt >= 0 && readAt < log.indexOf('E6-A'), 'the tip read ran before the marker');
+  assert.equal(f.nodusMock.state.submissions.length, 1);
+  assert.equal(f.nodusMock.state.overlap, false);
+});
+
 // ---- wiring ----
 
 // Proves the swap methods are refused to a page opened from disk (origin "null"), as the Nodus signing methods are.

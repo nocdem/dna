@@ -74,14 +74,19 @@ test('unlock checks the module identity, wipes the JS seed and starts a 60 s kee
 test('one operation queue: a second call never enters the module while the first is running', async () => {
   const { mock, client, timers } = await readyClient();
   const open = mock.gate('balance');
-  const first = client.balance(), second = client.list();
+  const first = client.balance();
+  await settle(); // balance is in flight (held by the gate) before list and the keepalives are queued
+  const second = client.list();
   timers.fn(); timers.fn(); // two keepalives while busy: only one is queued
   await settle();
   // mock.log[0..1] is the unlock call.
   assert.deepEqual(mock.log.slice(2), ['balance:start'], 'list and tick wait for balance to return');
   open();
   await first; await second; await settle();
-  assert.deepEqual(mock.log.slice(2), ['balance:start', 'balance:end', 'list:start', 'list:end', 'tick:start', 'tick:end']);
+  // The keepalive is in the user class: with balance in flight, `list` (background, enqueued first) and one coalesced
+  // tick waiting, the tick runs before `list`. It could falsely pass only if the tick had been enqueued before `list`;
+  // it is enqueued after it (the timer calls come after `client.list()` above), so the order below is the class rule.
+  assert.deepEqual(mock.log.slice(2), ['balance:start', 'balance:end', 'tick:start', 'tick:end', 'list:start', 'list:end']);
   assert.equal(mock.state.overlap, false);
   // A caller that gives up before its call started leaves the queue; the
   // module still finishes a started call before the next one enters.

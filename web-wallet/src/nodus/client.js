@@ -199,6 +199,39 @@
 // zero the whole linear memory (src/nodus/derive.js deriveNodusAddress pattern)
 // -> release(). Each step runs even if an earlier one throws, so a failing
 // export can never skip the wipe.
+//
+// OPERATION QUEUE: one module call runs at a time (a running call is never
+// interrupted); every queued call has a class, fixed when it is queued.
+//   user   — a call made through a flow view (see userFlow), the keepalive
+//            tick and the resume check's tick, and siteSignMessage;
+//   other  — everything else (Messages, the connection steps, the pollers).
+// The next call is the oldest waiting user call; only when none waits and no
+// user flow is open, the oldest waiting other call; otherwise none. Within a
+// class the order is the order of queuing. No options object can set a class.
+//   userFlow(work)             Opens a lease (a user flow), calls work(view)
+//                                synchronously and closes the lease when work
+//                                settles, before userFlow's own promise
+//                                settles; resolves with work's value, rejects
+//                                with work's error. While a lease is open no
+//                                other-class call starts, so the steps of one
+//                                user action run with no background call
+//                                between them. The view has the client's
+//                                operations (each one user class) and
+//                                userFlow, lock and the getters, but not
+//                                unlock, identify, connectNetwork or
+//                                checkLiveness. A call through a view whose
+//                                flow has ended is still user class. Every
+//                                queue call inside a flow must go through its
+//                                view: an other-class call made inside the
+//                                lease never starts while the lease is open.
+//                                lock() clears every lease.
+// KEEPALIVE: at most one tick is queued or running, whether the 60 s timer or
+// the resume check queued it; it is user class and opens no lease.
+// DEBUG LINES: every entry that starts writes `nodus-queue start op= class=
+// waited= flows=` (waited: ms since it was queued; flows: open leases) and,
+// when its module call has settled, `nodus-queue end op= class= ms= outcome=`
+// (outcome ok, or error with code and name); never an argument.
+import { debugLog, errorFields, stopwatch } from '../debug-log.js';
 import { parseAccount, parseCode, parseStorage, parseCall, parseEstimate, parseReceipt, parseLogs, parseTicket } from '../evm/rpc.js';
 import { parseAddrHistory, NODUS_HISTORY_LIMIT, NODUS_HISTORY_MAX_LIMIT } from './history.js';
 
@@ -434,29 +467,62 @@ export function createNodusClient({ factory, onState, onBeforeLock, steps, setIn
   // running now (checkLiveness).
   let pendingTick, probing;
   // ONE operation queue: Asyncify keeps a single global currData, so a second
-  // export entered while the first is suspended corrupts the first. `tail`
-  // settles only when the module call itself has returned, never merely when
-  // its caller gave up waiting.
-  let tail = Promise.resolve();
+  // export entered while the first is suspended corrupts the first. The next
+  // entry starts only after the module call itself has returned, never merely
+  // when its caller gave up waiting. Two classes (user, other) and one rule:
+  // the oldest waiting user entry; else, when no user flow (lease) is open,
+  // the oldest waiting other entry; else none. See OPERATION QUEUE above.
+  const userWaiting = [], otherWaiting = [], flows = new Set();
+  let running = false, pumpQueued = false;
+  // The fixed class marker of the calls that are user class without a flow (the
+  // site signature, the keepalive tick). It is never in `flows`, so it opens no lease.
+  const SYSTEM_FLOW = Object.freeze({});
   let locking = false, lockNotified = false;
   const waiting = new Set();
   function setState(next, why) { if (state === next) return; state = next; onState?.(next, why); }
   // A 'ready' client that has lost its session (see the callers).
   function failReady(reason, error) { if (!stopped && state === 'ready') setState('error', { reason, error }); }
-  function enqueue(op, args, { signal, assertCurrent } = {}) {
+  // Selection happens in a microtask after an enqueue, after an entry's end and
+  // after a lease closes, never inside another entry's settle path; the rule
+  // is applied at that moment, so an entry that was aborted meanwhile is gone.
+  function pump() {
+    if (pumpQueued) return;
+    pumpQueued = true;
+    queueMicrotask(() => { pumpQueued = false; startNext(); });
+  }
+  function startNext() {
+    if (running || stopped) return;
+    const entry = userWaiting.shift() ?? (flows.size === 0 ? otherWaiting.shift() : undefined);
+    if (!entry) return;
+    running = true;
+    entry.run().finally(() => { running = false; pump(); });
+  }
+  function enqueue(op, args, { signal, assertCurrent } = {}, flow) {
     if (stopped || !module) return Promise.reject(lockedError());
     if (signal?.aborted) return Promise.reject(new Error('Request cancelled.'));
-    const entry = {};
+    const user = flow !== undefined, queue = user ? userWaiting : otherWaiting, queued = stopwatch();
+    const entry = { user };
     const result = new Promise((resolve, reject) => { entry.resolve = resolve; entry.reject = reject; });
     waiting.add(entry);
     // A caller that stops waiting leaves the queue only if its call has not
     // started; a started call keeps the queue until the module returns.
-    signal?.addEventListener('abort', () => { if (waiting.delete(entry)) entry.reject(new Error('Request cancelled.')); }, { once: true });
-    const run = async () => {
+    signal?.addEventListener('abort', () => {
+      if (!waiting.delete(entry)) return;
+      const at = queue.indexOf(entry);
+      if (at >= 0) queue.splice(at, 1);
+      entry.reject(new Error('Request cancelled.'));
+    }, { once: true });
+    entry.run = async () => {
       if (!waiting.delete(entry)) return;
       if (stopped || !module) { entry.reject(lockedError()); return; }
       inFlight = entry;
+      const kind = user ? 'user' : 'other';
+      let outcome = { outcome: 'ok' }, ran;
       try {
+        // Written before the recheck below, so nothing sits between that
+        // recheck and the module call.
+        debugLog('nodus-queue', 'start', { op, class: kind, waited: queued(), flows: flows.size });
+        ran = stopwatch();
         // Site approval may have waited behind a network operation. Recheck
         // its captured origin/account permission immediately before key use.
         assertCurrent?.();
@@ -468,25 +534,35 @@ export function createNodusClient({ factory, onState, onBeforeLock, steps, setIn
         if (stopped) throw lockedError();
         entry.resolve(value);
       } catch (error) {
+        outcome = errorFields(error);
         // The module's own "session not open" refusal (NODUS_SESSION_LOST_TEXT).
         if (error?.message === NODUS_SESSION_LOST_TEXT) failReady('session lost', error);
         entry.reject(stopped ? lockedError() : error);
       }
-      finally { if (inFlight === entry) inFlight = undefined; }
+      finally {
+        if (inFlight === entry) inFlight = undefined;
+        debugLog('nodus-queue', 'end', { op, class: kind, ms: ran?.(), ...outcome });
+      }
     };
-    tail = tail.then(run);
+    queue.push(entry);
+    pump();
     return result;
   }
   function ready() { if (state !== 'ready') throw new Error('Nodus connection is not ready.'); }
+  // One keepalive entry, from the timer or from the resume check: registered
+  // as the queued one when it is enqueued and released when it settles. The
+  // clear hangs off a handled branch, so a rejecting tick raises nothing unhandled.
+  function queueTick(first) {
+    const op = first ? runStep('first tick', () => enqueue('tick', undefined, undefined, SYSTEM_FLOW)) : enqueue('tick', undefined, undefined, SYSTEM_FLOW);
+    tickQueued = true; pendingTick = op;
+    op.then(undefined, () => {}).finally(() => { tickQueued = false; if (pendingTick === op) pendingTick = undefined; });
+    return op;
+  }
   function tick() {
-    // One queued keepalive at most: a slow call must not pile ticks up behind it.
+    // One queued keepalive at most, from either path: a slow call must not pile ticks up behind it.
     if (tickQueued || state !== 'ready') return;
-    tickQueued = true;
     const first = firstTick; firstTick = false;
-    const op = first ? runStep('first tick', () => enqueue('tick')) : enqueue('tick');
-    pendingTick = op;
-    op.catch(error => { if (!stopped) setState('error', state === 'ready' ? { reason: 'keepalive', error } : undefined); })
-      .finally(() => { tickQueued = false; if (pendingTick === op) pendingTick = undefined; });
+    queueTick(first).catch(error => { if (!stopped) setState('error', state === 'ready' ? { reason: 'keepalive', error } : undefined); });
   }
   // RESUME CHECK (web 0.1.72; the caller runs it when the page is shown
   // again or the browser is back online — src/app.js). While a phone's
@@ -507,7 +583,7 @@ export function createNodusClient({ factory, onState, onBeforeLock, steps, setIn
   function checkLiveness() {
     if (stopped || !module || state !== 'ready') return Promise.resolve('skipped');
     if (probing) return probing;
-    const run = bounded(() => runStep('resume check', () => pendingTick || enqueue('tick')))
+    const run = bounded(() => runStep('resume check', () => pendingTick || queueTick(false)))
       .then(() => 'ok', error => {
         if (error?.timedOut === true) return 'timed out';
         failReady('resume check', error);
@@ -581,6 +657,7 @@ export function createNodusClient({ factory, onState, onBeforeLock, steps, setIn
       //    call in flight (its late result is discarded).
       for (const entry of waiting) entry.reject(lockedError());
       waiting.clear();
+      userWaiting.length = 0; otherWaiting.length = 0; flows.clear();
       inFlight?.reject(lockedError()); inFlight = undefined;
       const current = module; module = undefined; fingerprint = undefined; chainId = undefined;
       if (current) {
@@ -718,7 +795,11 @@ export function createNodusClient({ factory, onState, onBeforeLock, steps, setIn
     return connecting;
   }
   const identified = () => !stopped && !!module && fingerprint !== undefined && (state === 'identified' || state === 'connecting' || state === 'ready');
-  const call = op => (args, options) => { try { ready(); } catch (error) { return Promise.reject(error); } return enqueue(op, args, options); };
+  // The client's operation surface. `flow` is the class of every queued call made through it: undefined for the
+  // top-level client (other class), a flow object for a view (user class). The getters are live accessors on each.
+  // (The body keeps the indentation it had before it moved into this function, so the diff shows only real changes.)
+  function surface(flow) {
+  const call = (op, as = flow) => (args, options) => { try { ready(); } catch (error) { return Promise.reject(error); } return enqueue(op, args, options, as); };
   const claimCall = op => (args, options) => claimable ? call(op)(args, options) : Promise.reject(new Error('Claiming is not available in this wallet version.'));
   const stakeCall = op => (args, options) => stakeable ? call(op)(args, options) : Promise.reject(new Error('Staking is not available in this wallet version.'));
   const noHf6 = () => new Error('Witness and storage roles are not available in this wallet version.');
@@ -741,19 +822,16 @@ export function createNodusClient({ factory, onState, onBeforeLock, steps, setIn
     get fingerprint() { return fingerprint; },
     get chainId() { return chainId; },
     get publicKey() { return publicKey; },
+    // Always user class: its only caller runs it after the user approved the window.
     siteSignMessage: ({ origin, message } = {}, options) => {
       if (stopped) return Promise.reject(lockedError());
-      return call('siteSignMessage')({ origin, message }, options);
+      return call('siteSignMessage', flow ?? SYSTEM_FLOW)({ origin, message }, options);
     },
     // Whether the loaded module offers the genesis claim (CLAIM_OPS).
     get claimable() { return claimable && state === 'ready'; },
     // The identity is known (identify or unlock finished) and the client is
     // not failed or locked: 'identified', 'connecting' after it, or 'ready'.
     get identified() { return identified(); },
-    unlock,
-    identify,
-    connectNetwork,
-    checkLiveness,
     balance: (options) => call('balance')(undefined, options),
     list: (options) => call('list')(undefined, options),
     buildAndSign: call('buildAndSign'),
@@ -876,7 +954,7 @@ export function createNodusClient({ factory, onState, onBeforeLock, steps, setIn
       if (!connectable) return Promise.reject(noMessages());
       if (typeof run !== 'function') return Promise.reject(new Error('Invalid Messages operation.'));
       if (!identified()) return Promise.reject(new Error('Nodus connection is not ready.'));
-      return enqueue('connect', run, options);
+      return enqueue('connect', run, options, flow);
     },
     connectSync(run) {
       if (stopped || !module) throw lockedError();
@@ -884,6 +962,27 @@ export function createNodusClient({ factory, onState, onBeforeLock, steps, setIn
       if (typeof run !== 'function') throw new Error('Invalid Messages operation.');
       return module.connectSync(run);
     },
+    userFlow,
     lock
   };
+  }
+  // Opens a lease (a user flow): `work` gets a view whose queued calls are user class; the lease closes when `work`
+  // settles, before this promise does. It never refuses for the client's state: the calls inside refuse as they do on
+  // the client itself.
+  function userFlow(work) {
+    if (typeof work !== 'function') return Promise.reject(new Error('Invalid Nodus operation.'));
+    const flow = {};
+    flows.add(flow);
+    const close = () => { flows.delete(flow); pump(); };
+    let done;
+    try { done = Promise.resolve(work(surface(flow))); } catch (error) { close(); return Promise.reject(error); }
+    return done.then(value => { close(); return value; }, error => { close(); throw error; });
+  }
+  // The top-level client: the view's surface plus the four connection operations, added as properties so the getters stay live.
+  const client = surface(undefined);
+  client.unlock = unlock;
+  client.identify = identify;
+  client.connectNetwork = connectNetwork;
+  client.checkLiveness = checkLiveness;
+  return client;
 }

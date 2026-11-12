@@ -354,6 +354,31 @@ test('client site signing shares the queue: aborted waiters and locked queued/ru
   gate.resolve(); assert.deepEqual(calls, []);
 });
 
+// Proves a site signature is user class: with a call in flight and a background call (`list`) enqueued before it, the
+// signature runs first, and its recheck (`assertCurrent`) still runs immediately before the module call (order:
+// balance, assert, sign, list). Environment: inline module, no network, no flags; leaves nothing behind (client locked).
+// False pass: the order would also hold if `list` were enqueued after the signature; it is enqueued before it, and the
+// gate keeps `balance` in flight until all three are queued.
+test('client site signing is user class: it passes a waiting background call and keeps its recheck before the module call', async () => {
+  const gate = deferred(), entered = deferred(), calls = [];
+  const module = { async unlock() { return { fingerprint: address, chainId: '56'.repeat(32), publicKey }; },
+    async balance() { calls.push('balance'); entered.resolve(); await gate.promise; return { total: '0', spendable: '0' }; },
+    async siteSignMessage() { calls.push('sign'); return new Uint8Array(4627); },
+    async list() { calls.push('list'); }, async buildAndSign() {}, async submit() {}, async scanConfirm() {}, async tick() {},
+    async rulesetInfo() { return { generation: '1', tip: '1', gen2Height: '0' }; },
+    cancel() {}, lock() {}, release() {}, memory: { buffer: new ArrayBuffer(64) } };
+  const client = createNodusClient({ factory: async () => module, setInterval: () => 1, clearInterval() {} });
+  try {
+    await client.unlock({ seed: new Uint8Array(32), fingerprint: address });
+    const running = client.balance(); await entered.promise;
+    const waiting = client.list();
+    const signing = client.siteSignMessage({ origin: 'https://site.example', message: new Uint8Array([1]) }, { assertCurrent: () => calls.push('assert') });
+    gate.resolve();
+    await Promise.all([running, waiting, signing]);
+    assert.deepEqual(calls, ['balance', 'assert', 'sign', 'list']);
+  } finally { client.lock(); }
+});
+
 test('permission revoked while signing is queued prevents the module from signing', async t => {
   const f = await setup(t), remote = f.site(); await f.connect(remote);
   f.state.balanceWait = deferred(); f.state.entered = deferred();

@@ -2104,9 +2104,36 @@ What is in place:
   `BigInt` in JS. Rules it enforces:
   - **One operation queue.** Asyncify has a single global `currData`, so a
     second export entered while the first is suspended would corrupt it. Every
-    call waits until the previous module call has actually returned; a caller
-    that aborts before its call started leaves the queue; keepalives never pile
-    up (at most one queued).
+    call waits until the previous module call has actually returned (a running
+    call is never interrupted); a caller that aborts before its call started
+    leaves the queue; keepalives never pile up (at most one queued or running,
+    whether the 60 s timer or the resume check queued it).
+    - **Two classes.** Every queued call has a class, fixed when it is queued
+      and never taken from an options object. *User*: a call made through a
+      flow view (below), the keepalive tick and `siteSignMessage`. *Other*:
+      everything else (Messages, the connection steps, the pollers). The next
+      call is the oldest waiting user call; only when none waits and no user
+      flow is open, the oldest waiting other call. Within a class the order is
+      the order of queuing.
+    - **`userFlow(work)`** opens a lease, calls `work(view)` and closes the
+      lease when `work` settles, before its own promise settles. While a lease
+      is open no other-class call starts, so the steps of one user action (a
+      send preparation, a swap hold, a held payment) run with no background
+      call between them. The view carries the client's operations (each one user
+      class), `userFlow`, `lock` and the getters, not `unlock`, `identify`,
+      `connectNetwork` or `checkLiveness`; a call through a view whose flow
+      has ended (a prepared review's later submission) is still user class.
+      Every queue call inside a flow must go through its view: an other-class
+      call made inside the lease never starts while it is open. `lock()` clears
+      every lease. The wallet's send preparation (`prepareTransfer`) and, in the
+      extension, the swap hold, the hold check, the held payment's send, the
+      popup's send preparation and the tip read of a popup confirmation run
+      as flows.
+    - **Debug lines.** Each entry that starts writes
+      `nodus-queue start op=… class=… waited=… flows=…` (milliseconds since it
+      was queued; open leases) and, when its module call has settled,
+      `nodus-queue end op=… class=… ms=… outcome=…` (`ok`, or `error` with code
+      and name); never an argument.
   - **Lock order:** stop the queue (queued and in-flight callers get "Wallet is
     locked.") → `cancel()` (C cancel flag) → `lock()` (WebSocket closed) → the
     whole linear memory zeroed (`derive.js` pattern) → `release()` (must make any
