@@ -848,6 +848,8 @@ test('confirmAdd passes onStep to the adapter; without onStep the old call shape
   const seen = [];
   assert.equal((await flow.confirmAdd({ onStep: st => seen.push(st) })).ok, true);
   assert.deepEqual(seen, FLOW_STEPS.liquidityAdd);
+  // The first pair is spent by the successful add, so the second call needs a new pair (the stub route answers the same body).
+  assert.equal((await flow.pressAdd({ side: 'usdt', amountText: '10' })).ok, true);
   assert.equal((await flow.confirmAdd()).ok, true);   // no argument at all: unchanged for old callers
   assert.equal(adapter.calls.length, 2);
 });
