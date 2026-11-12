@@ -122,16 +122,16 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     if (s.ownName || s.ownNameAsked || !s.client?.nameable) return;
     s.ownNameAsked = true;
     adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal })
-      .then(own => keepOwnName(s, own), () => { s.ownNameAsked = false; });
+      .then(own => { void keepOwnName(s, own); }, () => { s.ownNameAsked = false; });
   }
-  // Re-reads the kept name from the network without making the caller wait; one read at a time, and a failed or
-  // not-found read leaves the kept name as it is.
+  // Re-reads the kept name from the network without making the caller wait; one read at a time, and a failed read
+  // leaves the kept name as it is (an answer of not-found removes it). The one-at-a-time flag covers the network read
+  // only: it is cleared when the answer or the failure arrives, and the save of the record runs without holding it.
   function refreshOwnName(s) {
     if (s.ownNameRefreshing || !s.client?.nameable) return;
     s.ownNameRefreshing = true;
     adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal })
-      .then(own => keepOwnName(s, own), () => {})
-      .finally(() => { s.ownNameRefreshing = false; });
+      .then(own => { s.ownNameRefreshing = false; void keepOwnName(s, own); }, () => { s.ownNameRefreshing = false; });
   }
   function active() {
     lockCoordinator.assertUnlocked();
