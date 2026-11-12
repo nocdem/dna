@@ -61,7 +61,7 @@ export function describeAdapterError(err, ctx = {}) {
     // the same sender and amount exists; its number is kept so the page follows that open swap.
     if (err.openRequestNumber != null) {
       out.openRequestNumber = String(err.openRequestNumber);
-      out.text = `This new request paid nothing. You already have an open swap with the same amount (request ${out.openRequestNumber}); it is shown below. The bot refuses a new swap of exactly this amount until that one is finished or has expired; a different amount can be swapped now.`;
+      out.text = `This new request paid nothing. You already have an open swap with the same amount (request ${out.openRequestNumber}); it is shown below. The bot refuses a new swap of exactly this amount until that one's payment is confirmed or it has expired; a different amount can be swapped now.`;
       return out;
     }
     out.text = typeof err.reason === 'string' && err.answered

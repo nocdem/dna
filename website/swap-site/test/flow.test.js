@@ -233,7 +233,7 @@ const DELIVERED_UNPAID_TEXT = 'The bot has your request but nothing was paid. Th
 test('the open_approval refusal names the open request and says the same amount stays refused', () => {
   const out = describeAdapterError({ delivered: false, paid: false, answered: true, reason: 'open_approval', openRequestNumber: '77' });
   assert.equal(out.openRequestNumber, '77');
-  assert.equal(out.text, 'This new request paid nothing. You already have an open swap with the same amount (request 77); it is shown below. The bot refuses a new swap of exactly this amount until that one is finished or has expired; a different amount can be swapped now.');
+  assert.equal(out.text, 'This new request paid nothing. You already have an open swap with the same amount (request 77); it is shown below. The bot refuses a new swap of exactly this amount until that one\'s payment is confirmed or it has expired; a different amount can be swapped now.');
 });
 
 test('the adapter\'s failure ends the flow in plain words: not configured, no extension, rejected, passed-on refusal', async () => {
