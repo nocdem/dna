@@ -30,12 +30,16 @@ export function formatFields(fields) {
   return out.join(' ');
 }
 
-// The named fields of an adapter / extension error (never the error object, its stack or its `cause`).
+// The named fields of an adapter / extension error (never the error object, its stack or its `cause`). Each property is
+// read on its own, so a getter that throws (or a value that is not an object) gives "[unreadable]" for that field and
+// never reaches the caller: the callers evaluate this as an argument, outside the logger's guard.
+const ERROR_FIELDS = ['code', 'extensionCode', 'delivered', 'paid', 'nodusSent', 'reason', 'openRequestNumber', 'answered', 'message'];
 export function errorFields(err) {
-  return {
-    code: err?.code, extensionCode: err?.extensionCode, delivered: err?.delivered, paid: err?.paid, nodusSent: err?.nodusSent,
-    reason: err?.reason, openRequestNumber: err?.openRequestNumber, answered: err?.answered, message: err?.message,
-  };
+  const out = {};
+  for (const name of ERROR_FIELDS) {
+    try { out[name] = err?.[name]; } catch { out[name] = '[unreadable]'; }
+  }
+  return out;
 }
 
 // A logger that does nothing: the default of every module, so a caller that gives no logger is unchanged.

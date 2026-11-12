@@ -182,3 +182,42 @@ test('a logger that throws changes no flow or bot result', async () => {
   assert.doesNotThrow(() => guardLog(thrower).info('a', 'b', {}));
   assert.equal(guardLog(thrower).timer()(), 0);
 });
+
+// PROVES: an error whose `answered` and `message` getters throw does not change a flow result: the withdraw signing
+// failure, the confirm delivered failure and the adapter failure path return what they return for a plain error of the
+// same shape, and the logger still writes its warn line, with "[unreadable]" for the two fields (and the readable ones kept).
+// FALSE PASS: the two getters are read only by errorFields on these paths (describeAdapterError reads neither for a
+//   delivered:true error); if the flow code started to read them itself, the plain-error comparison would throw in both
+//   runs and the test would fail rather than pass. Other properties with throwing getters are not tried.
+test('an error with throwing getters changes no flow result and is still logged', async () => {
+  const plainErr = () => new AdapterError('extension_error', 'x', { delivered: true, paid: false, extensionCode: 4001, answered: false });
+  const hostile = () => {
+    const e = plainErr();
+    Object.defineProperty(e, 'answered', { get() { throw new Error('getter broke'); } });
+    Object.defineProperty(e, 'message', { get() { throw new Error('getter broke'); } });
+    return e;
+  };
+  const confirmRun = async (log, mk) => {
+    const flow = build({ log, adapter: { async usdtToNodus() { throw mk(); } } });
+    await flow.loadStatus(); await flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
+    return flow.confirm({ toleranceBps: 100 });
+  };
+  const withdrawRun = async (log, mk) => {
+    const f = createSwapFlow({ bot: createBotClient({ fetch: stubFetch({ 'GET /amm/status': [200, STATUS] }), log }), adapter: okAdapter, botUrl: BOT_ORIGIN, signText: async () => { throw mk(); }, log, random: () => '777' });
+    f.setAccounts(ACCOUNTS); await f.loadStatus();
+    return f.withdraw({ basisPoints: 100 });
+  };
+  for (const run of [confirmRun, withdrawRun]) {
+    const expected = await run(undefined, plainErr);
+    const log = capture();
+    const got = await run(log, hostile);
+    assert.deepEqual(got, expected);
+    const warn = log.events.find(e => e.level === 'warn' && /call_failed|sign_failed/.test(e.event));
+    assert.ok(warn, run.name);
+    assert.equal(warn.fields.answered, '[unreadable]');
+    assert.equal(warn.fields.message, '[unreadable]');
+    assert.equal(warn.fields.delivered, true);
+    assert.equal(warn.fields.extensionCode, 4001);
+  }
+  assert.deepEqual(errorFields(null), Object.fromEntries(Object.keys(errorFields({})).map(k => [k, undefined])));
+});
