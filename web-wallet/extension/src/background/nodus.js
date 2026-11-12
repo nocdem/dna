@@ -71,20 +71,23 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
   // The chain name of this wallet's own account, kept only when the reverse lookup (nameOf, adapter ownChainName)
   // confirmed it for this exact address. It lives on the session, so a lock drops it. The signature window reads it
   // without waiting for the network; warmOwnName asks in the background so a later window has it.
+  // Returns the promise of the save of the kept record (settled when it is written or failed).
   function keepOwnName(s, own) {
-    if (session !== s) return;
+    if (session !== s) return Promise.resolve();
+    let saved = Promise.resolve();
     if (own?.found && typeof own.name === 'string') {
       const had = s.identity?.name;
       s.ownName = { address: s.addresses.nodus, name: own.name };
-      noteIdentity(s, { name: own.name });
+      saved = noteIdentity(s, { name: own.name });
       debugLog('identity', had === own.name ? 'kept-name-confirmed' : had ? 'kept-name-replaced' : 'name-kept');
     } else if (own?.found === false) {
       // The lookup answered that this wallet has no name: neither the confirmed nor the kept one stands.
       const had = Boolean(s.identity?.name);
       s.ownName = undefined;
-      noteIdentity(s, { name: '' });
+      saved = noteIdentity(s, { name: '' });
       if (had) debugLog('identity', 'kept-name-removed');
     }
+    return saved;
   }
   // The own identity of a saved wallet (decision 2026-10-02-device-cache-only-when-saved: the extension's wallet is
   // always a saved vault wallet): the own receive addresses and the own chain name last confirmed, kept encrypted
@@ -95,10 +98,10 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     return Object.fromEntries(Object.entries(addresses ?? {}).filter(valid).sort(([a], [b]) => (a === 'nodus' ? -1 : b === 'nodus' ? 1 : 0)).slice(0, 8));
   }
   function noteIdentity(s, change) {
-    if (session !== s || !s.identityKey) return;
+    if (session !== s || !s.identityKey) return Promise.resolve();
     const next = { ...s.identity, ...change, addresses: { ...s.identity.addresses, ...keptAddresses(change.addresses) } };
     if (!next.name) delete next.name;
-    if (JSON.stringify(next) === JSON.stringify(s.identity)) return;
+    if (JSON.stringify(next) === JSON.stringify(s.identity)) return Promise.resolve();
     s.identity = next;
     const job = writes.catch(() => {}).then(async () => {
       current(s);
@@ -106,8 +109,9 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       const saved = await storage.get(VAULT_KEY); current(s);
       if (saved[VAULT_KEY] !== s.vault) return;
       await storage.set({ [IDENTITY_KEY]: value });
-    }).catch(() => { /* kept again at the next change */ });
+    }).catch(error => { debugLog('identity', 'save-failed', errorFields(error)); /* kept again at the next change */ });
     writes = job;
+    return job;
   }
   function keptOwnNameOf(s) {
     const name = s?.identity?.name;
@@ -505,7 +509,9 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       // background and refreshes the kept name. Without a kept name the read below waits for the network as before.
       lockCoordinator.assertUnlocked();
       if (session) { current(session); const kept = confirmedOwnName(session, session.addresses.nodus); if (kept) { refreshOwnName(session); return { found: true, name: kept }; } }
-      const s = active(); const own = await adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal }); current(s); keepOwnName(s, own); return own;
+      const s = active(); const own = await adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal }); current(s);
+      // The answer is saved (or the kept name removed) before it is returned, so the record already holds it when the page sees it.
+      await keepOwnName(s, own); return own;
     },
     async getNamePrices() { const s = active(); const value = adapter.parseNamePrices(await s.client.namePrices()); current(s); return { ...value, text: adapter.namePriceList(value.prices) }; },
     async quoteName(name) { const s = active(); const value = await adapter.nameQuote({ client: s.client, from: s.addresses.nodus, name, signal: s.abort.signal }); current(s); return value; },

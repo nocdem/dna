@@ -250,3 +250,19 @@ test('a kept balance without a kept price stays out of the total', () => {
   const row = snap.rows.find(r => r.key === 'ethereum:ETH');
   assert.equal(snap.total, null); assert.equal(snap.keptCount, 0); assert.equal(row.usd, null); assert.equal(row.keptAt, now - 1000);
 });
+
+// Proves a kept balance with a kept price counts in the total only while that asset's fresh read is pending (idle or
+// loading), and leaves it once the read has failed (the existing rule: a chain whose read fails is left out of the
+// total); the failed row still shows its last read value and time. Could falsely pass if the kept entry carried no
+// price; the pending cases assert the kept total first.
+test('a kept value counts while its read is pending and leaves the total when the read fails', () => {
+  const kept = { 'ethereum:ETH': { units: UNITS, observedAt: now - 1000, address: '0xabc', price: { units: PRICE, observedAt: now - 5000 } } };
+  for (const state of [{ state: 'idle' }, { state: 'loading' }]) {
+    const pending = portfolioSnapshot({ 'ethereum:ETH': state }, {}, now, ASSETS, kept);
+    assert.equal(pending.total, valued(UNITS, PRICE), state.state); assert.equal(pending.keptCount, 1); assert.equal(pending.keptAt, now - 5000);
+  }
+  const failed = portfolioSnapshot({ 'ethereum:ETH': { state: 'error', error: 'Balance unavailable' } }, {}, now, ASSETS, kept);
+  const row = failed.rows.find(r => r.key === 'ethereum:ETH');
+  assert.equal(failed.total, null); assert.equal(failed.keptCount, 0); assert.equal(row.usd, null);
+  assert.equal(row.balance, '1.5'); assert.equal(row.keptAt, now - 1000);
+});

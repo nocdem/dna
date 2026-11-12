@@ -118,7 +118,10 @@ export function portfolioSnapshot(balances, quotes, now = Date.now(), assets = A
     // A kept balance is valued at once when a price was kept with it (or the fresh price, which then replaces the kept
     // one): the total shows the last read value while the fresh reads are made. A kept balance whose price was never
     // kept stays out of the total.
-    const keptPrice = last && priced && typeof last.price?.units === 'bigint' ? (freshPrice ? quote : last.price) : undefined;
+    // It counts only while that asset's fresh read is still to come (idle) or running (loading): once the read FAILED, or
+    // the read balance has aged out, the asset leaves the total as before (its row still shows the last read value and time).
+    const waiting = balance.state === 'idle' || balance.state === 'loading';
+    const keptPrice = last && priced && waiting && typeof last.price?.units === 'bigint' ? (freshPrice ? quote : last.price) : undefined;
     const keptUsd = keptPrice ? last.units * keptPrice.units / (10n ** BigInt(asset.decimals)) : null;
     return { ...asset, ...balance, state: balance.state === 'ready' && !freshBalance ? 'stale' : balance.state,
       balance: freshBalance ? formatUnits(balance.units, asset.decimals) : last ? formatUnits(last.units, asset.decimals) : null,
