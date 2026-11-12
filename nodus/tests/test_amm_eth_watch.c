@@ -1351,18 +1351,18 @@ static void w25_window_by_value(void) {
     }
 }
 
-/* W26  only the providers that returned the quorum header of block h are asked
- * for the logs of block h (live evidence 2026-11-12: a provider without block h
- * answered every eth_getLogs with an error, one call in three wasted).
- * CHANGED 2026-11-12 (Sol recheck 2): the saving for a provider whose header
- * read FAILED was removed (it changed verdicts against the parent's evidence
- * set); only a provider with a DIFFERENT header is excluded.
+/* W26  the evidence set of the block logs is the parent's: every usable provider
+ * is asked, whatever its header read returned (the first version of this test
+ * asserted a saving, no get_logs for a provider without the quorum header, which
+ * changed verdicts against bf5a4bcb4 and was removed in two steps, 2026-11-12:
+ * Sol recheck 2 for failed header reads, the code red team N2 for different
+ * headers).
  * PROVES: with three providers and quorum 2, (a) a provider that has NO header
- * at height 10 IS still asked get_logs for block 10 (the parent's evidence set)
- * and (b) a provider that returns a DIFFERENT header at heights 10..13 is never
- * asked get_logs for those heights (counted per block in the stub), the two
- * agreeing providers are asked, the control block 9 asks all three, and the
- * payment at block 10 still counts.
+ * at height 10 and (b) a provider that returns a DIFFERENT header at heights
+ * 10..13 ARE asked get_logs for those heights (counted per block in the stub),
+ * the two agreeing providers are asked, the control block 9 asks all three, and
+ * the payment at block 10 still counts (logs of another block hash are rejected
+ * by log_ok, as at the parent).
  * FLAGS: default build. LEAVES BEHIND: the usual /tmp journal of this file.
  * HOW IT CAN FALSELY PASS: the counter is the stub's own get_logs entry, so a
  * watcher that fetched the logs through another call (get_tx, get_receipt)
@@ -1392,8 +1392,11 @@ static void w26_logs_only_from_quorum_header_providers(void) {
         for (int h = 10; h <= last; h++) asked_bad += g_sp[2].asked[h];
         if (variant == 0)
             CHECK(asked_bad > 0, "no header at 10: that provider IS asked for block 10 (the parent's evidence)");
-        else
-            CHECK(asked_bad == 0, "another header at 10..13: that provider is not asked for those blocks");
+        else {
+            int all = 1;
+            for (int h = 10; h <= 13; h++) all &= g_sp[2].asked[h] > 0;
+            CHECK(all, "another header at 10..13: that provider IS asked for each of those blocks (the parent's evidence)");
+        }
         CHECK(g_sp[0].asked[10] > 0 && g_sp[1].asked[10] > 0, "  the two agreeing providers are asked for block 10");
         CHECK(g_sp[0].asked[9] > 0 && g_sp[1].asked[9] > 0 && g_sp[2].asked[9] > 0,
               "  control: all three providers are asked for block 9, where all agree");
@@ -1549,6 +1552,50 @@ static void w30_moved_transaction_not_gone(void) {
     CHECK(g_sp[2].asked[12] > 0, "C was asked for the logs of block 12");
 }
 
+/* W31  the code red team's N2 (2026-11-12): a provider that returned a
+ * DIFFERENT header at the moved transaction's new block still counts as
+ * evidence through its logs.
+ * PROVES: as W30, but C's header at block 12 is a DIFFERENT header (not a failed
+ * read) while its eth_getLogs lists the transaction stamped with the QUORUM
+ * block's hash. A and B list nothing for the transaction. The record is not
+ * declared gone: it stays deep, nothing is dropped, and C was asked for block 12
+ * (the parent counted C's listing: find_tx_record "unknown"; excluding C turns
+ * it into "gone").
+ * HOW IT CAN FALSELY PASS: the log stamped with the quorum hash from a provider
+ * that disagrees about the header is a hand-built inconsistency, and the
+ * receipt fixture is the one of W30; another reason for the record to stay deep
+ * is excluded by the dropped counter and C's get_logs counter for block 12.
+ * With C excluded (cae470fb7) the record is dropped and the checks fail. */
+static void w31_different_header_provider_listing(void) {
+    printf("W31 a moved transaction listed only by a different-header provider is not declared gone\n");
+    fresh(20);
+    ch_build(&g_chain, 1, 15, 0, 0);
+    ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+    amm_eth_step_t o;
+    step(&o);
+    char st[16];
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"), "setup: a deep payment of 5 at block 10");
+    for (int i = 0; i < 2; i++) {                      /* A and B: the quorum chain */
+        ch_build(&g_alt[i], 1, 16, 10, 1);
+        ch_pay(&g_alt[i], 0x31, 0, 12, 0x11, 5);
+        for (int k = 0; k < NL; k++)
+            if (g_alt[i].g[k].used && g_alt[i].g[k].l.tx[0] == 0x31) g_alt[i].g[k].used = 0;
+        g_sp[i].ch = &g_alt[i];
+    }
+    ch_build(&g_alt[2], 1, 16, 10, 2);                 /* C: another header from 10 */
+    ch_pay(&g_alt[2], 0x31, 0, 12, 0x11, 5);
+    for (int k = 0; k < NL; k++)                       /* C's log carries the QUORUM hash */
+        if (g_alt[2].g[k].used && g_alt[2].g[k].l.tx[0] == 0x31)
+            memset(g_alt[2].g[k].l.block_hash, hb(12, 1), 32);
+    g_sp[2].ch = &g_alt[2];
+    memset(g_sp[2].asked, 0, sizeof(g_sp[2].asked));
+    step(&o);
+    CHECK(o.dropped == 0, "nothing is dropped in that step");
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"),
+          "the record is not declared gone: it stays deep");
+    CHECK(g_sp[2].asked[12] > 0, "C, with another header at block 12, was asked for its logs");
+}
+
 int main(void) {
     printf("test_amm_eth_watch\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_watch_testXXXXXX");
@@ -1584,6 +1631,7 @@ int main(void) {
     w28_disagreement_asks_failed_header_provider();
     w29_no_early_stop();
     w30_moved_transaction_not_gone();
+    w31_different_header_provider_listing();
 
     if (g_w) amm_eth_watch_free(g_w);
     if (g_j) amm_journal_close(g_j);
