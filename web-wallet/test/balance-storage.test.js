@@ -8,14 +8,15 @@ import { ASSETS, portfolioSnapshot, BALANCE_MAX_AGE } from '../src/portfolio.js'
 
 const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
 const id = Buffer.alloc(16, 7).toString('base64'), otherId = Buffer.alloc(16, 8).toString('base64');
-const entries = { 'ethereum:ETH': { units: '1500000000000000000', observedAt: 1790000000000, address: '0xabc' } };
+// Every kept balance carries the network it was read on ('main' for mainnet): without it the row is a legacy row.
+const entries = { 'ethereum:ETH': { units: '1500000000000000000', observedAt: 1790000000000, address: '0xabc', network: 'main' } };
 
 test('saved balances: round trip under the balances key', async () => {
   const key = await balancesKeyFor(phrase, id);
   const text = await serializeBalances(id, entries, key);
   assert.ok(!text.includes('1500000000000000000') && !text.includes('0xabc'));
   const back = await parseBalances(text, id, key, 1790000000000);
-  assert.deepEqual(back, { 'ethereum:ETH': { units: 1500000000000000000n, observedAt: 1790000000000, address: '0xabc' } });
+  assert.deepEqual(back, { 'ethereum:ETH': { units: 1500000000000000000n, observedAt: 1790000000000, address: '0xabc', network: 'main' } });
   assert.deepEqual(await parseBalances(null, id, key), {});
 });
 
@@ -34,7 +35,9 @@ test('saved balances: another vault id, the activity key or a changed byte is re
 
 test('saved balances: malformed entries are refused', async () => {
   const key = await balancesKeyFor(phrase, id);
-  for (const bad of [{ 'ethereum:ETH': { units: '-1', observedAt: 1, address: 'a' } }, { 'ethereum:ETH': { units: '1', observedAt: 1790000000000 + 3600000, address: 'a' } }, { 'bad key!': { units: '1', observedAt: 1, address: 'a' } }, { 'ethereum:ETH': { units: '1', observedAt: 1, address: '' } }]) {
+  const n = 'main';
+  for (const bad of [{ 'ethereum:ETH': { units: '-1', observedAt: 1, address: 'a', network: n } }, { 'ethereum:ETH': { units: '1', observedAt: 1790000000000 + 3600000, address: 'a', network: n } }, { 'bad key!': { units: '1', observedAt: 1, address: 'a', network: n } }, { 'ethereum:ETH': { units: '1', observedAt: 1, address: '', network: n } },
+    { 'ethereum:ETH': { units: '1', observedAt: 1, address: 'a', network: 'bad network!' } }, { 'ethereum:ETH': { units: '1', observedAt: 1, address: 'a', network: 5 } }]) {
     await assert.rejects(parseBalances(await serializeBalances(id, bad, key), id, key, 1790000000000), /Invalid saved balances/);
   }
 });
@@ -68,4 +71,18 @@ test('saved balances: a kept price round-trips and a malformed price is refused'
   for (const price of [{ units: '-1', observedAt: 1 }, { units: '1', observedAt: 0 }, { units: '1', observedAt: 1790000000000 + 3600000 }, 'x']) {
     await assert.rejects(parseBalances(await serializeBalances(id, { 'ethereum:ETH': { ...entries['ethereum:ETH'], price } }, key), id, key, 1790000000000), /Invalid saved balances/);
   }
+});
+
+// Proves a saved row WITHOUT a network (written before rows were bound to the network they were read on) is dropped on load,
+// not assumed to be mainnet, while the rows that carry one survive; and that a sealed Sepolia row keeps its own network id.
+// Could falsely pass if serializeBalances itself dropped the row: the survivors' keys are asserted, and the legacy row is
+// sealed with the same call as the others (a build that dropped it at save time would not be a legacy-record test).
+test('saved balances: a legacy row without a network is dropped on load, a test-network row keeps its network', async () => {
+  const key = await balancesKeyFor(phrase, id), sepolia = 'test:11155111:ethereum-sepolia-rpc.publicnode.com';
+  const mixed = { 'ethereum:ETH': { units: '5', observedAt: 1790000000000, address: '0xabc' }, 'bsc:BNB': { units: '7', observedAt: 1790000000000, address: '0xabc', network: 'main' },
+    'solana:SOL': { units: '9', observedAt: 1790000000000, address: 'sol', network: sepolia } };
+  const text = await serializeBalances(id, mixed, key);
+  const back = await parseBalances(text, id, key, 1790000000000);
+  assert.deepEqual(Object.keys(back).sort(), ['bsc:BNB', 'solana:SOL']);
+  assert.equal(back['solana:SOL'].network, sepolia); assert.equal(back['bsc:BNB'].network, 'main');
 });
