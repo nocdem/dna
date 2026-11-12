@@ -12,6 +12,7 @@ import { chainNetwork } from '../src/constants/networks.js';
 import { connectTrusted } from '../src/ui/trusted-port.js';
 import { createWalletUi } from '../src/ui/wallet-ui.js';
 import { rpcFetch } from '../../src/rpc-transport.js';
+import { setDebugLogSink } from '../../src/debug-log.js';
 
 // Public web-wallet vector and fake module replies; no live transport is used.
 const { phrase, address } = JSON.parse(readFileSync(new URL('../../test/fixtures/nodus-addresses.json', import.meta.url))).vectors[0];
@@ -945,7 +946,7 @@ test('a listing answer arriving after lock writes nothing', async t => {
 // successful call, and is emptied by lock like every other line. Could falsely pass if another 'net' line contained the test
 // host: only lines naming it are counted. The unit-level and no-secret checks are in test/debug-log.test.js.
 test('a failed RPC call appears in the background session log and is cleared on lock', async t => {
-  const { background } = await setup(t);
+  const { background } = await setup(t); await unlockConnected(background);
   const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] });
   const call = fetcher => rpcFetch('https://rpc.background-test.example/', { method: 'POST', body }, { fetcher });
   const mine = () => background.nodus.getSessionLog().entries.filter(line => line.text.includes('rpc.background-test.example'));
@@ -957,4 +958,26 @@ test('a failed RPC call appears in the background session log and is cleared on 
   assert.match(mine()[0].text, /^rpc call host=rpc\.background-test\.example method=eth_chainId ms=\d+ outcome=error name=TimeoutError$/);
   await background.lock();
   assert.deepEqual(mine(), []);
+});
+
+// Proves the background session log stays empty after lock even when an RPC call that was pending at lock fails later: the lock
+// aborts the call, the abort rejection arrives after log.clear(), the transport writes its debug line (outcome=error,
+// name=AbortError), and noteDebugLine must write nothing while no wallet session is unlocked. The console debug line itself is not
+// touched. Could falsely pass if the call finished before the lock (the test asserts it was still pending) or if the abort never
+// produced a debug line (the debug sink is read to confirm one arrived).
+test('an RPC call aborted by lock writes nothing into the cleared session log', async t => {
+  const { background } = await setup(t); await unlockConnected(background);
+  const lines = []; const restore = setDebugLogSink(line => lines.push(line)); t.after(restore);
+  const controller = new AbortController();
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] });
+  let settled = false;
+  const pending = rpcFetch('https://rpc.after-lock.example/', { method: 'POST', body, signal: controller.signal }, {
+    fetcher: (_url, options) => new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true })) })
+    .finally(() => { settled = true; });
+  await background.lock();
+  assert.equal(settled, false, 'the call is still pending at lock');
+  controller.abort();
+  await assert.rejects(pending);
+  assert.ok(lines.some(line => line.includes('rpc call host=rpc.after-lock.example') && line.includes('name=AbortError')), 'the debug line was written');
+  assert.deepEqual(background.nodus.getSessionLog().entries, []);
 });

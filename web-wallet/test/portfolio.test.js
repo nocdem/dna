@@ -392,3 +392,21 @@ test('a failed balance read writes one session-log line per chain, network and l
   notes.succeeded('ixios'); notes.failed('ixios', mainnet, 'HTTP 403'); assert.equal(lines().length, 5, 'a failure after a success writes again');
   for (const line of log.entries()) { assert.ok(!line.text.includes(address) && !line.text.includes('ixoflow') && !line.text.includes('innova') && !line.text.includes('https')); }
 });
+
+// Each wallet session (portfolio.clear(), which open() runs first) starts with no remembered failures: after reset(), the first
+// failure of a chain is written again even if it equals the one remembered from the session before, while inside one session an
+// identical repeat still writes nothing. Proves the unit; could falsely pass because portfolio.clear() calling reset() is not run
+// here (createPortfolio needs a browser DOM; the wiring is one line in clear()).
+test('a failure is written again after the notes are reset for a new wallet session, and once within a session', async () => {
+  const { createReadFailureNotes } = await import('../src/portfolio-view.js');
+  const { createSessionLog } = await import('../src/session-log.js');
+  const log = createSessionLog(), notes = createReadFailureNotes(log), network = { name: 'Ixios', testnet: true, networkId: 'testnet' };
+  const lines = () => log.entries().filter(line => line.error);
+  notes.failed('ixios', network, 'Connection unavailable'); notes.failed('ixios', network, 'Connection unavailable');
+  assert.equal(lines().length, 1);
+  notes.reset(); log.clear();
+  notes.failed('ixios', network, 'Connection unavailable');
+  assert.equal(lines().length, 1, 'the new session logs its first failure');
+  notes.failed('ixios', network, 'Connection unavailable');
+  assert.equal(lines().length, 1, 'and still not twice');
+});
