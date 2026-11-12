@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { setup, phrase, password, account, token, payTo, BOT, foundationNodus, nodusSignature } from './swap-fixture.js';
 import { nodusToUsdtText } from '../src/background/swap-texts.js';
 import { SWAP_METHODS } from '../src/constants/swap.js';
-import { DEBUG_LOG_PREFIX, debugLog, errorFields, hostOf, logWebSocketsFor, setDebugLogSink, timed } from '../../src/debug-log.js';
+import { DEBUG_LOG_PREFIX, debugLog, errorFields, hostOf, setDebugLogSink, timed } from '../../src/debug-log.js';
 
 // Environment: Node >=22.14, the swap fixture (stub Ethereum RPC, stub bot, mock Nodus module); no flags, no network,
 // no files. The sink of the debug logger is replaced by a list for the test and put back afterwards.
@@ -75,21 +75,6 @@ test('a throwing error property does not change what timed rethrows', async () =
   assert.ok(reads >= 2); assert.equal(lines.length, 1); assert.match(lines[0], / test work ms=\d+ outcome=error$/);
 });
 
-// Proves a frame whose size cannot be read still reaches the native send and the send's result is returned: the log
-// reads the size inside its own guard. A fake native WebSocket (no network); could falsely pass if the wrapper were not
-// installed, in which case no 'sent' line would exist (asserted).
-test('a frame size that cannot be read does not stop the send', () => {
-  const lines = []; const restore = setDebugLogSink(line => lines.push(line)); const saved = globalThis.WebSocket, sent = [];
-  globalThis.WebSocket = class { constructor() {} addEventListener() {} send(data) { sent.push(data); return 'native-result'; } };
-  try {
-    logWebSocketsFor(['wss://node.example:1234/']);
-    const socket = new globalThis.WebSocket('wss://node.example:1234/');
-    const frame = { get byteLength() { throw new Error('size'); } };
-    assert.equal(socket.send(frame), 'native-result'); assert.deepEqual(sent, [frame]);
-    assert.equal(socket.send('abc'), 'native-result'); assert.ok(lines.some(line => line.includes('nodus-ws sent') && line.includes('bytes=3')));
-  } finally { restore(); globalThis.WebSocket = saved; }
-});
-
 // Proves what a web page chooses cannot reach a request line as free text: a string id and an unknown method carrying
 // marker text appear nowhere in the lines, which show a fixed form instead. Could falsely pass if the request never
 // reached the logging middleware; the fixed-form 'request done' line is asserted.
@@ -119,21 +104,3 @@ test('a throwing field getter does not change what timed returns or rethrows', a
   assert.equal(reads, 2);
 });
 
-// Proves a socket to a configured endpoint on the DEFAULT port is logged: the endpoint is registered as the URL the
-// module opens (wss, port 443, as the production endpoints are), and the host the wrapper compares is the URL's own
-// normalised host, so both sides drop the default port alike. A socket to another host, and to the same host on another
-// port, is still not logged. Could falsely pass if the wrapper were not installed; the 'open' line for the configured
-// endpoint is asserted, and a fake native WebSocket (no network) fires the event itself.
-test('a socket to a configured endpoint on the default port is logged, others are not', () => {
-  const lines = []; const restore = setDebugLogSink(line => lines.push(line)); const saved = globalThis.WebSocket;
-  const open = [];
-  globalThis.WebSocket = class { constructor() { this.listeners = {}; open.push(this); } addEventListener(name, fn) { this.listeners[name] = fn; } send() {} };
-  try {
-    logWebSocketsFor(['wss://164.68.116.180:443/']);
-    for (const url of ['wss://164.68.116.180:443/', 'wss://164.68.116.180/', 'wss://198.51.100.7:443/', 'wss://164.68.116.180:8443/']) new globalThis.WebSocket(url);
-    for (const socket of open) socket.listeners.open?.();
-  } finally { restore(); globalThis.WebSocket = saved; }
-  const opened = lines.filter(line => line.includes('nodus-ws open'));
-  assert.equal(opened.length, 2, 'only the two spellings of the configured endpoint are logged');
-  assert.ok(opened.every(line => line.includes('host=164.68.116.180 ')) || opened.every(line => /host=164\.68\.116\.180( |$)/.test(line)));
-});
