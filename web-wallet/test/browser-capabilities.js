@@ -4,6 +4,9 @@ import { randomBytes } from 'node:crypto';
 // contracts) are offered, zero-balance hiding, stale-state clearing on network
 // and environment switches, keyboard use, no overflow at 1360/390/360 px, and
 // that the CKB reads are POST to the public RPC only. No broadcast occurs.
+// Networks are chosen in Device & settings only; selecting a chain keeps that choice (Algorand stays on Testnet, receive-only,
+// when selected again), and a network switch is awaited on the wallet screen's "<Chain> · <Network>" line, because the fixture's
+// Algorand mainnet and testnet addresses are identical and the address cannot mark the redraw.
 // Needs: built dist/ (web), dist-connect/ (connect) and dist-extension/unpacked
 // (extension), and Chromium at CHROMIUM_PATH (default /usr/bin/google-chrome);
 // browser-capability-fixture.js hosts the build on 127.0.0.1 port 0.
@@ -50,6 +53,8 @@ for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension')
   const select=async chain=>{if(!await page.locator('#wallet-network').isVisible()){await nav('').click();await page.locator('#wallet-home').waitFor({state:'visible'});}if(!await page.locator('#wallet-network').evaluate(n=>n.open))await page.locator('#wallet-network > summary').click();const badge=page.locator(`#portfolio-networks .network-health[data-chain="${chain}"]`);const toggle=badge.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " network-group ")]').locator('.network-group-toggle');if(await toggle.count()&&await toggle.getAttribute('aria-expanded')!=='true')await toggle.click();await badge.click();};
   // A chain's network is chosen in Device & settings only (the wallet screen has no chooser): open Settings
   // (the extension's bottom bar, the rail gear on web and Connect), pick the network, return to the wallet.
+  // Waits until the wallet screen's network line ("<Chain> · <Network>", the network disclosure's summary) shows `text`.
+  const shownNetwork=text=>page.waitForFunction(t=>document.querySelector('#wallet-network .network-summary-selection')?.textContent===t,text);
   const environment=async(chain,id)=>{await (mode==='extension'?page.locator('#extension-bottom-bar button[aria-label="Settings"]'):nav('settings')).click();await page.locator('#page-settings').waitFor({state:'visible'});await page.selectOption(`#network-${chain}`,id);await page.locator('#page-settings .page-back').click();await page.locator('#page-settings').waitFor({state:'hidden'});};
   assert.equal(await page.locator('.wallet-navigation').count(),1);
   // The wallet screen offers no network chooser on any surface (the old Environment disclosure and its select are gone).
@@ -118,13 +123,18 @@ for(const mode of (process.env.CAPABILITY_BROWSER_MODE||'web,connect,extension')
   run.state.prepareEthereum=false;await select('ethereum');
   await page.locator('#recipient').fill('0x1111111111111111111111111111111111111111');await page.locator('#amount').fill('1');
   await nav('receive').click();assert.equal(await page.locator('#receive-panel').isVisible(),true);assert.equal(await page.locator('#send-fields').isVisible(),false);
-  await select('algorand');await page.waitForFunction(a=>document.querySelector('#receive-address').textContent===a,publicFixture.addresses.algorand.mainnet);
+  // Selecting a chain keeps the network Settings chose for it (operator 2026-11-12: "Settings'ten yapıldığın şey cüzdan ekranında
+  // gözükecek"): Algorand was set to Testnet at the failed-read step above, so it is still Testnet here, receive-only. The fixture's
+  // Algorand mainnet and testnet addresses are the same string, so the address is no marker of a network switch: the wallet
+  // screen's "Algorand · <Network>" line, written by the same selectChain that writes the page links, is.
+  await select('algorand');await shownNetwork('Algorand · Testnet');
+  assert.equal(await page.locator('#receive-address').textContent(),publicFixture.addresses.algorand.testnet);
   assert.equal(await page.locator('#recipient').inputValue(),'');assert.equal(await page.locator('#amount').inputValue(),'');assert.equal(await page.locator('#review-dialog').evaluate(n=>n.open),false);
-  await assertPages('algorand','mainnet');
+  await assertPages('algorand','testnet','kept after selecting the chain again');
   // The extension saves the environment in the background before it redraws (extension/src/ui/wallet-screen.js
-  // choosePqNetwork); selectChain writes the page links before the receive address, so the testnet address
-  // marks the redraw. Checking the links right after the choice read the mainnet links when the save was slow.
-  await environment('algorand','testnet');await page.waitForFunction(a=>document.querySelector('#receive-address').textContent===a,publicFixture.addresses.algorand.testnet);await assertPages('algorand','testnet');
+  // choosePqNetwork); selectChain writes the page links before the network line, so the line marks the redraw.
+  await environment('algorand','mainnet');await shownNetwork('Algorand · Mainnet');await assertPages('algorand','mainnet');
+  await environment('algorand','testnet');await shownNetwork('Algorand · Testnet');await assertPages('algorand','testnet');
   await select('tidecoin');assert.equal(await nav('wallet-activity').isVisible(),false);assert.equal(await page.locator('#history').textContent(),'');
   await select('ethereum');await nav('').click();run.state.holdEthereum=true;
   await page.locator('#portfolio-refresh').evaluate(n=>n.click());
