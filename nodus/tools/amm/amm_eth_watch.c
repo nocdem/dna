@@ -261,11 +261,16 @@ static void why_block(amm_eth_watch_t *w, const step_t *st, uint64_t h, const ch
     why_set(st, "block %llu: %s:%s", (unsigned long long)h, what, buf);
 }
 
-/* `agree[i]` is set to 1 for every usable provider whose header at h is the
- * quorum header written to `*out` (0 for the others, and for all when the
- * result is 1): only those providers are asked for the logs of the block, a
- * provider that has no header at h, or another one, would answer with an error
- * or with logs of a block that is not the accepted one. */
+/* How a usable provider's header read at h compares with the quorum header
+ * (`agree[i]`, 0 for an unusable provider and for all when the result is 1):
+ * the logs of the block are asked first of the AGREE_QUORUM providers; the
+ * AGREE_NO_HEADER ones (their header read failed, so their logs may still be
+ * those of the quorum block, log_ok checks the block hash) are asked only when
+ * fewer than `quorum` of the first answered; the AGREE_OTHER ones (another
+ * header at h) are never asked. */
+#define AGREE_QUORUM    1
+#define AGREE_NO_HEADER 2
+#define AGREE_OTHER     3
 static int quorum_block(amm_eth_watch_t *w, const step_t *st, uint64_t h,
                         amm_eth_block_t *out, int agree[AMM_ETH_MAX_PROVIDERS]) {
     amm_eth_block_t b[AMM_ETH_MAX_PROVIDERS];
@@ -296,24 +301,14 @@ static int quorum_block(amm_eth_watch_t *w, const step_t *st, uint64_t h,
         return 1;
     }
     *out = b[found];
-    for (int j = 0; j < n; j++)
-        if (blk_eq(&b[j], &b[found])) agree[bi[j]] = 1;
-    /* one line naming the providers that will not be asked for the logs of
-     * this block, and why (instead of their errors) */
-    char skipped[160] = "";
-    txt_t t = { skipped, sizeof(skipped), 0 };
-    int n_agree = 0;
+    /* every usable provider is classified: it returned the quorum header, it
+     * returned another one, or its header read failed */
     for (int i = 0; i < w->cfg.n_providers; i++) {
-        if (agree[i]) n_agree++;
-        if (!st->use[i] || agree[i]) continue;
-        int has_header = 0;
-        for (int j = 0; j < n; j++) if (bi[j] == i) has_header = 1;
-        txt_add(&t, " provider-%d (%s);", i + 1,
-                has_header ? "a different header" : "no header at that height");
+        if (!st->use[i]) continue;
+        agree[i] = AGREE_NO_HEADER;
+        for (int j = 0; j < n; j++)
+            if (bi[j] == i) agree[i] = blk_eq(&b[j], &b[found]) ? AGREE_QUORUM : AGREE_OTHER;
     }
-    if (t.len)
-        QGP_LOG_INFO(LOG_TAG, "block %llu: not asked for its logs:%s the quorum header is "
-                     "held by %d provider(s)", (unsigned long long)h, skipped, n_agree);
     return 0;
 }
 
@@ -447,9 +442,17 @@ static int gather_logs(amm_eth_watch_t *w, const step_t *st,
     ent_t *ents = calloc((size_t)w->cfg.n_providers * AMM_ETH_LOGS_MAX, sizeof(ent_t));
     if (!ents) return -1;
     int n_ent = 0, answered = 0;
+    int asked[AMM_ETH_MAX_PROVIDERS];
     memset(ans, 0, sizeof(int) * AMM_ETH_MAX_PROVIDERS);
-    for (int i = 0; i < w->cfg.n_providers; i++) {
-        if (!st->use[i] || !agree[i]) continue;     /* only the quorum header's providers */
+    memset(asked, 0, sizeof(asked));
+    /* pass 0: the providers that returned the quorum header; pass 1, only when
+     * fewer than `quorum` of them answered: the providers whose header read
+     * failed (the old evidence set minus the providers with another header) */
+    for (int pass = 0; pass < 2; pass++) {
+      if (pass == 1 && answered >= w->cfg.quorum) break;
+      for (int i = 0; i < w->cfg.n_providers; i++) {
+        if (!st->use[i] || agree[i] != (pass == 0 ? AGREE_QUORUM : AGREE_NO_HEADER)) continue;
+        asked[i] = 1;
         const amm_eth_provider_t *p = &w->prov[i];
         amm_eth_log_t *buf = w->logbuf + (size_t)i * AMM_ETH_LOGS_MAX;
         int n = 0;
@@ -466,7 +469,21 @@ static int gather_logs(amm_eth_watch_t *w, const step_t *st,
             e.prov = i;
             ents[n_ent++] = e;
         }
+      }
     }
+    /* one line naming the providers not asked for this block's logs, and why
+     * (instead of their errors) */
+    char skipped[160] = "";
+    txt_t t = { skipped, sizeof(skipped), 0 };
+    for (int i = 0; i < w->cfg.n_providers; i++) {
+        if (!st->use[i] || asked[i]) continue;
+        txt_add(&t, " provider-%d (%s);", i + 1,
+                agree[i] == AGREE_OTHER ? "a different header at that height"
+                                        : "no header at that height, not needed");
+    }
+    if (t.len)
+        QGP_LOG_INFO(LOG_TAG, "block %llu: not asked for its logs:%s %d of the asked "
+                     "providers answered", (unsigned long long)qb->number, skipped, answered);
     qsort(ents, (size_t)n_ent, sizeof(ents[0]), ent_cmp);
     *ents_out = ents;
     *answered_out = answered;

@@ -602,9 +602,19 @@ int amm_req_usdt_verify(const amm_cfg_t *cfg, amm_journal_t *j,
                      "minimum %llu, request number %llu", out->sender,
                      (unsigned long long)out->amount, (unsigned long long)out->minimum,
                      (unsigned long long)out->request_number);
-    else
-        QGP_LOG_INFO(LOG_TAG, "usdt_to_nodus request %s: %s (code %d)",
-                     (in && in->request_number) ? in->request_number : "?", req_word(rc), rc);
+    else {
+        /* the request number is client text: written only when it is all
+         * decimal digits (at most 20, the http layer's bound) */
+        const char *rn = in ? in->request_number : NULL;
+        size_t rl = rn ? strlen(rn) : 0;
+        int digits = rl > 0 && rl <= 20;
+        for (size_t i = 0; digits && i < rl; i++) digits = rn[i] >= '0' && rn[i] <= '9';
+        if (digits)
+            QGP_LOG_INFO(LOG_TAG, "usdt_to_nodus request %s: %s (code %d)", rn, req_word(rc), rc);
+        else
+            QGP_LOG_INFO(LOG_TAG, "usdt_to_nodus request (the number is not a decimal number, "
+                         "%zu bytes): %s (code %d)", rl, req_word(rc), rc);
+    }
     return rc;
 }
 

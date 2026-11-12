@@ -1389,10 +1389,49 @@ static void w26_logs_only_from_quorum_header_providers(void) {
         CHECK(asked_bad == 0, variant == 0 ? "no header at 10: that provider is not asked for block 10"
                                            : "another header at 10..13: that provider is not asked for those blocks");
         CHECK(g_sp[0].asked[10] > 0 && g_sp[1].asked[10] > 0, "  the two agreeing providers are asked for block 10");
-        CHECK(g_sp[2].asked[9] > 0, "  control: the same provider is asked for block 9, where it agrees");
+        CHECK(g_sp[0].asked[9] > 0 && g_sp[1].asked[9] > 0 && g_sp[2].asked[9] > 0,
+              "  control: all three providers are asked for block 9, where all agree");
         char st[16];
-        CHECK(rec_state(0x31, 0, st) == 0, "  the payment still counts through the quorum of two");
+        CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"),
+              "  the payment counts (state deep) through the quorum of two");
     }
+}
+
+/* W27  a provider whose header read FAILED at h is the fallback evidence: it is
+ * asked for the logs of h only when fewer than `quorum` of the providers that
+ * hold the quorum header answered (Sol's case, 2026-11-12).
+ * PROVES: (a) A and B hold the header, B's get_logs fails, C's header read
+ * fails but its logs are those of the quorum block: C IS asked, two providers
+ * answer and the payment counts (the parent's behaviour); (b) the common case,
+ * C's header read fails but A and B answer: C is never asked for any block.
+ * HOW IT CAN FALSELY PASS: C's failure is a stub switch for every height
+ * (fail_blocks), so it does not prove a per-height mix; the counter is the
+ * stub's get_logs entry. On the unfixed b25d56738 watcher (a) fails: C is never
+ * asked, one answer, the block is unknown. */
+static void w27_failed_header_provider_is_fallback(void) {
+    printf("W27 a provider whose header read failed is the fallback for the logs\n");
+    fresh(20);
+    ch_build(&g_chain, 1, 13, 0, 0);
+    ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+    g_sp[1].fail_logs = 1;
+    g_sp[2].fail_blocks = 1;
+    amm_eth_step_t o;
+    step_n(3, &o);
+    char st[16];
+    CHECK(g_sp[2].asked[10] > 0, "(a) C, whose header read failed, is asked once B's logs fail");
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"),
+          "(a) the payment counts through A and C (the parent's behaviour)");
+
+    fresh(20);
+    ch_build(&g_chain, 1, 13, 0, 0);
+    ch_pay(&g_chain, 0x31, 0, 10, 0x11, 5);
+    g_sp[2].fail_blocks = 1;
+    step_n(3, &o);
+    int c_asked = 0;
+    for (int h = 1; h <= 13; h++) c_asked += g_sp[2].asked[h];
+    CHECK(c_asked == 0, "(b) A and B answer: C, whose header read failed, is never asked");
+    CHECK(g_sp[0].asked[10] > 0 && g_sp[1].asked[10] > 0, "(b) A and B are asked");
+    CHECK(rec_state(0x31, 0, st) == 0 && !strcmp(st, "deep"), "(b) the payment counts");
 }
 
 int main(void) {
@@ -1426,6 +1465,7 @@ int main(void) {
     w24_depth_by_amount();
     w25_window_by_value();
     w26_logs_only_from_quorum_header_providers();
+    w27_failed_header_provider_is_fallback();
 
     if (g_w) amm_eth_watch_free(g_w);
     if (g_j) amm_journal_close(g_j);

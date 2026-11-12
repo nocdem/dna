@@ -118,6 +118,8 @@
 #include "crypto/nodus_identity.h"
 #include "crypto/nodus_sign.h"
 #include "amm_req.h"
+#include "nodus_log_shim.h"
+#include <sys/stat.h>
 
 static int g_failures = 0;
 static int g_checks = 0;
@@ -1194,6 +1196,43 @@ static void s_settings(void) {
           amm_req_eip712_digest(NULL, d, d) == -1, "NULL arguments to the building blocks are refused");
 }
 
+/* Q1  a refused request's number is client text: the log line carries it only
+ * when it is all decimal digits (operator order 2026-11-12: no secret reaches
+ * the log; a client can put anything, e.g. a provider URL, in requestNumber).
+ * PROVES: a request whose number is "https://p.test/KEY" is refused (FORMAT)
+ * and the log FILE holds the line "not a decimal number (18 bytes)" and neither
+ * the text nor "KEY"; a decimal number that is refused for another reason
+ * (a bad signature) is written as its digits.
+ * HOW IT CAN FALSELY PASS: the "not written" check is vacuous if the logger
+ * wrote nothing; the two positive checks on the same file rule that out. */
+static void q1_log_client_text(void) {
+    printf("Q1 a client's request number in the log\n");
+    char dir[] = "/tmp/test_amm_req_log_XXXXXX";
+    if (!mkdtemp(dir)) { printf("FATAL mkdtemp\n"); exit(2); }
+    char path[128];
+    snprintf(path, sizeof(path), "%s/nodus-amm.log", dir);
+    CHECK(nodus_log_file_open(dir, 1 << 20, 1) == 0, "the log file opens");
+    amm_req_usdt_in_t in = vec_usdt();
+    in.request_number = "https://p.test/KEY";
+    CHECK(usdt_rc(&in) == AMM_REQ_FORMAT, "a non-decimal number is refused (format)");
+    in = vec_usdt();
+    in.request_number = "12345";
+    CHECK(usdt_rc(&in) != AMM_REQ_OK, "a decimal number with another text is refused");
+    nodus_log_file_close();
+    char buf[16384];
+    FILE *f = fopen(path, "r");
+    size_t n = f ? fread(buf, 1, sizeof(buf) - 1, f) : 0;
+    if (f) fclose(f);
+    buf[n] = '\0';
+    CHECK(strstr(buf, "the number is not a decimal number, 18 bytes") != NULL,
+          "the line says the number is not decimal and its length");
+    CHECK(strstr(buf, "p.test") == NULL && strstr(buf, "KEY") == NULL,
+          "the client's text is not in the log file");
+    CHECK(strstr(buf, "usdt_to_nodus request 12345:") != NULL, "a decimal number is written as digits");
+    unlink(path);
+    rmdir(dir);
+}
+
 int main(void) {
     printf("test_amm_req\n");
     amm_cfg_defaults(&g_cfg);
@@ -1226,6 +1265,7 @@ int main(void) {
     l_pair();
     r_reuse();
     s_settings();
+    q1_log_client_text();
 
     amm_journal_close(g_j);
     cleanup();

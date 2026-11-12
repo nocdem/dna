@@ -1206,6 +1206,26 @@ static void r12_error_text(void) {
  * HOW IT CAN FALSELY PASS: the "no secret" checks pass vacuously if nothing was
  * written; the positive checks on the same file rule that out. They cover the
  * URL forms configured here only (no percent-encoded echo). */
+/* 1 when ONE line of `buf` holds every non-NULL needle, in the order given */
+static int rpc_line_has(const char *buf, const char *a, const char *b, const char *c) {
+    const char *p = buf;
+    while (*p) {
+        const char *e = strchr(p, '\n');
+        size_t l = e ? (size_t)(e - p) : strlen(p);
+        char one[1024];
+        if (l >= sizeof(one)) l = sizeof(one) - 1;
+        memcpy(one, p, l);
+        one[l] = '\0';
+        const char *x = strstr(one, a);
+        const char *y = x && b ? strstr(x + strlen(a), b) : x;
+        const char *z = y && c ? strstr(y, c) : y;
+        if (z) return 1;
+        if (!e) break;
+        p = e + 1;
+    }
+    return 0;
+}
+
 static void r13_log_file(void) {
     printf("R13 the call line in the log file\n");
     char dir[] = "/tmp/test_amm_rpc_log_XXXXXX";
@@ -1239,11 +1259,15 @@ static void r13_log_file(void) {
     size_t n = f ? fread(buf, 1, sizeof(buf) - 1, f) : 0;
     if (f) fclose(f);
     buf[n] = '\0';
-    CHECK(strstr(buf, "stub-1: eth_chainId: answered in") != NULL &&
-          strstr(buf, "ms with a result") != NULL, "the result line: name, method, ms, outcome");
-    CHECK(strstr(buf, "with the JSON-RPC error -32014") != NULL, "the error line carries the code");
-    CHECK(strstr(buf, "stub-1: eth_chainId: no usable answer (after") != NULL,
-          "the failed-post line carries the name and the duration");
+    /* each call's OWN line must carry the name, the method, the duration and
+     * its outcome: every needle is looked for inside one line */
+    CHECK(rpc_line_has(buf, "AMM_RPC: stub-1: eth_chainId: answered in ", " ms with a result", NULL),
+          "the result call's line: name, method, ms, outcome result");
+    CHECK(rpc_line_has(buf, "AMM_RPC: stub-1: eth_chainId: answered in ",
+                       " ms with the JSON-RPC error -32014", NULL),
+          "the error call's line: name, method, ms, the error code");
+    CHECK(rpc_line_has(buf, "AMM_RPC: stub-1: eth_chainId: no usable answer (after ", " ms)", NULL),
+          "the failed-post call's line: name, method, outcome no usable answer, ms");
     CHECK(strstr(buf, "SECRET-KEY") == NULL && strstr(buf, "eth.example.test") == NULL &&
           strstr(buf, "9f3a") == NULL, "neither the URL nor its key is anywhere in the log file");
     unlink(path);

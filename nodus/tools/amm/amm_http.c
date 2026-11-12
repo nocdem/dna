@@ -777,12 +777,17 @@ void amm_http_route(amm_http_ctx_t *c, const amm_http_req_t *req, uint64_t deadl
     route_dispatch(c, req, deadline_ms, status, body, cap);
     const unsigned long long ms = (unsigned long long)(now_ms() - t0);
 
-    char reason_w[40], reqno[24];
-    answer_member(body, "reason", reason_w, sizeof(reason_w));
-    answer_member(body, "requestNumber", reqno, sizeof(reqno));
+    /* a caller may pass no answer buffer (body NULL or cap 0: the builders write
+     * nothing then): the line carries the status only */
+    char reason_w[40] = "", reqno[24] = "";
+    const int have_body = body != NULL && cap > 0;
+    if (have_body) {
+        answer_member(body, "reason", reason_w, sizeof(reason_w));
+        answer_member(body, "requestNumber", reqno, sizeof(reqno));
+    }
     const char *outcome = reason_w[0] ? reason_w
-                        : strstr(body, "\"received\":true") ? "received"
-                        : strstr(body, "\"approved\":true") ? "approved"
+                        : (have_body && strstr(body, "\"received\":true")) ? "received"
+                        : (have_body && strstr(body, "\"approved\":true")) ? "approved"
                         : *status == 200 ? "ok" : "failed";
     QGP_LOG_INFO(LOG_TAG, "request %u: %s %s answered %d (%s), request number %s, in %llu ms",
                  no, req->method, req->path, *status, outcome, reqno[0] ? reqno : "none", ms);

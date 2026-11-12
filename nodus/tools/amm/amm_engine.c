@@ -818,7 +818,7 @@ static int eth_records(amm_engine_t *e, amm_engine_step_t *o) {
                     if (amm_journal_rec_put(e->c.journal, &h) == AMM_J_OK) {
                         o->held_records++;
                         QGP_LOG_INFO(LOG_TAG, "the Ethereum payment %s/%u matches no approval: "
-                                     "record held", r->tx, (unsigned)r->log_index);
+                                     "record held", key, (unsigned)r->log_index);
                     }
                 }
             }
