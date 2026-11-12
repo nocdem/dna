@@ -25,9 +25,10 @@ export const IXIOS_ASSET = { chain: 'ixios', symbol: 'IXIOS', decimals: 18, key:
 
 // The networks, by id. Numbers, not BigInt, so an entry can cross a message port; modules convert with BigInt() where
 // they compare heights. Identity is the genesis hash (block 1's parentHash), never the chain id alone. The main entry is
-// the wallet's long-standing constants; the test entry carries the values observed on its node: `ixios_` method names
-// (no `eth_` name exists there), chain id 3 and Aegis height 300, and `getProof` as the account-code query because the
-// node offers no `getCode`. Nothing is detected or chosen from a node answer: a network's method names are fixed here.
+// the wallet's long-standing constants. Observed on the test node: the `ixios_` method names (no `eth_` name exists
+// there), chain id 3, the genesis hash, and no `getCode`, which is why `getProof` is the account-code query. Not
+// observed: Aegis height 300 is the reference's value for chain id 3; the height the running node uses is not
+// established. Nothing is detected or chosen from a node answer: a network's method names are fixed here.
 const network = (id, label, endpoint, rpcLabel, genesisHash, chainId, aegisHeight, rpcNamespace, codeQuery) => Object.freeze({
   id, label, endpoint, rpcOptions: Object.freeze([Object.freeze({ url: endpoint, label: rpcLabel })]),
   genesisHash, chainId, aegisHeight, rpcNamespace, codeQuery,
