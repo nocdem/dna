@@ -184,3 +184,22 @@ test('provider injection follows the reference exclusions', async t => {
   assert.equal(check(new URL('https://notdropbox.com/')), true);
   assert.equal(check(new URL('https://dapp.example/'), { ...doc, doctype: null }), true);
 });
+
+// Proves nothing is injected into a frame whose origin is opaque (a sandboxed frame without allow-same-origin): its URL
+// names a site, but a page message addressed to that site's origin is refused there, so the streams could only fail
+// (seen live 2026-11-13 in a sandboxed third-party frame: "The target origin provided ... does not match the recipient
+// window's origin ('null')"). A normal frame of the same URL is still injected. Environment: plain window stub; the
+// browser's own refusal is not run here.
+test('provider injection skips a frame with an opaque origin', async t => {
+  const { default: shouldInjectProvider, checkFrameOriginForProviderInjection } = await import('../src/lib/provider-injection.js');
+  const saved = new Map(['window', 'document'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  t.after(() => { for (const [key, descriptor] of saved) {
+    if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key];
+  } });
+  const doc = { doctype: { name: 'html' }, documentElement: { nodeName: 'HTML' } };
+  globalThis.document = doc;
+  globalThis.window = { location: new URL('https://frame.example/frame.html'), document: doc, origin: 'null' };
+  assert.equal(checkFrameOriginForProviderInjection(), false); assert.equal(shouldInjectProvider(), false);
+  window.origin = 'https://frame.example';
+  assert.equal(checkFrameOriginForProviderInjection(), true); assert.equal(shouldInjectProvider(), true);
+});

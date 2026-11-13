@@ -1,6 +1,14 @@
 // Port: MetaMask v13.54.0 shared/lib/provider-injection.ts:6-128; unchanged signature and reference block lists (plan §3.3:219-222).
 export default function shouldInjectProvider() {
-  return checkURLForProviderInjection(new URL(window.location.href)) && checkDocumentForProviderInjection();
+  return checkFrameOriginForProviderInjection() && checkURLForProviderInjection(new URL(window.location.href)) && checkDocumentForProviderInjection();
+}
+
+// A frame with an opaque origin (a sandboxed frame without allow-same-origin) reports "null" as its origin while its
+// URL still names a site: every page message the streams address to that site's origin is refused by the browser
+// ("The target origin provided ... does not match the recipient window's origin ('null')"), and no site permission can
+// name such a frame. Nothing is injected there.
+export function checkFrameOriginForProviderInjection() {
+  return window.origin !== 'null';
 }
 
 export function checkURLForProviderInjection(url) {
