@@ -368,6 +368,19 @@ test('describeSwapState: an inherited property name is a pending state, never a 
   }
 });
 
+// PROVES: the dropped text and title speak of nothing sent, not of a refund: dropped also ends a NODUS -> USDT payout
+//   whose re-sent remainder is not above its Ethereum fee (bot amm_journal.c payout_pending -> dropped, givens item 113),
+//   where nothing was a refund; before the fix the page said "Nothing was left to refund" / "Closed, nothing to refund".
+// ENVIRONMENT: none. LEAVES BEHIND: nothing. FALSE PASS: the bot's own reason line ("reason") is not checked here.
+test('describeSwapState: dropped says nothing was sent, in either direction, and never names a refund', () => {
+  for (const direction of ['nodus_to_usdt', 'usdt_to_nodus', undefined]) {
+    const d = describeSwapState({ state: 'dropped', direction });
+    assert.deepEqual(d, { final: true, kind: 'closed', state: 'dropped', text: 'Nothing was left to send after the network fee, so nothing was sent to you.' });
+    assert.doesNotMatch(d.text, /refund/i);
+  }
+  assert.equal(stateLabel('dropped'), 'Closed, nothing sent');
+});
+
 test('describeSwapState: only paid / refunded / dropped / expired are final; nothing else is ever called failed', () => {
   for (const state of ['paid', 'refunded', 'dropped', 'expired']) assert.equal(describeSwapState({ state }).final, true, state);
   for (const state of ['approved', 'paid_waiting_depth', 'counted', 'payout_pending', 'refund_pending', 'held', 'reversed', 'unknown', 'something_new']) {
@@ -480,7 +493,7 @@ test('stateLabel: one short title per state word; anything else is "Payout"', ()
   const titles = {
     paid: 'Your payout has been sent',
     refunded: 'Payment refunded',
-    dropped: 'Closed, nothing to refund',
+    dropped: 'Closed, nothing sent',
     expired: 'Request expired',
     approved: 'Waiting for your payment',
     paid_waiting_depth: 'Confirming your payment',

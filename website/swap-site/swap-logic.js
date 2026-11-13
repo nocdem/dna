@@ -443,7 +443,9 @@ export const STILL_PENDING_TEXT = 'Your swap is still in progress; the bot keeps
 const FINAL = {
   paid: { kind: 'done', text: 'The bot has sent your payout. The swap is complete.' },
   refunded: { kind: 'refunded', text: 'The amount you would receive was below your minimum, so the bot returned your payment.' },
-  dropped: { kind: 'closed', text: 'Nothing was left to refund after the network fee, so nothing was sent back.' },
+  // dropped ends a refund that is not above its fee (givens items 89, 90, 114) and, since the fee-market payouts, a USDT
+  // payout whose re-sent remainder is not above its fee (item 113): the text names neither, so it is true for both.
+  dropped: { kind: 'closed', text: 'Nothing was left to send after the network fee, so nothing was sent to you.' },
   expired: { kind: 'expired', text: 'No payment was seen within the approval time.' },
 };
 const PENDING = {
@@ -458,7 +460,7 @@ const PENDING = {
 };
 // The short title of the status panel's third step, by the bot's state word; 'Payout' for anything else.
 const STATE_TITLES = new Map([
-  ['paid', 'Your payout has been sent'], ['refunded', 'Payment refunded'], ['dropped', 'Closed, nothing to refund'],
+  ['paid', 'Your payout has been sent'], ['refunded', 'Payment refunded'], ['dropped', 'Closed, nothing sent'],
   ['expired', 'Request expired'], ['approved', 'Waiting for your payment'], ['paid_waiting_depth', 'Confirming your payment'],
   ['counted', 'Payment confirmed'], ['payout_pending', 'Sending your payout'], ['refund_pending', 'Sending your refund'],
   ['held', 'On hold'], ['reversed', 'Payment being reversed'], ['unknown', 'Checking'],
