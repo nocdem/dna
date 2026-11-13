@@ -387,7 +387,9 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
     const prepared = await prepareSiteTransaction({ chain: key, wallet: session.wallet, fields: { from, to, value: toQuantity(units) }, endpoint, assertCurrent: session.assertCurrent });
     session.assertCurrent();
     const id = String(++reviewId), transfer = { chain: key, networkName: config.name, from, to, amount: fields.amount, symbol: config.symbol,
-      fee: prepared.fee, nonce: prepared.nonce, expiresAt: prepared.expiresAt, cancel() {}, confirm: record => prepared.send(record) };
+      fee: prepared.fee, nonce: prepared.nonce, expiresAt: prepared.expiresAt, cancel() {},
+      // The review's 60 s window, as the mainnet send checks it (src/wallet.js reviewed().confirm).
+      confirm: record => { assertFresh(prepared); return prepared.send(record); } };
     clearReviews(); reviews.set(id, { prepared: transfer, assertCurrent: session.assertCurrent });
     return { id, chain: fields.chain, to, named: undefined, amount: fields.amount, symbol: config.symbol, fee: prepared.fee, expiresAt: prepared.expiresAt, review: evmReviewRows(transfer) };
   }

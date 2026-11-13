@@ -140,6 +140,35 @@ test('a native send on the BNB Smart Chain test network stays type 0 at eth_gasP
   assert.equal(transaction.chainId, 97n); assert.equal(transaction.type, 0); assert.equal(transaction.gasPrice, 0x15n);
 });
 
+// Proves a test-network review keeps its 60 s window (approved evm-fee plan 4.5 and 4.7; the mainnet send checks it in
+// src/wallet.js reviewed().confirm) on both test networks: confirmed at or after its expiresAt it refuses before anything
+// is signed or sent, the refused review is closed (the same id cannot be confirmed again), and one millisecond before
+// its expiry it is sent. Before the fix the test-network confirm called prepared.send directly and signed an expired
+// review (final red team 2026-11-13, finding 1). Environment: as above; Date.now is mocked only after the review is
+// prepared, the fetch stub is unchanged. Leaves nothing behind. Can falsely pass if the review did not read Date.now;
+// the at-expiry case refuses only through that clock, and the in-time case shows the same path still sends.
+test('a test-network review refuses at and after its expiry, before anything is signed, and stays closed', async t => {
+  for (const [chain, network, symbol] of [['ethereum', 'sepolia', 'ETH'], ['bsc', 'testnet', 'tBNB']]) {
+    await t.test(`${chain} ${network}`, async t => {
+      const f = await evmSetup(t);
+      await f.client.request('setChainNetwork', [chain, network]);
+      const prepare = () => f.client.request('prepareEvmSend', [{ chain, symbol, to, amount: '0.01' }]);
+      for (const late of [0, 1000]) {
+        const review = await prepare();
+        const clock = t.mock.method(Date, 'now', () => review.expiresAt + late);
+        await assert.rejects(f.client.request('confirmEvmSend', [review.id]), /Review expired\. Prepare the transfer again\./);
+        await assert.rejects(f.client.request('confirmEvmSend', [review.id]), /This review is already closed\./);
+        clock.mock.restore();
+      }
+      assert.equal(f.raw.length, 0, 'nothing sent from an expired review');
+      const review = await prepare();
+      t.mock.method(Date, 'now', () => review.expiresAt - 1);
+      await f.client.request('confirmEvmSend', [review.id]);
+      assert.equal(f.raw.length, 1, 'a review confirmed in time is sent');
+    });
+  }
+});
+
 // Proves opening the wallet again returns every selector, and the sites' provider, to mainnet (plan 5.6 d; operator
 // 2026-11-03 "hersey varsa yeniden acista mainnet"), while the chain the provider was on stays (a BNB Smart Chain
 // choice returns to 'bsc', not to 'ethereum': at ed11a7751 evm.js:153 and index.js:125-126 reset only the
