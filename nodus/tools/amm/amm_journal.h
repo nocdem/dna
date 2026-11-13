@@ -55,7 +55,8 @@
  *                 sent (plan section 17; package 2)
  *   eth_attempts  the signed USDT payout transactions (hash, nonce, raw
  *                 bytes), stored before they are broadcast, UNIQUE on hash
- *                 and on (chain, nonce) (plan section 10; package 3)
+ *                 and, among the attempts not `replaced` or `voided`, on
+ *                 (chain, nonce) (plan section 10; package 3; schema 9)
  *
  * SWAP STATES (plan section 13 names approved, paid-waiting-depth, counted,
  * payout-pending, payout done, refund done, expired; section 9/16
@@ -100,6 +101,12 @@
  *   refund_pending -> held               (edge kept; no payer uses it since
  *                                        givens items 89, 90: dropped)
  *   refund_pending -> unknown            17
+ *   payout_pending -> dropped            evm-fee plan 6.10.2, givens items 113
+ *                                        "3 a", 114 "4 a": the re-sent
+ *                                        remainder of a USDT payout cannot
+ *                                        cover its fee, its USDT goes to the
+ *                                        pool; ONLY through
+ *                                        amm_journal_usdt_to_pool
  *   counted | payout_pending | paid | refund_pending | refunded | held |
  *   unknown -> reversed                  9, item 55 ("counted and paid
  *                                        payments"); READING: a payment
@@ -297,6 +304,32 @@ void amm_journal_tx_rollback(amm_journal_t *j);
  *  call returns -1, so a test can end a write exactly between the decision
  *  and its commit without killing the process. */
 void amm_journal_test_precommit_hook(int (*fn)(void));
+/** The check of a journal COPY before a new binary starts on the live file (evm-fee plan 9.4;
+ *  `nodus-amm --check-journal <file>`). On the file at `path` and nothing else: read the schema
+ *  version and the row count of every table the journal defines (the names come from the schema
+ *  text itself) and of every other table the file holds, open it with amm_journal_open (which
+ *  migrates a version 8 file), close it, read them again. No network, no key. `before` / `after`
+ *  of a table is -1 when the file has no such table at that moment. Returns 0 = OK (opened, the
+ *  version after is the current one, every table present and its count equal), 1 = not OK (`out`
+ *  filled: the open failed, another version, a count that differs, a table that appeared or is
+ *  missing), -1 = the file could not be read (nothing in `out` is valid). */
+#define AMM_JCHECK_MAX 64
+typedef struct {
+    char    name[48];
+    int64_t before, after;
+} amm_jcheck_table_t;
+typedef struct {
+    int64_t            ver_before, ver_after;
+    int                n;
+    amm_jcheck_table_t t[AMM_JCHECK_MAX];
+} amm_jcheck_t;
+int amm_journal_check_copy(const char *path, amm_jcheck_t *out);
+
+/** TEST ONLY -- production never calls it. `fn` (NULL = none) runs inside the
+ *  version 8 -> 9 migration of amm_journal_open, after the rows are copied and
+ *  counted and before the old table is dropped; a non-zero return fails the
+ *  migration (rolled back, the file stays at version 8, the open fails). */
+void amm_journal_test_migration_hook(int (*fn)(void));
 
 /** The one approval transaction (plan section 7 step 4): refusals in this
  *  order -- paused, stopped (a swap in unknown), request number reused, open
@@ -469,17 +502,19 @@ int amm_journal_swap_find_open_usdt(amm_journal_t *j, const char *sender,
 int amm_journal_swap_list_state(amm_journal_t *j, const char *state,
                                 amm_swap_t *out, int cap, int *n);
 
-/** Paid NODUS -> USDT swaps (USDT payouts) with NO fee_book row and
- *  seq > `after_seq`, oldest first, at most `cap` (a page: the caller passes
- *  the last seq it read as `after_seq` until fewer than `cap` come back; no
- *  lifetime row limit). 0 / -1. */
+/** Paid NODUS -> USDT swaps (USDT payouts) and refunded USDT -> NODUS swaps
+ *  (USDT refunds: their Ethereum fee is booked too, evm-fee plan 6.10.3) with
+ *  NO fee_book row and seq > `after_seq`, oldest first, at most `cap` (a page:
+ *  the caller passes the last seq it read as `after_seq` until fewer than
+ *  `cap` come back; no lifetime row limit). 0 / -1. */
 int amm_journal_swap_list_unbooked_paid(amm_journal_t *j, int64_t after_seq,
                                         amm_swap_t *out, int cap, int *n);
 
 /** The network fee deducted from a USDT payout, kept by the Foundation AS USDT
  *  (givens items 80, 92: "Vakfa kalsın. Ücreti ödeyen geri alır."): ONE
- *  transaction inserts the row of swap `swap_seq` (it must be in state paid,
- *  and have no row: AMM_J_ILLEGAL). `fee` = the USDT deducted. The pool is not
+ *  transaction inserts the row of swap `swap_seq` (it must be a paid NODUS ->
+ *  USDT payout or a refunded USDT -> NODUS refund, and have no row:
+ *  AMM_J_ILLEGAL). `fee` = the USDT deducted. The pool is not
  *  written: its USDT depth already fell by the full gross payout at the ledger
  *  update and the NODUS depth is not touched by the fee. */
 int amm_journal_book_fee(amm_journal_t *j, int64_t swap_seq, uint64_t fee);
@@ -780,19 +815,33 @@ int amm_journal_attempt_finish(amm_journal_t *j, int64_t swap_seq,
 #define AMM_EA_UNKNOWN   "unknown"    /* receipt status 1 at the final depth but
                                        * no USDT Transfer log from the bot to
                                        * the recipient (plan line 264)         */
+#define AMM_EA_REPLACED  "replaced"   /* an earlier attempt of the same swap and
+                                       * nonce after a replacement (evm-fee plan
+                                       * 6.11): still read for its receipt,
+                                       * never broadcast again                 */
+#define AMM_EA_VOIDED    "voided"     /* its nonce was used by another attempt
+                                       * of the same swap: final                */
 
 /** One signed USDT payout transaction of one swap, stored BEFORE it is
  *  broadcast (plan section 10 line 265: "the signed transaction (hash,
  *  nonce, raw bytes) written to the journal BEFORE broadcast"). UNIQUE on
- *  the hash and on (chain_id, nonce) in the database (Boltz
- *  PendingEthereumTransaction.ts:51-60). A swap has AT MOST ONE attempt: the
- *  plan builds no replacement of a stuck or failed payout (fee raising is
- *  DEFERRED, plan lines 270, 278). `gross` is the USDT the swap owes the
- *  user, `fee` the Ethereum fee deducted from it (givens item 34), `net` =
- *  gross - fee the amount the transfer carries. */
+ *  the hash in the database, and on (chain_id, nonce) among the attempts that
+ *  are not `replaced` or `voided` (Boltz PendingEthereumTransaction.ts:51-60;
+ *  schema 9). A swap has SEVERAL attempts, numbered 1, 2, ... in the order they
+ *  were stored (evm-fee plan 6.9, 6.11):
+ *    - a new attempt after a `failed` one (a receipt with status other than 1
+ *      at the final depth): a NEW nonce, gross == the failed attempt's net;
+ *    - a replacement of a stuck attempt: the SAME nonce, the head becomes
+ *      `replaced`, gross unchanged, higher fee fields.
+ *  The HEAD of a swap is its attempt with the highest n whose state is not
+ *  `replaced` or `voided`; the GROUP of a head is the unsettled attempts of its
+ *  nonce (the head and its `replaced` predecessors): only one of them can be
+ *  included on chain. `gross` is the USDT the swap owes the user, `fee` the
+ *  Ethereum fee deducted from it (givens item 34), `net` = gross - fee the
+ *  amount the transfer carries. */
 typedef struct {
     int64_t  swap_seq;
-    int      n;                       /* 1 (assigned)                        */
+    int      n;                       /* 1, 2, ... (assigned)                */
     uint64_t chain_id;                /* 1 = Ethereum mainnet                */
     uint64_t nonce;
     uint8_t  hash[32];                /* keccak256(raw)                      */
@@ -831,30 +880,93 @@ int amm_journal_eth_next_nonce(amm_journal_t *j, uint64_t chain_id,
  *  swap's own Ethereum address (destination of a payout, sender of a refund),
  *  `net` + `fee` == `gross` with net > 0 (givens item 52: nothing of zero is
  *  ever stored for broadcast), keccak256(raw) == hash, gas_limit > 0, every
- *  number within INT64_MAX, and the swap has no attempt yet. A duplicate hash or a duplicate
- *  (chain_id, nonce) is refused by the database's UNIQUE constraints.
+ *  number within INT64_MAX, and EITHER the swap has no attempt yet (n = 1) OR
+ *  its head is `failed`, `gross` == the head's `net` and the recipient is the
+ *  head's (evm-fee plan 6.9.3; n = latest n + 1). A nonce held by a row of
+ *  another swap, in any state, is refused; a duplicate hash or a second live
+ *  attempt on the nonce is refused by the database. A NODUS -> USDT row gets
+ *  out_paid = net and out_fee = out_amount - net from a new attempt after the
+ *  first (the amount in flight, plan 6.9.6).
  *  0 / AMM_J_ILLEGAL / AMM_J_RANGE / -1. */
 int amm_journal_eth_attempt_sign(amm_journal_t *j, amm_eattempt_t *a);
-/** The (only) attempt of a swap (raw heap; amm_eattempt_free). The stored
- *  bytes are checked against the stored hash on every read: a mismatch is a
- *  fault (-1). 0 / 1 none / -1. */
+/** The REPLACEMENT of the head (evm-fee plan 6.11.4), ONE transaction: the
+ *  head (signed or submitted) becomes `replaced` and `a` is stored as `signed`
+ *  with n = latest n + 1. Legal only when `a` has the head's chain, nonce,
+ *  recipient and gross and strictly higher max fee and max priority fee. A
+ *  NODUS -> USDT row gets out_paid / out_fee from `a`.
+ *  0 / AMM_J_ILLEGAL / AMM_J_RANGE / -1. */
+int amm_journal_eth_attempt_replace(amm_journal_t *j, amm_eattempt_t *a);
+/** The LATEST attempt of a swap (the highest n, in any state; raw heap;
+ *  amm_eattempt_free). The stored bytes are checked against the stored hash
+ *  on every read: a mismatch is a fault (-1). 0 / 1 none / -1. */
 int amm_journal_eth_attempt_latest(amm_journal_t *j, int64_t swap_seq,
                                    amm_eattempt_t *out);
+/** The HEAD of a swap: the attempt with the highest n whose state is not
+ *  `replaced` or `voided` (see amm_eattempt_t). 0 / 1 none / -1. */
+int amm_journal_eth_attempt_head(amm_journal_t *j, int64_t swap_seq,
+                                 amm_eattempt_t *out);
+/** The GROUP of the swap's head: its unsettled attempts of the head's nonce
+ *  (states signed, submitted, replaced), ordered by n, the head last. `out`
+ *  holds `cap` entries; each filled entry is freed with amm_eattempt_free;
+ *  *n = the count. More than `cap` is a fault (-1), never cut. 0 / 1 no head /
+ *  -1. Replacements of one nonce each need the base fee above twice the last
+ *  one's, so a group never holds 64 attempts (max fee within INT64_MAX). */
+#define AMM_EA_GROUP_MAX 64
+int amm_journal_eth_attempt_group(amm_journal_t *j, int64_t swap_seq, amm_eattempt_t *out,
+                                  int cap, int *n);
 int amm_journal_eth_attempt_by_hash(amm_journal_t *j, const uint8_t hash[32],
                                     amm_eattempt_t *out);
-/** Record a broadcast: state submitted, last_submit_tip = tip (from signed or
- *  submitted). 0 / AMM_J_ILLEGAL / -1. */
+/** Record a broadcast: the head becomes submitted, last_submit_tip = tip (from
+ *  signed or submitted). 0 / AMM_J_ILLEGAL / -1. */
 int amm_journal_eth_attempt_submitted(amm_journal_t *j, int64_t swap_seq,
                                       uint64_t tip);
-/** confirmed | failed | orphaned | unknown, from signed or submitted. The swap's own
- *  state is NOT moved here (the caller does it in the same outer
- *  transaction, amm_journal_tx_begin). 0 / AMM_J_ILLEGAL / -1. */
+/** Record a broadcast CALL of the head with its state unchanged:
+ *  last_submit_tip = tip (the same-bytes broadcast of a submitted attempt is at
+ *  most once per new block, evm-fee plan 6.11.5). 0 / AMM_J_ILLEGAL / -1. */
+int amm_journal_eth_attempt_broadcast_tip(amm_journal_t *j, int64_t swap_seq,
+                                          uint64_t tip);
+/** Settle attempt number `n` of a swap (confirmed | failed | orphaned |
+ *  unknown), from signed, submitted or `replaced` (the member that lands need
+ *  not be the latest, plan 6.11.5). Every OTHER unsettled member of the same
+ *  nonce becomes `voided` first, then the member takes its state, in ONE
+ *  transaction. A confirmed attempt of a NODUS -> USDT row writes out_paid /
+ *  out_fee from its net. The swap's own state is NOT moved here (the caller
+ *  does it in the same outer transaction, amm_journal_tx_begin).
+ *  0 / AMM_J_ILLEGAL / -1. */
+int amm_journal_eth_attempt_settle(amm_journal_t *j, int64_t swap_seq, int n,
+                                   const char *state);
+/** As amm_journal_eth_attempt_settle, for the HEAD (from signed or submitted).
+ *  0 / AMM_J_ILLEGAL / -1. */
 int amm_journal_eth_attempt_finish(amm_journal_t *j, int64_t swap_seq,
                                    const char *state);
-/** The USDT of the bot's own pending payouts: the sum of `net` over the
- *  attempts in signed or submitted (plan line 266: "subtracts the USDT of its
- *  own pending payouts from the journal rows"), checked addition. 0 / -1. */
+/** The bot's own pending payouts, ONE term per (chain_id, nonce): the largest
+ *  `net` and the largest gas_limit x max_fee over the attempts of that nonce
+ *  in signed, submitted or replaced (only one of them can execute, evm-fee plan
+ *  6.13). `usdt` is the sum of the nets (checked addition), `ether` the sum of
+ *  the products in 256-bit arithmetic (checked). `skip_nonce` (may be NULL)
+ *  leaves that nonce of `skip_chain` out of both sums: a replacement adds its
+ *  own nonce back at the larger of the two. 0 / -1. */
+int amm_journal_eth_pending(amm_journal_t *j, uint64_t skip_chain, const uint64_t *skip_nonce,
+                            uint64_t *usdt, evm_u256 *ether);
+/** The USDT of the bot's own pending payouts (the `usdt` sum of
+ *  amm_journal_eth_pending over every nonce; plan line 266: "subtracts the
+ *  USDT of its own pending payouts from the journal rows"). 0 / -1. */
 int amm_journal_eth_pending_usdt(amm_journal_t *j, uint64_t *out);
+
+/** The USDT of a USDT payout or refund that cannot cover its fee goes to the
+ *  pool (evm-fee plan 6.10.2; givens items 113 "3 a", 114 "4 a"), ONE
+ *  transaction. The swap must be a payout_pending NODUS -> USDT swap whose head
+ *  attempt is `failed` with net == `remaining`, or a refund_pending USDT ->
+ *  NODUS swap with no attempt (remaining == its amount) or such a head. The
+ *  stored pool must equal `pool_before` byte for byte and `pool_after` must be
+ *  `pool_before` with depth_u raised by `remaining` (checked) and nothing else.
+ *  The swap moves to `dropped` with `message`; when earlier attempts landed and
+ *  failed, their fees (gross - remaining, gross = out_amount of a payout, amount
+ *  of a refund) are booked to the Foundation in the same transaction. A refusal
+ *  writes nothing. 0 / AMM_J_ILLEGAL / AMM_J_RANGE / -1. */
+int amm_journal_usdt_to_pool(amm_journal_t *j, int64_t seq, uint64_t remaining,
+                             const amm_pool_t *pool_before, const amm_pool_t *pool_after,
+                             const char *message);
 
 /* ── the decision of a counted swap (revision 12) ─────────────────────── */
 

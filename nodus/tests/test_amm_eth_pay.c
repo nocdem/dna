@@ -99,6 +99,7 @@
  *   node.
  */
 #include <dirent.h>
+#include <sqlite3.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -153,6 +154,13 @@ typedef struct {
     uint8_t  usdt[32], eth[32]; int usdt_rc, eth_rc;
     uint64_t gas_base; int gas_by_amount; uint64_t gas_per_nz; int est_rc; int est_calls;
     uint64_t gas_price, prio; int gp_rc, prio_rc;
+    uint64_t base_fee; int bf_rc; int bf_calls;   /* the latest block's baseFeePerGas (eth_getBlockByNumber latest) */
+    /* evm-fee work (E21-E27): a receipt for ONE transaction hash only (every other hash: no
+     * receipt) and an error for ONE hash, so the attempts of a nonce group can be given
+     * different receipts; est_cycle makes the estimate change at every call (no fixed point) */
+    uint8_t  rc_only[32]; int rc_only_on;
+    uint8_t  rc_err[32];  int rc_err_on;
+    int      est_cycle;
     int      rc_mode;                 /* 0 no receipt, 1 found, 2 error        */
     amm_eth_receipt_t rc;
     int      log_mode;                /* what logs a status-1 receipt carries, see add_logs */
@@ -175,6 +183,8 @@ static void add_logs(stub_t *s, const uint8_t h[32], amm_eth_receipt_t *o);
 static int s_receipt_impl(void *c, const uint8_t h[32], amm_eth_receipt_t *o, uint64_t d) {
     stub_t *s = c; (void)d;
     s->rc_calls++;
+    if (s->rc_err_on && !memcmp(h, s->rc_err, 32)) return AMM_ETH_ERR;
+    if (s->rc_only_on && memcmp(h, s->rc_only, 32) != 0) return AMM_ETH_NOT_FOUND;
     if (s->rc_mode == 2) return AMM_ETH_ERR;
     if (s->rc_mode == 0) return AMM_ETH_NOT_FOUND;
     *o = s->rc;
@@ -209,6 +219,7 @@ static int s_estimate_impl(void *c, const uint8_t f[20], const uint8_t t[20], co
     stub_t *s = c; (void)d; (void)f; (void)t;
     s->est_calls++;
     if (s->est_rc) return s->est_rc;                 /* "execution reverted" */
+    if (s->est_cycle) { *o = s->gas_base + 1000ULL * (uint64_t)s->est_calls; return AMM_ETH_OK; }
     *o = s->gas_base + (s->gas_by_amount
         ? (s->gas_per_nz ? s->gas_per_nz : 16u) * (uint64_t)nz_amount(in, n) : 0);
     return AMM_ETH_OK;
@@ -260,6 +271,7 @@ static int s_estimate(void *c, const uint8_t f[20], const uint8_t t_[20], const 
     ST_WRAP(PM_EST, s_estimate_impl(c, f, t_, in, n, o, d))
 }
 static int s_gasprice(void *c, uint64_t *o, uint64_t d) { stub_t *s = c; (void)d; if (s->gp_rc) return s->gp_rc; *o = s->gas_price; return AMM_ETH_OK; }
+static int s_basefee(void *c, uint64_t *o, uint64_t d) { stub_t *s = c; (void)d; s->bf_calls++; if (s->bf_rc) return s->bf_rc; *o = s->base_fee; return AMM_ETH_OK; }
 static int s_prio(void *c, uint64_t *o, uint64_t d) { stub_t *s = c; (void)d; if (s->prio_rc) return s->prio_rc; *o = s->prio; return AMM_ETH_OK; }
 static int s_send(void *c, const uint8_t *raw, size_t n, uint8_t h[32], uint64_t d) {
     stub_t *s = c; (void)d;
@@ -272,13 +284,24 @@ static int s_send(void *c, const uint8_t *raw, size_t n, uint8_t h[32], uint64_t
     return AMM_ETH_OK;
 }
 
-/* the price stub: mode 0 = a fixed fee, mode 1 = gas * mul */
-typedef struct { int mode; uint64_t fixed, mul; int rc; int calls; uint64_t last_gas, last_max_fee; } price_t;
+/* the price stub: mode 0 = a fixed fee, mode 1 = gas * mul, mode 2 = the CONVERSION of the real
+ * seam, ceil(gas x max fee x p_e6 / 10^18) with the product in 128 bits (66,340 x 6e9 x 3e9 is
+ * 1.2e24, above uint64), so every assertion about the deducted fee depends on the max fee per gas
+ * (evm-fee plan 7.2) */
+typedef struct { int mode; uint64_t fixed, mul, p_e6; int rc; int calls; uint64_t last_gas, last_max_fee; } price_t;
 static int s_price(void *c, uint64_t gas, uint64_t mf, uint64_t *o, uint64_t d) {
     price_t *p = c; (void)d;
     p->calls++;
     p->last_gas = gas; p->last_max_fee = mf;
     if (p->rc) return p->rc;
+    if (p->mode == 2) {
+        const unsigned __int128 den = 1000000000000000000ULL;
+        const unsigned __int128 v = (unsigned __int128)gas * mf * p->p_e6;
+        const unsigned __int128 q = (v + den - 1) / den;
+        if (q > UINT64_MAX) return AMM_ETH_ERR;
+        *o = (uint64_t)q;
+        return AMM_ETH_OK;
+    }
     *o = p->mode == 0 ? p->fixed : gas * p->mul;
     return AMM_ETH_OK;
 }
@@ -385,7 +408,11 @@ static void defaults(stub_t *s) {
     set_be(s->usdt, 1000000000000ULL);
     set_be(s->eth, 1000000000000000000ULL);
     s->gas_base = 60000;
+    /* the fee rule F1 (evm-fee plan 2.1): max fee per gas = 2 x base fee + tip = 2 x 11 + 2 = 24 gwei.
+     * `gas_price` (30 gwei) is deliberately DIFFERENT from it: the payer no longer reads it, so a
+     * transaction signed with 30 gwei would fail every assertion on the fee fields. */
     s->gas_price = 30000000000ULL;
+    s->base_fee = 11000000000ULL;
     s->prio = 2000000000ULL;
 }
 
@@ -424,7 +451,7 @@ static void init_env(void) {
         g_prov[i] = (amm_eth_provider_t){ .ctx = &g_st[i], .name = "stub",
             .chain_id = s_chain, .block_number = s_tip, .get_receipt = s_receipt,
             .get_balance = s_balance, .erc20_balance = s_erc20, .tx_count = s_count,
-            .estimate_gas = s_estimate, .gas_price = s_gasprice,
+            .estimate_gas = s_estimate, .gas_price = s_gasprice, .base_fee = s_basefee,
             .max_priority_fee = s_prio, .send_raw = s_send };
 }
 
@@ -456,6 +483,22 @@ static uint64_t g_ctr = 1;
  * RETURNED and the swap stays payout_pending. A USDT REFUND is signed by
  * amm_eth_pay_sign as before. Every amm_eth_pay_sign call of this file goes through
  * the wrapper (the macro below), which calls the real function for refunds. */
+/* The decision writes the payout row's out_amount / out_fee / out_paid with the first attempt in
+ * one transaction (amm_journal_swap_decide); this fixture stores the attempt alone, so the row's
+ * three amounts are written here through a second connection. The journal refuses a later
+ * attempt (re-send, replacement) of a payout row whose net exceeds its out_amount. */
+static void set_out(int64_t seq, uint64_t gross, uint64_t fee, uint64_t net) {
+    char sql[200];
+    sqlite3 *db = NULL;
+    snprintf(sql, sizeof(sql), "UPDATE swaps SET out_amount=%llu, out_fee=%llu, out_paid=%llu WHERE seq=%lld",
+             (unsigned long long)gross, (unsigned long long)fee, (unsigned long long)net, (long long)seq);
+    if (sqlite3_open(g_path, &db) == SQLITE_OK) {
+        sqlite3_busy_timeout(db, 5000);
+        sqlite3_exec(db, sql, NULL, NULL, NULL);
+    }
+    sqlite3_close(db);
+}
+
 static int ep_sign_test(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross, uint64_t dl,
                         amm_ep_step_t *out) {
     amm_swap_t cur;
@@ -472,6 +515,7 @@ static int ep_sign_test(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross, uint
         if (rc == AMM_EP_OK) {
             pre.attempt.swap_seq = swap_seq;
             if (amm_journal_eth_attempt_sign(g_j, &pre.attempt) == AMM_J_OK) {
+                set_out(swap_seq, gross, pre.fee, pre.net);
                 if (out) { out->worked = 1; out->signed_ = 1; }
             } else {
                 rc = AMM_EP_ERR;
@@ -617,8 +661,8 @@ static void e1_persisted_before_broadcast(void) {
     amm_eattempt_t a;
     CHECK(amm_journal_eth_attempt_latest(g_j, s.seq, &a) == 0 && !strcmp(a.state, "signed") &&
           a.nonce == 0 && a.gross == 1000000 && a.net == 999900 && a.fee == 100 && a.gas_limit == 75000 &&
-          a.max_fee_per_gas == 30000000000ULL && a.max_priority_fee_per_gas == 2000000000ULL,
-          "the attempt is in the journal (signed): nonce 0, gross, net, fee, gas limit, fees");
+          a.max_fee_per_gas == 24000000000ULL && a.max_priority_fee_per_gas == 2000000000ULL,
+          "the attempt is in the journal (signed): nonce 0, gross, net, fee, gas limit, fees (max fee 2 x 11 + 2 = 24 gwei, priority 2 gwei)");
     uint8_t h[32];
     CHECK(keccak256(a.raw, a.raw_len, h) == 0 && !memcmp(h, a.hash, 32), "its hash is keccak256 of its bytes");
     dec_t d;
@@ -628,7 +672,7 @@ static void e1_persisted_before_broadcast(void) {
     amm_tx_transfer_calldata(user, 999900, want);
     CHECK(be_u64(d.f[0], d.l[0]) == 1 && be_u64(d.f[1], d.l[1]) == 0 && d.l[5] == 20 && !memcmp(d.f[5], g_usdt, 20) &&
           d.l[6] == 0 && d.l[7] == 68 && !memcmp(d.f[7], want, 68) && be_u64(d.f[4], d.l[4]) == 75000 &&
-          be_u64(d.f[3], d.l[3]) == 30000000000ULL && be_u64(d.f[2], d.l[2]) == 2000000000ULL,
+          be_u64(d.f[3], d.l[3]) == 24000000000ULL && be_u64(d.f[2], d.l[2]) == 2000000000ULL,
           "chain 1, to = USDT, value 0, call data transfer(destination, net), gas, fees");
     CHECK(recovers_to_self(a.raw, a.raw_len, &d), "the signature recovers (ecrecover port) to the bot's address");
 
@@ -833,13 +877,18 @@ static void e6_balances(void) {
 
     /* ether for gas: the estimate 60000 is raised by 25% rounded up (Boltz
      * bumpGasLimit): (60000 x 125 + 99) / 100 = 7,500,099 / 100 = 75000;
-     * 75000 x max fee 30 gwei (30,000,000,000) = 2,250,000,000,000,000 wei */
+     * 75000 x max fee 24 gwei (2 x 11 + 2: the fee rule F1, 24,000,000,000) =
+     * 1,800,000,000,000,000 wei; between 75000 x 13 gwei and 75000 x 24 gwei the check
+     * must refuse (it would pass at the old 30 gwei price only above 75000 x 30 gwei) */
     fresh();
     p = new_pay_n(1, 1, 3, 0);
     CHECK(p && new_swap(1, 'c', '1', 0, &s1), "setup");
-    set_be(g_st[0].eth, 2249999999999999ULL);
+    set_be(g_st[0].eth, 75000ULL * 13000000000ULL);
+    CHECK(amm_eth_pay_sign(p, s1.seq, 1000000, 0, &o) == AMM_EP_FUNDS && !has_attempt(s1.seq),
+          "ether between gas x 13 gwei and gas x 24 gwei: FUNDS");
+    set_be(g_st[0].eth, 1799999999999999ULL);
     CHECK(amm_eth_pay_sign(p, s1.seq, 1000000, 0, &o) == AMM_EP_FUNDS && !has_attempt(s1.seq), "ether 1 wei short of gas x max fee: FUNDS");
-    set_be(g_st[0].eth, 2250000000000000ULL);
+    set_be(g_st[0].eth, 1800000000000000ULL);
     CHECK(amm_eth_pay_sign(p, s1.seq, 1000000, 0, &o) == AMM_EP_OK, "ether exactly gas x max fee: signs");
     amm_eth_pay_free(p);
 
@@ -893,15 +942,18 @@ static void e7_fee(void) {
         }
         amm_eth_pay_free(p);
     }
-    /* a USDT refund with fee >= amount is DROPPED, not held (givens items 89,
-     * 90); it holds no room afterwards */
+    /* a USDT refund with fee >= amount is NOT SENT (givens items 89, 90): the payer returns
+     * AMM_EP_ZERO and moves nothing since the evm-fee work (evm-fee plan 6.10.2): the engine puts
+     * its USDT in the pool and drops the swap in one journal transaction (test_amm_engine E26),
+     * so here the swap is still refund_pending and has no attempt */
     for (int k = 1; k < 3; k++) {
         fresh();
         amm_eth_pay_t *p = new_pay();
         g_price.fixed = fees[k];
         CHECK(p && new_swap(0, '2', 'e', 0, &s) && amm_eth_pay_sign(p, s.seq, 1000, 0, &o) == AMM_EP_ZERO &&
-              !has_attempt(s.seq) && swap_state_is(s.seq, "dropped"),
-              k == 1 ? "refund, fee == amount: dropped" : "refund, fee above the amount: dropped");
+              !has_attempt(s.seq) && swap_state_is(s.seq, "refund_pending") && o.worked == 0 && sends() == 0,
+              k == 1 ? "refund, fee == amount: ZERO, nothing signed and nothing moved"
+                     : "refund, fee above the amount: ZERO, nothing signed and nothing moved");
         amm_eth_pay_free(p);
     }
     /* the minimum after the fee (a payout; fee 100, gross 1000) */
@@ -931,7 +983,7 @@ static void e8_price(void) {
           "nothing signed (not even at fee 0), nothing sent, the swap unchanged");
     g_price.rc = 0;
     CHECK(amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_OK && o.fee == 100, "the price reads again: signs, fee 100");
-    CHECK(g_price.last_gas == 75000 && g_price.last_max_fee == 30000000000ULL,
+    CHECK(g_price.last_gas == 75000 && g_price.last_max_fee == 24000000000ULL,
           "the price seam was handed the gas limit and the max fee per gas the transaction carries");
     amm_eth_pay_free(p);
 }
@@ -1121,7 +1173,8 @@ static void e11_quorum(void) {
     amm_eattempt_free(&a);
     int sd = sends();
     CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && sends() == sd && o.worked == 0,
-          "a submitted attempt with no receipt is not rebroadcast (the plan builds no replacement)");
+          "a submitted attempt with no receipt is not sent again within the same block (the latest block is "
+          "not above its last broadcast tip; the once-per-new-block rebroadcast is E23)");
 
     /* receipts that disagree */
     g_st[0].rc_mode = 1; g_st[0].rc.status = 1; g_st[0].rc.block_number = 900;
@@ -1222,6 +1275,15 @@ static void e13_guards(void) {
     b = c; b.providers = &half; CHECK(amm_eth_pay_new(&b) == NULL, "a provider without the broadcast call: refused");
     half = g_prov[0]; half.estimate_gas = NULL;
     b = c; b.providers = &half; CHECK(amm_eth_pay_new(&b) == NULL, "a provider without the estimate call: refused");
+    half = g_prov[0]; half.base_fee = NULL;
+    b = c; b.providers = &half; CHECK(amm_eth_pay_new(&b) == NULL, "a provider without the base fee call (fee rule F1): refused");
+    half = g_prov[0]; half.max_priority_fee = NULL;
+    b = c; b.providers = &half; CHECK(amm_eth_pay_new(&b) == NULL, "a provider without the priority fee call: refused");
+    half = g_prov[0]; half.gas_price = NULL;
+    b = c; b.providers = &half;
+    amm_eth_pay_t *nq = amm_eth_pay_new(&b);
+    CHECK(nq != NULL, "a provider without eth_gasPrice builds: the payer no longer reads it");
+    amm_eth_pay_free(nq);
 }
 
 /* a payout (dir 1) or refund (dir 0) of 1,000,000 signed, broadcast, then its
@@ -1696,6 +1758,610 @@ static void e20_joint_depth_reverse(void) {
     CHECK(g_e18_gat.c2 == 1 && g_e18_gat.paid2, "A at 103 too: two providers hold the receipt AND the depth: settled");
 }
 
+/* ═══ the Ethereum fee work (evm-fee plan docs/plans/approved/2026-11-13-evm-fee.md) ═══
+ *
+ * The stubs' fee quote is base fee 11 gwei, tip 2 gwei: the rule F1 signs max fee per gas = 2 x 11 +
+ * 2 = 24 gwei (E1, E6, E8 above assert it; `gas_price`, 30 gwei, is a different number the payer
+ * must not read). E21-E27 below: the pure functions, the planning functions, the same-bytes
+ * broadcast, the stuck payout and its replacement, the re-send after a failure, the refund
+ * threshold, the ether and USDT of pending payouts. Flags: none beyond the default build. They
+ * leave nothing behind (the journal file is removed with the directory). They can falsely pass only
+ * through their stubs: the providers' answers are scripted (a real node's mempool, its replacement
+ * rule and a reorganisation are not here), the price is the test's own conversion (mode 2, the
+ * seam's formula with a fixed price), the receipts are per hash by a stub switch. */
+
+static void price_conv(uint64_t p_e6) { g_price.mode = 2; g_price.p_e6 = p_e6; }
+
+static void all_base_fee(uint64_t v) { for (int i = 0; i < NP; i++) g_st[i].base_fee = v; }
+
+/* attempt (swap, n) is in `state`, read from the state column through a second connection */
+static int att_is(int64_t seq, int n, const char *state) {
+    char sql[200];
+    int ok = 0;
+    sqlite3 *db = NULL;
+    sqlite3_stmt *st = NULL;
+    snprintf(sql, sizeof(sql), "SELECT 1 FROM eth_attempts WHERE swap_seq=%lld AND n=%d AND state='%s'",
+             (long long)seq, n, state);
+    if (sqlite3_open(g_path, &db) == SQLITE_OK && sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK)
+        ok = sqlite3_step(st) == SQLITE_ROW;
+    sqlite3_finalize(st);
+    sqlite3_close(db);
+    return ok;
+}
+
+static int head_n(int64_t seq) {
+    amm_eattempt_t h;
+    memset(&h, 0, sizeof(h));
+    int n = amm_journal_eth_attempt_head(g_j, seq, &h) == 0 ? h.n : -1;
+    amm_eattempt_free(&h);
+    return n;
+}
+
+static int count_attempts(int64_t seq) {
+    amm_eattempt_t grp[AMM_EA_GROUP_MAX];
+    int n = 0;
+    int unsettled = amm_journal_eth_attempt_group(g_j, seq, grp, AMM_EA_GROUP_MAX, &n) == 0 ? n : -1;
+    for (int i = 0; i < n; i++) amm_eattempt_free(&grp[i]);
+    return unsettled;
+}
+
+/* the payout row's amount in flight */
+static int row_out(int64_t seq, uint64_t paid, uint64_t fee) {
+    amm_swap_t s;
+    return amm_journal_swap_by_seq(g_j, seq, &s) == 0 && s.out_paid == paid && s.out_fee == fee;
+}
+
+static void only_hash(int i, const uint8_t h[32]) { memcpy(g_st[i].rc_only, h, 32); g_st[i].rc_only_on = 1; }
+static void rcpt_set(int i, int status, uint64_t block) {
+    g_st[i].rc_mode = 1; g_st[i].rc.status = status; g_st[i].rc.block_number = block;
+    memset(g_st[i].rc.block_hash, 0x77, 32);
+}
+
+static void e21_pure(void) {
+    printf("E21 the fee formula and the replacement fields (pure)\n");
+    uint64_t mf = 123, pr = 456;
+    CHECK(amm_eth_pay_max_fee(11000000000ULL, 2000000000ULL, &mf) == 0 && mf == 24000000000ULL,
+          "max fee = 2 x 11 gwei + 2 gwei = 24 gwei");
+    CHECK(amm_eth_pay_max_fee(0, 5, &mf) == 0 && mf == 5, "a zero base fee with a tip: the result is the tip");
+    mf = 123;
+    CHECK(amm_eth_pay_max_fee(0, 0, &mf) != 0 && mf == 123, "a zero result is refused and writes nothing");
+    CHECK(amm_eth_pay_max_fee(1, (uint64_t)INT64_MAX + 1, &mf) != 0 && mf == 123,
+          "prio = INT64_MAX + 1 is refused (checked first: the bound below is an unsigned subtraction)");
+    CHECK(amm_eth_pay_max_fee(0, (uint64_t)INT64_MAX, &mf) == 0 && mf == (uint64_t)INT64_MAX,
+          "prio = INT64_MAX with base 0 is accepted");
+    CHECK(amm_eth_pay_max_fee(1, (uint64_t)INT64_MAX, &mf) != 0 && mf == (uint64_t)INT64_MAX,
+          "prio = INT64_MAX with base 1: 2 + INT64_MAX is above INT64_MAX: refused, nothing written");
+    mf = 0;
+    CHECK(amm_eth_pay_max_fee(((uint64_t)INT64_MAX - 1) / 2, 1, &mf) == 0 && mf == (uint64_t)INT64_MAX,
+          "base = (INT64_MAX - prio) / 2 is accepted (the result is exactly INT64_MAX)");
+    mf = 7;
+    CHECK(amm_eth_pay_max_fee(((uint64_t)INT64_MAX - 1) / 2 + 1, 1, &mf) != 0 && mf == 7,
+          "one above that base is refused");
+    CHECK(amm_eth_pay_max_fee(1, 1, NULL) != 0, "a NULL output is refused");
+
+    static const uint64_t in[] = {0, 1, 9, 10, 50, 122, 1000};
+    static const uint64_t want[] = {1, 2, 10, 11, 55, 134, 1100};
+    int all = 1;
+    for (size_t i = 0; i < sizeof(in) / sizeof(in[0]); i++)
+        if (amm_eth_pay_bump(in[i], &pr) != 0 || pr != want[i]) all = 0;
+    CHECK(all, "bump(x) = max(x + 1, floor(x x 110 / 100)): 0, 1, 9, 10, 50, 122, 1000 -> 1, 2, 10, 11, 55, 134, 1100");
+    pr = 5;
+    CHECK(amm_eth_pay_bump((uint64_t)INT64_MAX, &pr) != 0 && amm_eth_pay_bump((uint64_t)INT64_MAX + 1, &pr) != 0 && pr == 5,
+          "a bump above INT64_MAX is refused, nothing written");
+    CHECK(amm_eth_pay_bump(8000000000000000000ULL, &pr) == 0 && pr == 8800000000000000000ULL,
+          "a large value does not overflow (8e18 -> 8.8e18)");
+
+    uint64_t po = 0;
+    /* base 100, tip 5; the old transaction had max fee 200, tip 50: tip max(5, 55) = 55, cap 2 x 100 + 55 = 255 >= bump(200) = 220 */
+    CHECK(amm_eth_pay_replacement_fees(100, 5, 200, 50, &mf, &po) == 0 && po == 55 && mf == 255,
+          "a fresh tip below bump(old tip) is raised to it (55), the cap follows the formula (255)");
+    CHECK(amm_eth_pay_replacement_fees(100, 100, 200, 50, &mf, &po) == 0 && po == 100 && mf == 300,
+          "a fresh tip already above bump(old tip) is kept (100), cap 300");
+    mf = 9; po = 9;
+    CHECK(amm_eth_pay_replacement_fees(10, 5, 200, 50, &mf, &po) != 0 && mf == 9 && po == 9,
+          "a cap below bump(old cap) (75 < 220) is refused, nothing written");
+    CHECK(amm_eth_pay_replacement_fees(100, 5, 200, (uint64_t)INT64_MAX, &mf, &po) != 0,
+          "an old tip whose bump exceeds INT64_MAX is refused");
+}
+
+static void e22_plan(void) {
+    printf("E22 the planning functions (read-only)\n");
+    fresh();
+    g_price.mode = 1; g_price.mul = 1;
+    for (int i = 0; i < NP; i++) g_st[i].gas_by_amount = 1;       /* the gas depends on the amount: the loop matters */
+    amm_eth_pay_t *p = new_pay_n(1, 1, 3, 0);
+    amm_ep_facts_t f;
+    amm_ep_plan_t pl;
+    amm_ep_prepared_t pre;
+    uint8_t rcp[20];
+    memset(rcp, 0x11, 20);
+    CHECK(p && amm_eth_pay_fee_facts(p, 0, &f) == AMM_EP_OK && f.n_usable == 1 && f.base == 11000000000ULL &&
+          f.prio == 2000000000ULL && f.max_fee == 24000000000ULL, "the fee facts: base 11 gwei, tip 2 gwei, max fee 24 gwei, one usable provider");
+    int e0 = ests();
+    uint64_t nn = 0;
+    CHECK(amm_eth_pay_plan(p, &f, rcp, 1000000, 0, 0, &pl) == AMM_EP_OK && pl.verdict == AMM_EP_PAY && pl.fee > 0 &&
+          pl.net == 1000000 - pl.fee && pl.gas > 0, "the plan of a payout of 1000000: a verdict PAY with a fee, net = gross - fee");
+    CHECK(ests() - e0 == 2, "  the estimate was asked again after the first round (the amount changed): two rounds");
+    CHECK(amm_journal_eth_next_nonce(g_j, 1, &nn) == 1 && sends() == 0 && g_price.last_max_fee == 24000000000ULL,
+          "  it stored no attempt, allocated no nonce and sent nothing; the price seam was quoted the max fee 24 gwei");
+    char r40[41];
+    memset(r40, '1', 40);
+    r40[40] = '\0';
+    CHECK(amm_eth_pay_prepare(p, r40, 1000000, 0, 0, &pre) == AMM_EP_OK &&
+          pre.fee == pl.fee && pre.net == pl.net && pre.attempt.gas_limit == pl.gas &&
+          pre.attempt.max_fee_per_gas == f.max_fee, "the payout's own preparation gives the same fee, net, gas and max fee");
+    amm_ep_prepared_free(&pre);
+
+    CHECK(amm_eth_pay_plan(p, &f, rcp, 0, 0, 0, &pl) == AMM_EP_ERR, "a zero gross is refused (AMM_EP_ERR)");
+    g_price.mode = 0; g_price.fixed = 100;
+    CHECK(amm_eth_pay_plan(p, &f, rcp, 1000, 950, 0, &pl) == AMM_EP_OK && pl.verdict == AMM_EP_BELOW && pl.fee == 100 && pl.net == 900,
+          "below the minimum after the fee: the verdict BELOW (net 900 < 950)");
+    g_price.fixed = 1000;
+    CHECK(amm_eth_pay_plan(p, &f, rcp, 1000, 0, 0, &pl) == AMM_EP_OK && pl.verdict == AMM_EP_NOTHING && pl.fee == 1000 && pl.net == 0,
+          "a fee at the amount: the verdict NOTHING is an answer (readable), not UNKNOWN");
+    g_price.fixed = 100;
+    g_price.rc = AMM_ETH_ERR;
+    CHECK(amm_eth_pay_plan(p, &f, rcp, 1000, 0, 0, &pl) == AMM_EP_UNKNOWN, "an unreadable price: UNKNOWN");
+    g_price.rc = 0;
+    g_st[0].est_rc = AMM_ETH_ERR;
+    CHECK(amm_eth_pay_plan(p, &f, rcp, 1000, 0, 0, &pl) == AMM_EP_UNKNOWN, "a reverting estimate: UNKNOWN");
+    g_st[0].est_rc = 0;
+    g_price.mode = 1; g_price.mul = 1;
+    g_st[0].est_cycle = 1;
+    CHECK(amm_eth_pay_plan(p, &f, rcp, 1000000, 0, 0, &pl) == AMM_EP_UNKNOWN,
+          "an estimate that changes at every call has no fixed point in AMM_EP_ITER_MAX rounds: UNKNOWN");
+    g_st[0].est_cycle = 0;
+    CHECK(!has_attempt(1) && sends() == 0, "none of the plans stored or sent anything");
+    amm_eth_pay_free(p);
+
+    /* the facts: below the quorum, a malformed fee, another chain */
+    fresh();
+    p = new_pay_n(3, 2, 3, 0);
+    g_st[0].bf_rc = AMM_ETH_ERR; g_st[1].bf_rc = AMM_ETH_ERR;
+    CHECK(p && amm_eth_pay_fee_facts(p, 0, &f) == AMM_EP_UNKNOWN, "the base fee readable from one provider of Q = 2: UNKNOWN");
+    g_st[0].bf_rc = 0; g_st[1].bf_rc = 0;
+    g_st[0].base_fee = 9000000000ULL; g_st[1].base_fee = 11000000000ULL; g_st[2].base_fee = 20000000000ULL;
+    CHECK(amm_eth_pay_fee_facts(p, 0, &f) == AMM_EP_OK && f.base == 11000000000ULL && f.max_fee == 24000000000ULL,
+          "base fees 9, 11 and 20 gwei with Q = 2: the 2nd largest (11) is used");
+    g_st[0].base_fee = 0; g_st[1].base_fee = 0; g_st[2].base_fee = 0; g_st[0].prio = 0; g_st[1].prio = 0; g_st[2].prio = 0;
+    CHECK(amm_eth_pay_fee_facts(p, 0, &f) == AMM_EP_UNKNOWN, "a base fee and a tip of 0 give a zero max fee: UNKNOWN (never a free transaction)");
+    g_st[0].base_fee = 11000000000ULL; g_st[1].base_fee = 11000000000ULL; g_st[2].base_fee = 11000000000ULL;
+    g_st[0].prio = 2000000000ULL; g_st[1].prio = 2000000000ULL; g_st[2].prio = 2000000000ULL;
+    g_st[0].chain = 5; g_st[1].chain = 5;
+    CHECK(amm_eth_pay_fee_facts(p, 0, &f) == AMM_EP_UNKNOWN && f.n_usable == 1, "one usable provider (the others on chain 5) < Q: UNKNOWN");
+    amm_eth_pay_free(p);
+
+    /* the pause does not stop the planning (the price question answers while payouts are paused) */
+    fresh();
+    p = new_pay_n(1, 1, 3, 1);
+    CHECK(p && amm_eth_pay_fee_facts(p, 0, &f) == AMM_EP_OK && amm_eth_pay_plan(p, &f, rcp, 1000, 0, 0, &pl) == AMM_EP_OK &&
+          pl.verdict == AMM_EP_PAY, "while payouts_paused is set the planning functions still answer");
+    CHECK(amm_eth_pay_prepare(p, r40, 1000, 0, 0, &pre) == AMM_EP_PAUSED,
+          "and the payout's preparation is PAUSED");
+    amm_ep_prepared_free(&pre);
+    amm_eth_pay_free(p);
+}
+
+static void e23_same_bytes(void) {
+    printf("E23 a submitted attempt is sent again as the same bytes, once per new block\n");
+    fresh();
+    amm_eth_pay_t *p = new_pay_n(3, 2, 3, 0);
+    amm_swap_t s;
+    amm_ep_step_t o;
+    CHECK(p && new_swap(1, 'c', '1', 0, &s) && amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_OK &&
+          amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && o.submitted == 1 && sends() == 3,
+          "setup: signed, broadcast to the three providers at tip 1000 (submitted)");
+    amm_eattempt_t a;
+    CHECK(amm_journal_eth_attempt_latest(g_j, s.seq, &a) == 0 && a.last_submit_tip == 1000, "its last broadcast tip is 1000");
+    int sd = sends();
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && sends() == sd && o.worked == 0,
+          "the same block (tip 1000): not sent again");
+    for (int i = 0; i < NP; i++) g_st[i].tip = 1001;
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && sends() == sd + 3 && o.worked == 1 && o.submitted == 0,
+          "a new block (tip 1001): sent again to EVERY usable provider, the state unchanged");
+    uint8_t raw0[512];
+    size_t rl = g_st[0].last_raw_len;
+    memcpy(raw0, g_st[0].last_raw, rl < sizeof(raw0) ? rl : sizeof(raw0));
+    CHECK(rl == a.raw_len && !memcmp(raw0, a.raw, rl) && !memcmp(g_st[2].last_raw, a.raw, rl),
+          "  the bytes are the SAME stored bytes (byte for byte), not a rebuilt transaction");
+    amm_eattempt_free(&a);
+    CHECK(amm_journal_eth_attempt_latest(g_j, s.seq, &a) == 0 && !strcmp(a.state, "submitted") && a.last_submit_tip == 1001 && a.n == 1,
+          "  still submitted, attempt 1, last broadcast tip 1001");
+    amm_eattempt_free(&a);
+    sd = sends();
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && sends() == sd, "tip 1001 again: not sent again");
+    for (int i = 0; i < NP; i++) { g_st[i].tip = 1002; g_st[i].send_rc = AMM_ETH_ERR; }
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && sends() == sd + 3,
+          "tip 1002 with every provider refusing the bytes: sent, answers ignored");
+    CHECK(amm_journal_eth_attempt_latest(g_j, s.seq, &a) == 0 && !strcmp(a.state, "submitted") && a.last_submit_tip == 1002,
+          "  it stays submitted and the broadcast is recorded");
+    amm_eattempt_free(&a);
+    sd = sends();
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && sends() == sd, "tip 1002 again: not sent again even though nobody took it");
+    amm_eth_pay_free(p);
+    /* paused: a submitted attempt is not sent again either (payouts_paused broadcasts nothing) */
+    p = new_pay_n(3, 2, 3, 1);
+    for (int i = 0; i < NP; i++) { g_st[i].tip = 1003; g_st[i].send_rc = 0; }
+    sd = sends();
+    CHECK(p && amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && sends() == sd, "payouts_paused: no rebroadcast of a submitted attempt");
+    amm_eth_pay_free(p);
+}
+
+/* A payout of `gross` signed at the stub quote (base 11 gwei, tip 2 gwei: max fee 24 gwei, gas 75000,
+ * price conversion with P_e6 = 10^9: fee = 75000 x 24 gwei x 10^9 / 10^18 = 1,800,000 raw) and
+ * broadcast (submitted at tip 1000). The payer is returned (the journal is the test's). */
+static amm_eth_pay_t *stuck_payer(amm_swap_t *s, uint64_t gross) {
+    fresh();
+    price_conv(1000000000ULL);
+    amm_eth_pay_t *p = new_pay_n(1, 1, 3, 0);
+    amm_ep_step_t o;
+    if (!p || !new_swap(1, 'c', '1', 0, s) || amm_eth_pay_sign(p, s->seq, gross, 0, &o) != AMM_EP_OK ||
+        amm_eth_pay_step(p, s->seq, 0, &o) != AMM_EP_OK || !o.submitted) {
+        printf("FATAL stuck_payer\n");
+        exit(2);
+    }
+    return p;
+}
+
+/* The same payout, stuck (base fee 30 gwei) and REPLACED: attempt 1 `replaced` (max fee 24 gwei, net
+ * 98,200,000), attempt 2 `signed` (tip max(2 gwei, bump = 2.2 gwei) = 2.2 gwei, max fee 2 x 30 + 2.2 =
+ * 62.2 gwei, fee 75000 x 62.2 gwei x 10^9 / 10^18 = 4,665,000, net 95,335,000). The hashes are returned. */
+static amm_eth_pay_t *replaced_group(amm_swap_t *s, uint8_t h1[32], uint8_t h2[32]) {
+    amm_eth_pay_t *p = stuck_payer(s, 100000000ULL);
+    amm_ep_step_t o;
+    all_base_fee(30000000000ULL);
+    amm_eattempt_t g[AMM_EA_GROUP_MAX];
+    int n = 0;
+    if (amm_eth_pay_replace(p, s->seq, 0, &o) != AMM_EP_OK || !o.worked ||
+        amm_journal_eth_attempt_group(g_j, s->seq, g, AMM_EA_GROUP_MAX, &n) != 0 || n != 2) {
+        printf("FATAL replaced_group\n");
+        exit(2);
+    }
+    memcpy(h1, g[0].hash, 32);
+    memcpy(h2, g[1].hash, 32);
+    for (int i = 0; i < n; i++) amm_eattempt_free(&g[i]);
+    return p;
+}
+
+static void e24_stuck_replace(void) {
+    printf("E24 a stuck payout is replaced with the same nonce\n");
+    amm_swap_t s;
+    amm_ep_step_t o;
+    amm_eattempt_t a;
+    uint8_t h1[32], h2[32];
+    amm_eth_pay_t *p = stuck_payer(&s, 100000000ULL);
+    CHECK(row_out(s.seq, 98200000, 1800000), "setup: a submitted payout, gross 100,000,000, fee 1,800,000, net 98,200,000");
+
+    /* the trigger: the base fee strictly above the head's max fee per gas (24 gwei) */
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK, "base fee 11 gwei: not stuck");
+    all_base_fee(24000000000ULL);
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK, "base fee 24 gwei == the max fee: not stuck (the transaction is valid at an equal base fee)");
+    all_base_fee(24000000001ULL);
+    int sd = sends();
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_STUCK && o.worked == 0 && sends() == sd && count_attempts(s.seq) == 1 &&
+          att_is(s.seq, 1, "submitted"), "base fee 24 gwei + 1: STUCK, and the step wrote and sent nothing");
+    for (int i = 0; i < NP; i++) g_st[i].bf_rc = AMM_ETH_ERR;
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK, "a base fee that cannot be read replaces nothing (not STUCK)");
+    for (int i = 0; i < NP; i++) g_st[i].bf_rc = 0;
+    all_base_fee(11000000000ULL);
+    CHECK(amm_eth_pay_replace(p, s.seq, 0, &o) == AMM_EP_OK && o.worked == 0 && count_attempts(s.seq) == 1,
+          "replace with a base fee back at 11 gwei: the trigger no longer holds, nothing stored");
+    all_base_fee(30000000000ULL);
+    rcpt_set(0, 1, 900);                                       /* the head has a receipt */
+    CHECK(amm_eth_pay_replace(p, s.seq, 0, &o) == AMM_EP_OK && o.worked == 0 && count_attempts(s.seq) == 1,
+          "replace when a receipt exists for the head: not stuck, nothing stored");
+    g_st[0].rc_mode = 0;
+    g_st[0].cnt_latest = 1;                                    /* the nonce is used */
+    CHECK(amm_eth_pay_replace(p, s.seq, 0, &o) == AMM_EP_OK && o.worked == 0 && count_attempts(s.seq) == 1,
+          "replace when the confirmed nonce is above the head's: nothing stored (the step orphans it)");
+    g_st[0].cnt_latest = 0;
+
+    /* the replacement */
+    sd = sends();
+    CHECK(amm_eth_pay_replace(p, s.seq, 0, &o) == AMM_EP_OK && o.worked == 1 && o.signed_ == 1 && o.fee == 4665000 &&
+          o.net == 95335000 && sends() == sd, "replace at base 30 gwei: signed and stored, fee 4,665,000, net 95,335,000, nothing sent");
+    CHECK(amm_journal_eth_attempt_latest(g_j, s.seq, &a) == 0 && a.n == 2 && a.nonce == 0 && a.gross == 100000000 &&
+          a.net == 95335000 && a.fee == 4665000 && a.max_priority_fee_per_gas == 2200000000ULL &&
+          a.max_fee_per_gas == 62200000000ULL && a.gas_limit == 75000 && !strcmp(a.state, "signed"),
+          "attempt 2: the same nonce and gross, tip max(2, bump 2.2) = 2.2 gwei, max fee 2 x 30 + 2.2 = 62.2 gwei, state signed");
+    dec_t d;
+    CHECK(decode(a.raw, a.raw_len, &d) == 0 && be_u64(d.f[1], d.l[1]) == 0 && be_u64(d.f[3], d.l[3]) == 62200000000ULL &&
+          be_u64(d.f[2], d.l[2]) == 2200000000ULL && recovers_to_self(a.raw, a.raw_len, &d),
+          "  the stored bytes carry those fields and the old nonce, and recover to the bot");
+    amm_eattempt_free(&a);
+    CHECK(att_is(s.seq, 1, "replaced") && head_n(s.seq) == 2 && row_out(s.seq, 95335000, 4665000),
+          "attempt 1 is `replaced`, the head is attempt 2, the row shows the amount in flight (95,335,000 / 4,665,000)");
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && o.submitted == 1 && sends() == sd + 1,
+          "the next step broadcasts the replacement (one send to the one provider)");
+    {
+        amm_eattempt_t g2[AMM_EA_GROUP_MAX];
+        int ng = 0;
+        CHECK(amm_journal_eth_attempt_group(g_j, s.seq, g2, AMM_EA_GROUP_MAX, &ng) == 0 && ng == 2 &&
+              g_st[0].last_raw_len == g2[1].raw_len && !memcmp(g_st[0].last_raw, g2[1].raw, g2[1].raw_len),
+              "  the bytes sent are the replacement's stored bytes");
+        for (int i = 0; i < ng; i++) amm_eattempt_free(&g2[i]);
+    }
+    amm_eth_pay_free(p);
+
+    /* every settlement outcome of the group (the receipts are per hash) */
+    p = replaced_group(&s, h1, h2);
+    only_hash(0, h2); rcpt_set(0, 1, 900);
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && o.confirmed == 1 && swap_state_is(s.seq, "paid") &&
+          att_is(s.seq, 2, "confirmed") && att_is(s.seq, 1, "voided") && row_out(s.seq, 95335000, 4665000),
+          "the replacement lands: confirmed, the swap paid, the replaced attempt voided, out_paid = its net");
+    amm_eth_pay_free(p);
+    p = replaced_group(&s, h1, h2);
+    only_hash(0, h1); rcpt_set(0, 1, 900);
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && o.confirmed == 1 && swap_state_is(s.seq, "paid") &&
+          att_is(s.seq, 1, "confirmed") && att_is(s.seq, 2, "voided") && row_out(s.seq, 98200000, 1800000),
+          "the REPLACED attempt lands: confirmed with its own net (98,200,000), the replacement voided");
+    amm_eth_pay_free(p);
+    p = replaced_group(&s, h1, h2);
+    only_hash(0, h1); rcpt_set(0, 0, 900);
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_FAILED && o.worked == 1 && att_is(s.seq, 1, "failed") &&
+          att_is(s.seq, 2, "voided") && head_n(s.seq) == 1 && swap_state_is(s.seq, "payout_pending"),
+          "the replaced attempt lands and FAILS: it is `failed` (the head), the replacement voided, the swap owed");
+    g_st[0].rc_only_on = 0; g_st[0].rc_mode = 0;
+    CHECK(amm_eth_pay_resend(p, s.seq, 0, &o) == AMM_EP_OK && o.signed_ == 1 && o.fee == 4650000 && o.net == 93550000 &&
+          count_attempts(s.seq) == 1 && head_n(s.seq) == 3 &&
+          amm_journal_eth_attempt_latest(g_j, s.seq, &a) == 0 && a.gross == 98200000 && a.nonce == 1,
+          "the re-send takes gross = the replaced attempt's net (98,200,000), a new nonce 1, fee 4,650,000 at base 30 gwei");
+    amm_eattempt_free(&a);
+    amm_eth_pay_free(p);
+    p = replaced_group(&s, h1, h2);
+    memcpy(g_st[0].rc_err, h2, 32); g_st[0].rc_err_on = 1;
+    sd = sends();
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_UNKNOWN && o.worked == 0 && sends() == sd &&
+          att_is(s.seq, 1, "replaced") && att_is(s.seq, 2, "signed") && swap_state_is(s.seq, "payout_pending"),
+          "a receipt not readable for one member: UNKNOWN, nothing changes, nothing sent");
+    g_st[0].rc_err_on = 0;
+    rcpt_set(0, 1, 900);                                       /* the same receipt for every hash: two members found */
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_UNKNOWN && att_is(s.seq, 2, "signed") && att_is(s.seq, 1, "replaced"),
+          "a receipt for TWO attempts of one nonce cannot both be true: UNKNOWN, nothing changes");
+    g_st[0].rc_mode = 0;
+    g_st[0].cnt_latest = 1;
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_ORPHANED && att_is(s.seq, 2, "orphaned") && att_is(s.seq, 1, "voided") &&
+          swap_state_is(s.seq, "unknown"), "no receipt and the nonce used: the head orphaned, the replaced attempt voided, the swap unknown");
+    amm_eth_pay_free(p);
+
+    /* what stops a replacement */
+    p = stuck_payer(&s, 4000000);                              /* fee 1,800,000 < 4,000,000: net 2,200,000 */
+    all_base_fee(30000000000ULL);
+    CHECK(amm_eth_pay_replace(p, s.seq, 0, &o) == AMM_EP_ZERO && count_attempts(s.seq) == 1 && att_is(s.seq, 1, "submitted") &&
+          head_n(s.seq) == 1, "nothing left after the replacement's fee (4,665,000 >= 4,000,000): ZERO, the old attempt stays");
+    amm_eth_pay_free(p);
+    p = stuck_payer(&s, 100000000ULL);
+    all_base_fee(30000000000ULL);
+    amm_eth_pay_t *pp = new_pay_n(1, 1, 3, 1);
+    CHECK(pp && amm_eth_pay_replace(pp, s.seq, 0, &o) == AMM_EP_PAUSED && count_attempts(s.seq) == 1, "payouts_paused: PAUSED, nothing stored");
+    amm_eth_pay_free(pp);
+    set_be(g_st[0].eth, 4665000000000000ULL - 1);              /* 75000 x 62.2 gwei, one wei short */
+    CHECK(amm_eth_pay_replace(p, s.seq, 0, &o) == AMM_EP_FUNDS && count_attempts(s.seq) == 1,
+          "ether one wei short of the replacement's gas x max fee: FUNDS, nothing stored (the old attempt's own 1.8e15 is not added)");
+    set_be(g_st[0].eth, 4665000000000000ULL);
+    price_conv(1);                                             /* the ETH price fell: the replacement's fee is 1, its net 99,999,999 > the head's 98,200,000 */
+    set_be(g_st[0].usdt, 99999998ULL);
+    CHECK(amm_eth_pay_replace(p, s.seq, 0, &o) == AMM_EP_FUNDS && count_attempts(s.seq) == 1,
+          "USDT 99,999,998 covers the head's net (98,200,000) but not the replacement's (99,999,999): the nonce is counted at the LARGER net: FUNDS");
+    set_be(g_st[0].usdt, 99999999ULL);
+    CHECK(amm_eth_pay_replace(p, s.seq, 0, &o) == AMM_EP_OK && o.worked == 1 && o.net == 99999999 && o.fee == 1,
+          "USDT 99,999,999: the replacement is stored (fee 1)");
+    amm_eth_pay_free(p);
+    p = stuck_payer(&s, 100000000ULL);
+    all_base_fee(30000000000ULL);
+    for (int i = 0; i < NP; i++) g_st[i].bf_rc = AMM_ETH_ERR;
+    CHECK(amm_eth_pay_replace(p, s.seq, 0, &o) == AMM_EP_OK && o.worked == 0 && count_attempts(s.seq) == 1,
+          "a base fee that cannot be read at the quorum replaces nothing");
+    amm_eth_pay_free(p);
+}
+
+static void e25_resend(void) {
+    printf("E25 a failed payout or refund is sent again\n");
+    fresh();
+    amm_eth_pay_t *p = new_pay_n(1, 1, 3, 0);
+    amm_swap_t s;
+    amm_ep_step_t o;
+    amm_eattempt_t a;
+    CHECK(p && new_swap(1, 'c', '1', 0, &s) && amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_OK &&
+          amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && o.submitted == 1, "setup: a payout of 1,000,000 (fee 100, net 999,900) broadcast");
+    CHECK(amm_eth_pay_resend(p, s.seq, 0, &o) == AMM_EP_ERR && count_attempts(s.seq) == 1,
+          "re-send while the head is submitted (not failed): AMM_EP_ERR, nothing stored");
+    rcpt_set(0, 0, 900);
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_FAILED && att_is(s.seq, 1, "failed") && swap_state_is(s.seq, "payout_pending"),
+          "attempt 1 fails in a block: FAILED, the swap stays payout_pending");
+    int sd = sends();
+    CHECK(amm_eth_pay_resend(p, s.seq, 0, &o) == AMM_EP_OK && o.worked == 1 && o.signed_ == 1 && o.fee == 100 && o.net == 999800 &&
+          sends() == sd, "re-send: stored (fee 100 again, net 999,800), nothing broadcast by it");
+    CHECK(amm_journal_eth_attempt_latest(g_j, s.seq, &a) == 0 && a.n == 2 && a.gross == 999900 && a.net == 999800 && a.fee == 100 &&
+          a.nonce == 1 && !strcmp(a.state, "signed") && a.max_fee_per_gas == 24000000000ULL,
+          "attempt 2: gross = attempt 1's net (999,900), a NEW nonce (1), the minimum not compared again, max fee from the formula");
+    amm_eattempt_free(&a);
+    CHECK(att_is(s.seq, 1, "failed") && head_n(s.seq) == 2 && row_out(s.seq, 999800, 200),
+          "attempt 1 stays failed, the head is attempt 2, the row shows 999,800 / 200 (both fees deducted)");
+    g_st[0].rc_mode = 0;
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && o.submitted == 1 && sends() == sd + 1,
+          "the next step broadcasts attempt 2's stored bytes");
+    CHECK(amm_journal_eth_attempt_latest(g_j, s.seq, &a) == 0 && g_st[0].last_raw_len == a.raw_len &&
+          !memcmp(g_st[0].last_raw, a.raw, a.raw_len), "  the bytes sent are the stored bytes of attempt 2");
+    amm_eattempt_free(&a);
+    rcpt_set(0, 1, 900);
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && o.confirmed == 1 && swap_state_is(s.seq, "paid") && row_out(s.seq, 999800, 200),
+          "attempt 2 lands: the swap is paid, delivered 999,800 (the Transfer log is attempt 2's net)");
+
+    /* a failure again; what cannot be re-sent */
+    amm_eth_pay_free(p);
+    fresh();
+    p = new_pay_n(1, 1, 3, 0);
+    CHECK(p && new_swap(1, 'c', '1', 0, &s) && amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_OK &&
+          amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK, "setup: another payout broadcast");
+    rcpt_set(0, 0, 900);
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_FAILED, "it fails");
+    g_price.fixed = 999900;                                    /* the fee is at the remainder */
+    CHECK(amm_eth_pay_resend(p, s.seq, 0, &o) == AMM_EP_ZERO && count_attempts(s.seq) == 0 && head_n(s.seq) == 1 &&
+          swap_state_is(s.seq, "payout_pending"), "a remainder (999,900) that cannot cover the fee: ZERO, nothing stored, the swap unmoved");
+    g_price.fixed = 100;
+    g_st[0].est_rc = AMM_ETH_ERR;
+    int pc = g_price.calls;
+    CHECK(amm_eth_pay_resend(p, s.seq, 0, &o) == AMM_EP_UNKNOWN && head_n(s.seq) == 1 && g_price.calls == pc,
+          "an estimate that reverts: UNKNOWN, nothing stored, no fee asked");
+    g_st[0].est_rc = 0;
+    set_be(g_st[0].usdt, 5);
+    CHECK(amm_eth_pay_resend(p, s.seq, 0, &o) == AMM_EP_FUNDS && head_n(s.seq) == 1, "the bot's USDT short: FUNDS, nothing stored");
+    set_be(g_st[0].usdt, 1000000000000ULL);
+    amm_eth_pay_t *pp = new_pay_n(1, 1, 3, 1);
+    CHECK(pp && amm_eth_pay_resend(pp, s.seq, 0, &o) == AMM_EP_PAUSED && head_n(s.seq) == 1, "payouts_paused: PAUSED");
+    amm_eth_pay_free(pp);
+    CHECK(amm_eth_pay_resend(p, s.seq, 0, &o) == AMM_EP_OK && head_n(s.seq) == 2, "unpaused and readable: the SAME payout is stored again (never lost)");
+    amm_eth_pay_free(p);
+
+    /* a refund (USDT -> NODUS) is re-sent the same way */
+    fresh();
+    p = new_pay_n(1, 1, 3, 0);
+    CHECK(p && new_swap(0, '2', 'e', 0, &s) && amm_eth_pay_sign(p, s.seq, 9000, 0, &o) == AMM_EP_OK &&
+          amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK, "setup: a refund of 9000 (fee 100) broadcast");
+    rcpt_set(0, 0, 900);
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_FAILED && amm_eth_pay_resend(p, s.seq, 0, &o) == AMM_EP_OK &&
+          o.net == 8800 && head_n(s.seq) == 2 && swap_state_is(s.seq, "refund_pending"),
+          "a failed refund is re-sent: attempt 2 carries 8800 (9000 - 100 - 100), the swap stays refund_pending");
+    amm_eth_pay_free(p);
+
+    /* orphaned and unknown stop the bot: they are not re-sent */
+    fresh();
+    p = new_pay_n(1, 1, 3, 0);
+    CHECK(p && new_swap(1, 'c', '1', 0, &s) && amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_OK, "setup: a payout, signed");
+    g_st[0].cnt_latest = 5;
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_ORPHANED && amm_eth_pay_resend(p, s.seq, 0, &o) == AMM_EP_ERR &&
+          count_attempts(s.seq) == 0, "an orphaned head (the swap unknown) is not re-sent");
+    amm_eth_pay_free(p);
+    fresh();
+    p = new_pay_n(1, 1, 3, 0);
+    CHECK(p && new_swap(1, 'c', '1', 0, &s) && amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_OK &&
+          amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK, "setup: a payout, broadcast");
+    rcpt_set(0, 1, 900);
+    g_st[0].log_mode = 1;                                      /* status 1 and no Transfer log */
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_NO_LOG && amm_eth_pay_resend(p, s.seq, 0, &o) == AMM_EP_ERR &&
+          swap_state_is(s.seq, "unknown"), "a head `unknown` (no Transfer log) is not re-sent");
+    amm_eth_pay_free(p);
+}
+
+/* A USDT refund of `gross` signed at base fee `base` (tip 122 wei, P = 3,000 USD: P_e6 3,000,000,000, the
+ * estimate 53,072 bumped to 66,340 gas). Returns amm_eth_pay_sign's result; the journal stays. */
+static int refund_at(uint64_t base, uint64_t gross, amm_ep_step_t *o, amm_swap_t *s) {
+    fresh();
+    price_conv(3000000000ULL);
+    for (int i = 0; i < NP; i++) { g_st[i].gas_base = 53072; g_st[i].prio = 122; }
+    all_base_fee(base);
+    amm_eth_pay_t *p = new_pay();
+    int rc = p && new_swap(0, '2', 'e', 0, s) ? amm_eth_pay_sign(p, s->seq, gross, 0, o) : -9;
+    amm_eth_pay_free(p);
+    return rc;
+}
+
+/* E26 (evm-fee plan 7.2, B2): the deducted ceiling is gas limit x max fee, converted and rounded up. The hand
+ * arithmetic (python3 -I, plan section 14): 66,340 x 6,000,000,122 x 3e9 / 1e18 = 1,194,120.02 -> 1,194,121;
+ * 66,340 x 3,000,000,122 x 3e9 / 1e18 = 597,060.02 -> 597,061. WHAT IT PROVES: at base 3 gwei a 1 USDT
+ * refund is ZERO (nothing stored, nothing sent, the swap unmoved, the price seam quoted max fee 6,000,000,122
+ * and gas 66,340), at 1.5 gwei it is signed with net 402,939, and the exact boundary is gross == fee ->
+ * ZERO, gross == fee + 1 -> net 1. HOW IT FALSELY PASSES: before the fee rule the max fee was the
+ * `eth_gasPrice` stub (30 gwei here), so the same numbers cannot come out; a rounding that truncated would
+ * give 1,194,120 and fail the boundary. */
+static void e26_refund_threshold(void) {
+    printf("E26 both sides of the refund threshold, at the F1 max fee\n");
+    amm_swap_t s;
+    amm_ep_step_t o;
+    int rc = refund_at(3000000000ULL, 1000000, &o, &s);
+    CHECK(rc == AMM_EP_ZERO && !has_attempt(s.seq) && swap_state_is(s.seq, "refund_pending") && sends() == 0 &&
+          o.fee == 1194121 && g_price.last_max_fee == 6000000122ULL && g_price.last_gas == 66340,
+          "base 3 gwei (max fee 6,000,000,122): fee 1,194,121; a 1 USDT refund is ZERO (nothing stored, nothing sent, the swap unmoved)");
+    rc = refund_at(1500000000ULL, 1000000, &o, &s);
+    CHECK(rc == AMM_EP_OK && o.fee == 597061 && o.net == 402939 && g_price.last_max_fee == 3000000122ULL &&
+          has_attempt(s.seq), "base 1.5 gwei (max fee 3,000,000,122): fee 597,061, a 1 USDT refund is signed with net 402,939");
+    rc = refund_at(3000000000ULL, 1194121, &o, &s);
+    CHECK(rc == AMM_EP_ZERO && !has_attempt(s.seq), "the boundary at base 3 gwei: gross 1,194,121 == the fee: ZERO");
+    rc = refund_at(3000000000ULL, 1194122, &o, &s);
+    CHECK(rc == AMM_EP_OK && o.net == 1 && o.fee == 1194121 && has_attempt(s.seq),
+          "gross 1,194,122: signed with net 1");
+}
+
+static void e27_pending_funds(void) {
+    printf("E27 the ether and the USDT of every pending payout count once per nonce\n");
+    fresh();
+    amm_eth_pay_t *p = new_pay_n(1, 1, 3, 0);
+    amm_swap_t s1, s2;
+    amm_ep_step_t o;
+    CHECK(p && new_swap(1, 'c', '1', 0, &s1) && new_swap(1, 'd', '1', 0, &s2), "setup: two payouts decided in one round");
+    set_be(g_st[0].eth, 75000ULL * 24000000000ULL);            /* one payout's gas x max fee: 1.8e15 */
+    CHECK(amm_eth_pay_sign(p, s1.seq, 1000000, 0, &o) == AMM_EP_OK, "the first payout is signed (ether = its gas x max fee)");
+    CHECK(amm_eth_pay_sign(p, s2.seq, 1000000, 0, &o) == AMM_EP_FUNDS && !has_attempt(s2.seq) && sends() == 0,
+          "the second is FUNDS before the first is broadcast: the first's ether is counted");
+    set_be(g_st[0].eth, 2 * 75000ULL * 24000000000ULL - 1);
+    CHECK(amm_eth_pay_sign(p, s2.seq, 1000000, 0, &o) == AMM_EP_FUNDS, "one wei short of two payouts' ether: FUNDS");
+    set_be(g_st[0].eth, 2 * 75000ULL * 24000000000ULL);
+    CHECK(amm_eth_pay_sign(p, s2.seq, 1000000, 0, &o) == AMM_EP_OK, "exactly two payouts' ether: signed");
+    amm_eth_pay_free(p);
+
+    /* a replaced attempt and its replacement count once, at the larger maximum, in both sums */
+    amm_swap_t g;
+    uint8_t h1[32], h2[32];
+    p = replaced_group(&g, h1, h2);                            /* nonce 0: ether max(1.8e15, 4.665e15), USDT max(98.2e6, 95.335e6) */
+    CHECK(new_swap(1, 'd', '1', 0, &s2), "setup: a second payout, decided at base 30 gwei (max fee 62 gwei: gas x max fee 4.65e15, fee 4,650,000, net 95,350,000)");
+    set_be(g_st[0].eth, 4665000000000000ULL + 4650000000000000ULL - 1);
+    CHECK(amm_eth_pay_sign(p, s2.seq, 100000000, 0, &o) == AMM_EP_FUNDS && !has_attempt(s2.seq),
+          "ether one wei short of 4.665e15 (the group, once) + 4.65e15: FUNDS");
+    set_be(g_st[0].eth, 4665000000000000ULL + 4650000000000000ULL);
+    set_be(g_st[0].usdt, 98200000ULL + 95350000ULL - 1);
+    CHECK(amm_eth_pay_sign(p, s2.seq, 100000000, 0, &o) == AMM_EP_FUNDS && !has_attempt(s2.seq),
+          "USDT one unit short of 98,200,000 (the group's larger net, once) + 95,350,000: FUNDS");
+    set_be(g_st[0].usdt, 98200000ULL + 95350000ULL);
+    CHECK(amm_eth_pay_sign(p, s2.seq, 100000000, 0, &o) == AMM_EP_OK && o.fee == 4650000 && o.net == 95350000,
+          "exactly that much of both: signed (had the group been counted twice, this would be FUNDS)");
+    amm_eth_pay_free(p);
+}
+
+/* E28 (plan 7.2, first payer row): the fee quote through the SIGNING path.
+ * WHAT IT PROVES: with Q = 2 of 3 providers, a base fee answered by fewer than Q providers makes
+ * amm_eth_pay_sign (a refund) and amm_eth_pay_prepare (a payout) return AMM_EP_UNKNOWN with no attempt
+ * stored, no nonce used (the journal has none), nothing sent and no price asked; a quorum base fee above
+ * (INT64_MAX - prio) / 2 (the formula's bound) is AMM_EP_UNKNOWN too, again with nothing stored or sent;
+ * with the base fee readable again the same refund signs.
+ * FLAGS: none. LEAVES BEHIND: nothing. HOW IT COULD FALSELY PASS: the quote is scripted per provider;
+ * the unreadable-base case could also fail through another unreadable fact, which the final "signs"
+ * check (only the base fee restored) excludes; the bound case uses base = bound + 1 on all providers so
+ * the Q-th largest is above it, and the restored base 11 gwei is far below it. */
+static void e28_fee_quote_signing_path(void) {
+    printf("E28 the fee quote through the signing path\n");
+    fresh();
+    amm_eth_pay_t *p = new_pay_n(3, 2, 3, 0);
+    amm_swap_t s, u;
+    amm_ep_step_t o;
+    amm_ep_prepared_t pre;
+    uint64_t nn = 0;
+    char r40[41];
+    memset(r40, '1', 40);
+    r40[40] = '\0';
+    CHECK(p && new_swap(0, '2', 'e', 0, &s) && new_swap(1, 'c', '1', 0, &u), "setup: a refund and a payout swap, three providers, Q = 2");
+    g_st[0].bf_rc = AMM_ETH_ERR; g_st[1].bf_rc = AMM_ETH_ERR;          /* one provider of Q = 2 answers */
+    CHECK(amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_UNKNOWN && !has_attempt(s.seq) &&
+          amm_journal_eth_next_nonce(g_j, 1, &nn) == 1 && sends() == 0 && g_price.calls == 0,
+          "refund: the base fee below the quorum: UNKNOWN, nothing stored, no nonce used, nothing sent, no price asked");
+    CHECK(amm_eth_pay_prepare(p, r40, 1000000, 0, 0, &pre) == AMM_EP_UNKNOWN && amm_journal_eth_next_nonce(g_j, 1, &nn) == 1 &&
+          sends() == 0 && g_price.calls == 0, "payout: the same through amm_eth_pay_prepare");
+    amm_ep_prepared_free(&pre);
+    g_st[0].bf_rc = 0; g_st[1].bf_rc = 0;
+    const uint64_t bound = ((uint64_t)INT64_MAX - 2000000000ULL) / 2;  /* prio is 2 gwei */
+    for (int i = 0; i < NP; i++) g_st[i].base_fee = bound + 1;
+    CHECK(amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_UNKNOWN && !has_attempt(s.seq) &&
+          amm_journal_eth_next_nonce(g_j, 1, &nn) == 1 && sends() == 0 && g_price.calls == 0,
+          "refund: a quorum base fee above (INT64_MAX - prio) / 2: UNKNOWN, nothing stored or sent");
+    CHECK(amm_eth_pay_prepare(p, r40, 1000000, 0, 0, &pre) == AMM_EP_UNKNOWN && sends() == 0 && g_price.calls == 0,
+          "payout: the same through amm_eth_pay_prepare");
+    amm_ep_prepared_free(&pre);
+    all_base_fee(11000000000ULL);
+    CHECK(amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_OK && has_attempt(s.seq),
+          "with the base fee readable and in range again the same refund signs");
+    amm_eth_pay_free(p);
+}
+
 int main(void) {
     printf("test_amm_eth_pay\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_ethpay_testXXXXXX");
@@ -1723,6 +2389,14 @@ int main(void) {
     e18_arrival_order();
     e19_late_provider();
     e20_joint_depth_reverse();
+    e21_pure();
+    e22_plan();
+    e23_same_bytes();
+    e24_stuck_replace();
+    e25_resend();
+    e26_refund_threshold();
+    e27_pending_funds();
+    e28_fee_quote_signing_path();
 
     if (g_j) amm_journal_close(g_j);
     cleanup_dir();

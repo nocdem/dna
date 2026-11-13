@@ -19,7 +19,8 @@
  * METHOD SHAPES (execution-apis 3284ee80; each call cites its own):
  *   eth_chainId                 src/eth/client.yaml:1
  *   eth_blockNumber             src/eth/client.yaml:60
- *   eth_getBlockByNumber        src/eth/block.yaml:63   (hydrated = false)
+ *   eth_getBlockByNumber        src/eth/block.yaml:63   (hydrated = false; also
+ *                               ["latest", false] for the payer's base fee)
  *   eth_getLogs                 src/eth/filter.yaml:151, filter schema
  *                               src/schemas/filter.yaml:40-59 (Filter by block hash)
  *   eth_getTransactionByHash    src/eth/transaction.yaml:1

@@ -169,8 +169,15 @@ typedef struct {
     int (*estimate_gas)(void *ctx, const uint8_t from[20], const uint8_t to[20],
                         const uint8_t *input, size_t input_len, uint64_t *out,
                         uint64_t deadline_ms);
-    /** eth_gasPrice (fee_market.yaml:1), wei per gas. */
+    /** eth_gasPrice (fee_market.yaml:1), wei per gas. The payer and the engine
+     *  no longer read it (the fee rule reads `base_fee` and `max_priority_fee`);
+     *  the call stays a correct, tested implementation of the method. */
     int (*gas_price)(void *ctx, uint64_t *out, uint64_t deadline_ms);
+    /** eth_getBlockByNumber ["latest", false] (block.yaml:63): the
+     *  `baseFeePerGas` of the answer (schemas/block.yaml:72-74), wei per gas.
+     *  A `null` result, a block without `baseFeePerGas`, a malformed value or a
+     *  value above uint64 is AMM_ETH_ERR; there is no NOT_FOUND answer. */
+    int (*base_fee)(void *ctx, uint64_t *out, uint64_t deadline_ms);
     /** eth_maxPriorityFeePerGas (fee_market.yaml:43), wei per gas. */
     int (*max_priority_fee)(void *ctx, uint64_t *out, uint64_t deadline_ms);
     /** eth_sendRawTransaction (submit.yaml:32): the provider's answer is the

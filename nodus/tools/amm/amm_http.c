@@ -316,10 +316,10 @@ static const char *s_word(int rc) {
 static void route_quote(amm_http_ctx_t *c, const amm_http_req_t *req, uint64_t dl, int *status,
                         char *body, size_t cap) {
     amm_json_t js;
-    const char *dv, *av;
-    size_t dn, an;
+    const char *dv, *av, *xv;
+    size_t dn, an, xn;
     uint64_t amount = 0;
-    if (amm_json_parse(req->body, req->body_len, &js) != 0 || js.n != 2 ||
+    if (amm_json_parse(req->body, req->body_len, &js) != 0 || (js.n != 2 && js.n != 3) ||
         !amm_json_get(&js, "direction", &dv, &dn) || !amm_json_get(&js, "amount", &av, &an) ||
         dec_u64(av, an, &amount) != 0 || amount == 0) {
         refusal(status, body, cap, 400, "approved", "bad_request");
@@ -330,9 +330,29 @@ static void route_quote(amm_http_ctx_t *c, const amm_http_req_t *req, uint64_t d
     else if (dn == 13 && !memcmp(dv, "nodus_to_usdt", 13)) dir = AMM_NODUS_TO_USDT;
     else { refusal(status, body, cap, 400, "approved", "bad_request"); return; }
 
+    /* The question's shape (evm-fee plan 6.5.3): NODUS -> USDT carries the
+     * user's Ethereum address, exactly three keys; USDT -> NODUS exactly two
+     * (today's shape). A NODUS -> USDT question in the two-key shape is what a
+     * page script cached from before the deploy sends: it gets its own word, so
+     * the old page's fallback text shows the cause; there is no fallback to a
+     * fee for another address (fail closed). */
+    uint8_t dest[20];
+    const uint8_t *destp = NULL;
+    if (dir == AMM_NODUS_TO_USDT) {
+        if (js.n == 2) { refusal(status, body, cap, 400, "approved", "page_out_of_date"); return; }
+        if (!amm_json_get(&js, "destination", &xv, &xn) || amm_http_hex0x(xv, xn, dest, 20) != 0) {
+            refusal(status, body, cap, 400, "approved", "bad_request");
+            return;
+        }
+        destp = dest;
+    } else if (js.n != 2) {
+        refusal(status, body, cap, 400, "approved", "bad_request");
+        return;
+    }
+
     amm_quote_answer_t a;
     memset(&a, 0, sizeof(a));
-    int rc = c->be.quote(c->be.ctx, dir, amount, dl, &a);
+    int rc = c->be.quote(c->be.ctx, dir, amount, destp, dl, &a);
     if (rc != AMM_Q_OK) {
         refusal(status, body, cap, rc == AMM_Q_ERR ? 500 : 200, "approved", q_word(rc));
         return;

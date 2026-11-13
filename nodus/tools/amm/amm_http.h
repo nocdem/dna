@@ -11,8 +11,14 @@
  * ROUTES (all JSON, byte fields `0x` + lowercase hex, numbers decimal
  * strings, plan 6.4.7; the answers carry no signature, givens item 69):
  *
- *   POST /amm/quote       the site's question: {"direction":"usdt_to_nodus"|
- *                         "nodus_to_usdt","amount":"<raw>"} (unsigned)
+ *   POST /amm/quote       the site's question (unsigned): exactly
+ *                         {"direction":"usdt_to_nodus","amount":"<raw>"} or
+ *                         {"direction":"nodus_to_usdt","amount":"<raw>",
+ *                         "destination":"0x<40 lowercase hex>"} (the user's
+ *                         Ethereum address: the estimate is the fee the payer
+ *                         plans for transfer(destination, number)); the old
+ *                         two-key NODUS -> USDT shape is refused with
+ *                         "page_out_of_date" (HTTP 400)
  *     approved: {"approved":true,"direction":..,"amount":"..","number":"..",
  *                "estimatedFee":"..","requestNumber":"<decimal u32>",
  *                "validUntil":"<unix s>","payTo":".."}
@@ -65,7 +71,9 @@
  * REFUSAL WORDS (the build's, plan 6.4.5 / 6.4.7 leave them to it; the site
  * only shows them):
  *   quote:  paused, stopped, below_minimum, above_maximum, inflight_full,
- *           no_liquidity, cannot_pay, unavailable, busy, bad_request, internal
+ *           no_liquidity, cannot_pay, unavailable, busy, bad_request,
+ *           page_out_of_date (a NODUS -> USDT question without a destination:
+ *           the site's page script predates the bot), internal
  *           ("busy" = the open unpaid questions are at the limit quote_open_max,
  *           givens item 98: HTTP 200 {"approved":false,"reason":"busy"}, like
  *           every other refusal; "unavailable" = a read failed. The add question
@@ -163,8 +171,8 @@ typedef enum {
 typedef struct {
     void *ctx;
     /** returns an amm_q_rc_t */
-    int (*quote)(void *ctx, amm_dir_t dir, uint64_t amount, uint64_t deadline_ms,
-                 amm_quote_answer_t *out);
+    int (*quote)(void *ctx, amm_dir_t dir, uint64_t amount, const uint8_t *dest,
+                 uint64_t deadline_ms, amm_quote_answer_t *out);
     /** verify + accept; returns an amm_hs_t; `*req_out` = the request number
      *  on AMM_HS_RECEIVED, `*open_req` on AMM_HS_OPEN */
     int (*swap_usdt)(void *ctx, const amm_req_usdt_in_t *in, uint32_t *req_out,

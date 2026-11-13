@@ -35,6 +35,10 @@
  *   R6  get_block from the execution-apis example (block.yaml:85-124): number,
  *       hash, parentHash, timestamp; another number than asked, a missing
  *       field, an upper-case or short hash are ERR;
+ *   R6b base_fee (evm-fee plan 6.2): eth_getBlockByNumber ["latest", false],
+ *       the baseFeePerGas of a strictly checked block; null, a missing, null,
+ *       leading-zero, upper-case, 17-digit or numeric value, a block missing a
+ *       required field and a non-block are ERR; the provider table has it;
  *   R7  get_logs from the execution-apis example (filter.yaml:174-215):
  *       fields mapped, an empty list is OK with n = 0 (a valid answer), a
  *       list above `cap` is ERR (never cut), `removed: true`, another block,
@@ -664,6 +668,63 @@ static void r6_block(void) {
     CHECK(g_p.get_block(g_p.ctx, 0x68b3, &b, 0) == AMM_ETH_ERR, "a string instead of a block: ERR");
 }
 
+/* R6b -- base_fee (evm-fee plan 6.2, 7.2): eth_getBlockByNumber ["latest",
+ * false] and the baseFeePerGas of the answer.
+ * WHAT IT PROVES: the request body is exact; the example block's baseFeePerGas
+ * "0x7" is read as 7; a 64-bit maximum is read; a `null` result, a block without
+ * baseFeePerGas, a null or leading-zero or upper-case or 17-digit value, a value
+ * that is a JSON number, a block missing one of the 18 required fields and a
+ * non-block result are all AMM_ETH_ERR, and a null is NOT AMM_ETH_NOT_FOUND;
+ * the provider table carries base_fee.
+ * HOW IT COULD FALSELY PASS: the answers are canned, so the test proves the
+ * parser and the request text, not a real node's block; the 18-field loop reuses
+ * the strict block check of get_block, so a loosened check would be caught by
+ * R6 as well; a value above 64 bits is the 17-digit case. */
+static void r6b_base_fee(void) {
+    printf("R6b base_fee\n");
+    mk(65536);
+    uint64_t v = 12345;
+    const char *good = BLOCK_OK("0x68b3", H1, H2, "0x5835c54d");
+    char b2[3000];
+    result(good);
+    CHECK(u64call(g_p.base_fee, &v) == AMM_ETH_OK && v == 7, "the example block's baseFeePerGas 0x7 is 7");
+    CHECK(!strcmp(g_body, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getBlockByNumber\","
+                          "\"params\":[\"latest\",false]}"), "  the request text: [\"latest\",false]");
+    result(subst(good, "\"baseFeePerGas\":\"0x7\"", "\"baseFeePerGas\":\"0xffffffffffffffff\"", b2, sizeof(b2)));
+    CHECK(u64call(g_p.base_fee, &v) == AMM_ETH_OK && v == UINT64_MAX, "the 64-bit maximum is read");
+    result(subst(good, "\"baseFeePerGas\":\"0x7\"", "\"baseFeePerGas\":\"0x0\"", b2, sizeof(b2)));
+    v = 99;
+    CHECK(u64call(g_p.base_fee, &v) == AMM_ETH_OK && v == 0, "0x0 is read as 0 (the payer's formula refuses a zero fee, not the read)");
+    v = 55;
+    result("null");
+    CHECK(u64call(g_p.base_fee, &v) == AMM_ETH_ERR && v == 55, "a null result is ERR (never NOT_FOUND), the output untouched");
+    result(subst(good, ",\"baseFeePerGas\":\"0x7\"", "", b2, sizeof(b2)));
+    CHECK(u64call(g_p.base_fee, &v) == AMM_ETH_ERR, "a block without baseFeePerGas is ERR");
+    result(subst(good, "\"baseFeePerGas\":\"0x7\"", "\"baseFeePerGas\":null", b2, sizeof(b2)));
+    CHECK(u64call(g_p.base_fee, &v) == AMM_ETH_ERR, "a null baseFeePerGas is ERR");
+    result(subst(good, "\"baseFeePerGas\":\"0x7\"", "\"baseFeePerGas\":\"0x07\"", b2, sizeof(b2)));
+    CHECK(u64call(g_p.base_fee, &v) == AMM_ETH_ERR, "a leading zero is ERR");
+    result(subst(good, "\"baseFeePerGas\":\"0x7\"", "\"baseFeePerGas\":\"0xA\"", b2, sizeof(b2)));
+    CHECK(u64call(g_p.base_fee, &v) == AMM_ETH_ERR, "upper-case hex is ERR");
+    result(subst(good, "\"baseFeePerGas\":\"0x7\"", "\"baseFeePerGas\":\"0x10000000000000000\"", b2, sizeof(b2)));
+    CHECK(u64call(g_p.base_fee, &v) == AMM_ETH_ERR, "a value above 64 bits (17 digits) is ERR");
+    result(subst(good, "\"baseFeePerGas\":\"0x7\"", "\"baseFeePerGas\":7", b2, sizeof(b2)));
+    CHECK(u64call(g_p.base_fee, &v) == AMM_ETH_ERR, "a JSON number is ERR");
+    static const char *breq[] = { "hash", "parentHash", "sha3Uncles", "miner", "stateRoot", "transactionsRoot",
+        "receiptsRoot", "logsBloom", "number", "gasLimit", "gasUsed", "timestamp", "extraData", "mixHash",
+        "nonce", "size", "transactions", "uncles" };
+    int all = 1;
+    for (size_t i = 0; i < sizeof(breq) / sizeof(breq[0]); i++) {
+        result(drop_key(good, breq[i], b2, sizeof(b2)));
+        if (u64call(g_p.base_fee, &v) != AMM_ETH_ERR) all = 0;
+    }
+    CHECK(all, "a block missing any one of the 18 required fields is ERR");
+    result("[]");
+    CHECK(u64call(g_p.base_fee, &v) == AMM_ETH_ERR, "an array instead of a block is ERR");
+    result("\"0x7\"");
+    CHECK(u64call(g_p.base_fee, &v) == AMM_ETH_ERR, "a string instead of a block is ERR");
+}
+
 /* the example of filter.yaml:174-215 (first log) */
 #define LOG1(idx, bn, data, topics) \
     "{\"logIndex\":\"" idx "\",\"removed\":false,\"blockNumber\":\"" bn "\",\"blockTimestamp\":\"0x11\"," \
@@ -1068,7 +1129,7 @@ static void r11_config_transport(void) {
     amm_eth_provider_t p;
     amm_eth_rpc_provider(r, &p);
     CHECK(p.ctx && p.name && p.chain_id && p.block_number && p.get_block && p.get_logs && p.get_tx && p.get_receipt &&
-          p.get_balance && p.erc20_balance && p.tx_count && p.estimate_gas && p.gas_price && p.max_priority_fee && p.send_raw,
+          p.get_balance && p.erc20_balance && p.tx_count && p.estimate_gas && p.gas_price && p.base_fee && p.max_priority_fee && p.send_raw,
           "the seam table is complete");
     CHECK(!strcmp(p.name, "n"), "the name is the caller's label, never the URL");
     amm_eth_rpc_free(r);
@@ -1895,6 +1956,7 @@ int main(void) {
     r4_size();
     r5_null();
     r6_block();
+    r6b_base_fee();
     r7_logs();
     r8_tx_receipt();
     r8b_tx_lists();

@@ -153,7 +153,25 @@ typedef struct {
      * provider group runs one call per provider on its own thread at the same
      * time, and a lost increment would fail the exact-count assertions */
     atomic_int reads;                /* every node and provider read of the engine's seams (E22) */
-    atomic_int prov_reads;           /* the question path's Ethereum reads: balance, gas estimate, gas price */
+    atomic_int prov_reads;           /* the question path's Ethereum reads: balance, gas estimate, base fee */
+    atomic_int erc_reads, est_reads, base_reads;   /* ... each kind apart (E24, E28, E42) */
+    /* the Ethereum fee work (evm-fee plan 7.2): the fee quote the payer reads, the estimate by
+     * recipient class, the converting price, the estimate calls the stub saw */
+    uint64_t base_fee, tip_fee;      /* baseFeePerGas of the latest block, eth_maxPriorityFeePerGas (wei) */
+    int      est_mode;               /* 0: 60000 for every call; 1: by the recipient's class (below) */
+    uint8_t  holder[20]; int holder_on;   /* est_mode 1: this address holds USDT (34,800); the bot 30,000; any other 51,900 */
+    uint8_t  self[20];               /* the bot's own Ethereum address (set at build) */
+    int      est_fail_all;           /* 1: every estimate fails ("execution reverted") */
+    uint8_t  est_fail_to[20]; int est_fail_to_on;   /* est_mode 1: the estimate of a transfer to this address fails */
+    int      est_cycle;              /* est_mode 1: the estimate grows by 1000 at every call (no fixed point) */
+    atomic_int est_calls;
+    struct { uint8_t to[20]; uint64_t amount; } est_log[16];   /* the call data of the estimates (to, amount low 8 bytes) */
+    atomic_int est_log_n;
+    int      price_mode;             /* 0: the fixed fee price_fee; 1: ceil(gas x max fee x p_e6 / 10^18) */
+    uint64_t p_e6;
+    uint64_t last_gas, last_maxfee;  /* the price seam's last arguments */
+    int      rcpt_status;            /* the status of a receipt the stub answers (default 1: set 0 for a failed send) */
+    uint8_t  rcpt_only[32]; int rcpt_only_on;   /* 1: a receipt exists for this transaction hash only (others: none) */
     int      nbal_reads;             /* the Nodus balance reads */
     int      erc20_fail;             /* 1: every provider's USDT balance read fails (E28) */
     atomic_int sends;                /* every raw-transaction broadcast the providers were asked for (E38) */
@@ -269,11 +287,12 @@ static int e_tx(void *c, const uint8_t h[32], amm_eth_tx_t *o, uint64_t dl) {
     (void)c; (void)h; (void)o; (void)dl; return AMM_ETH_ERR;
 }
 static int e_rcpt(void *c, const uint8_t h[32], amm_eth_receipt_t *o, uint64_t dl) {
-    (void)c; (void)h; (void)dl;
+    (void)c; (void)dl;
     if (W.rcpt_none) return AMM_ETH_NOT_FOUND;   /* E38: no receipt at the quorum */
+    if (W.rcpt_only_on && memcmp(h, W.rcpt_only, 32) != 0) return AMM_ETH_NOT_FOUND;   /* E43: one attempt's receipt only */
     if (!W.rcpt_ok) return AMM_ETH_ERR;      /* the default: receipts are unreadable */
     memset(o, 0, sizeof(*o));
-    o->status = 1;
+    o->status = W.rcpt_status;
     o->block_number = W.rcpt_block;
     memset(o->block_hash, W.rcpt_hash, 32);
     return AMM_ETH_OK;
@@ -287,7 +306,7 @@ static int e_bal(void *c, const uint8_t a[20], uint8_t out[32], uint64_t dl) {
 }
 static int e_erc20(void *c, const uint8_t t[20], const uint8_t o[20], uint8_t out[32], uint64_t dl) {
     (void)c; (void)t; (void)o; (void)dl;
-    W.reads++; W.prov_reads++;
+    W.reads++; W.prov_reads++; atomic_fetch_add(&W.erc_reads, 1);
     if (W.erc20_fail) return AMM_ETH_ERR;
     memset(out, 0, 32);
     for (int i = 0; i < 8; i++) out[31 - i] = (uint8_t)(W.usdt_balance >> (8 * i));
@@ -298,10 +317,35 @@ static int e_count(void *c, const uint8_t a[20], int pending, uint64_t *o, uint6
 }
 static int e_est(void *c, const uint8_t f[20], const uint8_t t[20], const uint8_t *in, size_t n,
                  uint64_t *o, uint64_t dl) {
-    (void)c; (void)f; (void)t; (void)in; (void)n; (void)dl; W.reads++; W.prov_reads++; *o = 60000; return AMM_ETH_OK;
+    (void)c; (void)f; (void)t; (void)dl;
+    W.reads++; W.prov_reads++; atomic_fetch_add(&W.est_reads, 1);
+    const int call = atomic_fetch_add(&W.est_calls, 1);
+    if (W.est_fail_all) return AMM_ETH_ERR;                    /* "execution reverted" */
+    if (W.est_mode == 0 || n != 68) { *o = 60000; return AMM_ETH_OK; }
+    /* est_mode 1: the call data transfer(to, amount) is read; the gas follows the recipient's class (evm-fee
+     * plan 6.5.1: the bot's own slot is warm, a holder costs more, an empty address the most) plus 16 per
+     * non-zero byte of the amount (the shape of test_amm_eth_pay's estimate) */
+    uint8_t to[20];
+    memcpy(to, in + 16, 20);
+    uint64_t amt = 0;
+    for (int i = 60; i < 68; i++) amt = (amt << 8) | in[i];
+    const int k = atomic_fetch_add(&W.est_log_n, 1);
+    if (k < 16) { memcpy(W.est_log[k].to, to, 20); W.est_log[k].amount = amt; }
+    if (W.est_fail_to_on && !memcmp(to, W.est_fail_to, 20)) return AMM_ETH_ERR;
+    uint64_t g = !memcmp(to, W.self, 20) ? 30000 : (W.holder_on && !memcmp(to, W.holder, 20) ? 34800 : 51900);
+    for (int i = 36; i < 68; i++) g += in[i] ? 16 : 0;
+    if (W.est_cycle) g += 1000ULL * (uint64_t)call;
+    *o = g;
+    return AMM_ETH_OK;
 }
-static int e_gasp(void *c, uint64_t *o, uint64_t dl) { (void)c; (void)dl; W.reads++; W.prov_reads++; *o = 20000000000ULL; return AMM_ETH_OK; }
-static int e_prio(void *c, uint64_t *o, uint64_t dl) { (void)c; (void)dl; *o = 1000000000ULL; return AMM_ETH_OK; }
+/* eth_getBlockByNumber ["latest"]: the base fee of the latest block (counted with the question path's reads) */
+static int e_base(void *c, uint64_t *o, uint64_t dl) {
+    (void)c; (void)dl;
+    W.reads++; W.prov_reads++; atomic_fetch_add(&W.base_reads, 1);
+    *o = W.base_fee;
+    return AMM_ETH_OK;
+}
+static int e_prio(void *c, uint64_t *o, uint64_t dl) { (void)c; (void)dl; *o = W.tip_fee; return AMM_ETH_OK; }
 static int e_send(void *c, const uint8_t *raw, size_t n, uint8_t h[32], uint64_t dl) {
     (void)c; (void)dl;
     W.sends++;
@@ -310,9 +354,19 @@ static int e_send(void *c, const uint8_t *raw, size_t n, uint8_t h[32], uint64_t
 }
 
 static int price_fee(void *c, uint64_t gas, uint64_t maxfee, uint64_t *o, uint64_t dl) {
-    (void)c; (void)gas; (void)maxfee; (void)dl;
+    (void)c; (void)dl;
     W.reads++;
+    W.last_gas = gas; W.last_maxfee = maxfee;
     if (W.price_rc) return AMM_ETH_ERR;
+    if (W.price_mode == 1) {
+        /* the seam's conversion: ceil(gas x max fee x P_e6 / 10^18), the product in 128 bits (66,340 x 6e9 x 3e9
+         * is above uint64) */
+        const unsigned __int128 den = 1000000000000000000ULL;
+        const unsigned __int128 q = ((unsigned __int128)gas * maxfee * W.p_e6 + den - 1) / den;
+        if (q > UINT64_MAX) return AMM_ETH_ERR;
+        *o = (uint64_t)q;
+        return AMM_ETH_OK;
+    }
     *o = W.price_fee;
     return AMM_ETH_OK;
 }
@@ -355,7 +409,7 @@ static void build(env_t *e) {
         p.name = "stub";
         p.chain_id = e_chain; p.block_number = e_bn; p.get_block = e_block; p.get_logs = e_logs;
         p.get_tx = e_tx; p.get_receipt = e_rcpt; p.get_balance = e_bal; p.erc20_balance = e_erc20;
-        p.tx_count = e_count; p.estimate_gas = e_est; p.gas_price = e_gasp;
+        p.tx_count = e_count; p.estimate_gas = e_est; p.base_fee = e_base;
         p.max_priority_fee = e_prio; p.send_raw = e_send;
         e->prov[i] = p;
     }
@@ -371,6 +425,7 @@ static void build(env_t *e) {
     if (!e->ep) { printf("FATAL: eth payer\n"); exit(2); }
     amm_eth_pay_self(e->ep, e->foundation);
     memcpy(e->cfg.foundation_eth, e->foundation, 20);
+    memcpy(W.self, e->foundation, 20);
 
     amm_eth_watch_cfg_t wc;
     memset(&wc, 0, sizeof(wc));
@@ -434,6 +489,8 @@ static void env_open(env_t *e) {
     W.now = 10000; W.eth_tip = 1000; W.nodus_tip = 1000;
     W.nodus_balance = 1000000000000000ULL; W.usdt_balance = 1000000000000ULL;
     W.price_fee = 500000; W.rng = 0x9E3779B97F4A7C15ULL; W.eth_chain = 1;
+    W.base_fee = 11000000000ULL; W.tip_fee = 2000000000ULL;   /* F1: max fee 2 x 11 + 2 = 24 gwei */
+    W.rcpt_status = 1;
     W.mono_step = 10000;             /* every read of the clock is 10 s later: no shared reads (E24 sets it to 0) */
     for (int i = 0; i < 32; i++) W.chain[i] = (uint8_t)(0xC0 + i);
     memset(e->sk, 1, 32);
@@ -497,6 +554,30 @@ static amm_req_nodus_to_usdt_t nodus_req(const amm_quote_answer_t *a, char tid_c
     for (int i = 0; i < 4; i++) r.req_no[31 - i] = (uint8_t)(a->request_number >> (8 * i));
     return r;
 }
+
+/* The same request to another Ethereum destination (40 x `dest_c`). */
+static amm_req_nodus_to_usdt_t nodus_req_to(const amm_quote_answer_t *a, char tid_c, uint64_t minimum, char dest_c) {
+    amm_req_nodus_to_usdt_t r = nodus_req(a, tid_c, minimum);
+    memset(r.destination, dest_c, 40);
+    return r;
+}
+
+/* The price question carries the user's Ethereum address for NODUS -> USDT (evm-fee plan 6.5.3).
+ * `quote_to` is the real call. `quote_default` is what every question of this file that is not
+ * about the address uses: the destination of nodus_req (40 x 'b' = 0xbb..bb) for NODUS -> USDT, none
+ * for USDT -> NODUS; the macro below routes every existing call through it, so those tests keep
+ * asking the question they always asked. */
+static int quote_to(amm_engine_t *e, amm_dir_t dir, uint64_t amount, const uint8_t *dest,
+                    uint64_t dl, amm_quote_answer_t *o) {
+    return amm_engine_quote(e, dir, amount, dest, dl, o);
+}
+static const uint8_t DEFAULT_DEST[20] = {0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb,
+                                         0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb};
+static int quote_default(amm_engine_t *e, amm_dir_t dir, uint64_t amount, uint64_t dl,
+                         amm_quote_answer_t *o) {
+    return amm_engine_quote(e, dir, amount, dir == AMM_NODUS_TO_USDT ? DEFAULT_DEST : NULL, dl, o);
+}
+#define amm_engine_quote quote_default
 
 static amm_rec_t mkrec(uint8_t t, uint64_t block, uint64_t ts, uint8_t from_c, uint64_t value,
                        const uint8_t to[20], const char *state) {
@@ -985,6 +1066,13 @@ static void e6_drops(void) {
           "a USDT refund whose fee is not below its amount is DROPPED");
     amm_eattempt_t ea;
     CHECK(amm_journal_eth_attempt_latest(u.j, s.seq, &ea) == 1, "nothing signed, nothing broadcast");
+    CHECK(pool_is(&u, POOL_N, POOL_U + 1000000ULL),
+          "its 1 USDT is ADDED TO THE POOL (the USDT depth rose by 1,000,000, the NODUS depth is unchanged; "
+          "givens item 114 \"4 a\"), no longer left on the bot's key and booked nowhere");
+    uint64_t ftotal = 1;
+    CHECK(amm_journal_foundation_usdt(u.j, &ftotal) == 0 && ftotal == 0, "nothing is booked to the Foundation for it");
+    CHECK(step(&u, &o) == 0 && o.dropped == 0 && pool_is(&u, POOL_N, POOL_U + 1000000ULL),
+          "a dropped swap is not credited again in the next round");
     env_close(&u);
 }
 
@@ -1285,15 +1373,22 @@ static void e12_chain_id_setting(void) {
     amm_eattempt_free(&at);
     env_close(&e);
 
-    /* the providers report mainnet while the setting says Sepolia: nothing is signed */
+    /* the providers report mainnet while the setting says Sepolia. The price question plans the payout's
+     * fee on the providers (plan 6.5.2), so it answers `unavailable` and gives no approval; a swap approved
+     * while they answered Sepolia is not decided once they answer mainnet: nothing is signed.
+     * Falsely passes if the decision reused facts read on the question path (6.5.4 says it reads fresh). */
     env_t m;
     env_open(&m);
     m.cfg.eth_chain_id = 11155111ULL;
     env_restart(&m);                                   /* W.eth_chain stays 1 */
+    CHECK(amm_engine_quote(m.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_UNAVAILABLE,
+          "a question while the providers are on another chain than the setting: unavailable, no approval");
+    W.eth_chain = 11155111ULL;                         /* the providers answer Sepolia: an approval is given */
     CHECK(amm_engine_quote(m.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK, "approval");
     nr = nodus_req(&a, 'f', 1);
     CHECK(amm_engine_accept_nodus(m.eng, &nr, &s) == AMM_ACC_RECEIVED && swap_of(&m, a.request_number, &s) &&
           seen_counted(&m, &s, s.incoming_id), "payment counted");
+    W.eth_chain = 1;                                   /* the providers move to mainnet before the decision */
     CHECK(step(&m, &o) == 0 && state_of(&m, a.request_number, "counted") &&
           amm_journal_eth_attempt_latest(m.j, s.seq, &at) == 1,
           "providers on another chain than the setting: no payout is signed, the swap stays counted undecided");
@@ -2123,18 +2218,20 @@ static void e24_shared_reads(void) {
     amm_quote_answer_t a, b;
     CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK && W.prov_reads > 0,
           "the first NODUS -> USDT question reads the providers");
-    const int r1 = W.prov_reads;
+    const int b1 = W.base_reads, c1 = W.erc_reads, e1 = W.est_reads;
     W.mono = 2000;
     CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &b) == AMM_Q_OK &&
-          W.prov_reads == r1 && b.est_fee == a.est_fee,
-          "a second one 1000 ms later makes no provider read and shows the same estimated fee");
+          W.base_reads == b1 && W.erc_reads == c1 && W.est_reads > e1 && b.est_fee == a.est_fee,
+          "a second one 1000 ms later makes no balance read and no fee-fact read (shared), reads the "
+          "destination's gas estimate again (it depends on the destination, evm-fee plan 6.5.4), same estimated fee");
     CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK && W.nbal_reads == 1,
           "the first USDT -> NODUS question reads the Nodus balance once");
     W.mono = 2500;
     CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK && W.nbal_reads == 1,
           "the next one within the bound reads it no more");
     W.mono = 5000;                                   /* 4000 ms after the first read: past the bound */
-    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK && W.prov_reads == 2 * r1 &&
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK &&
+          W.base_reads == 2 * b1 && W.erc_reads == 2 * c1 &&
           amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &b) == AMM_Q_OK && W.nbal_reads == 2,
           "past the bound both are read again");
 
@@ -2343,9 +2440,10 @@ static void e28_failed_read_not_reused(void) {
     W.erc20_fail = 0;
     CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK && W.prov_reads > r1,
           "the read works again: answered, read made");
-    const int r3 = W.prov_reads;
-    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK && W.prov_reads == r3,
-          "and now it is reused inside the bound");
+    const int c3 = W.erc_reads, b3 = W.base_reads;
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &a) == AMM_Q_OK &&
+          W.erc_reads == c3 && W.base_reads == b3,
+          "and now the balance and the fee facts are reused inside the bound (the destination's estimate is read again)");
 
     W.nodus_balance_rc = AMM_NODE_ERR;
     CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_UNAVAILABLE && W.nbal_reads == 1,
@@ -3201,6 +3299,438 @@ static void e41_usdt_payouts_run_after_a_bounded_round(void) {
     env_close(&e);
 }
 
+/* ═══ the Ethereum fee work (evm-fee plan docs/plans/approved/2026-11-13-evm-fee.md, 7.2) ═══ */
+
+/* The address 40 x `c` as 20 bytes ('b' -> 0xbb). */
+static void addr_of(char c, uint8_t out[20]) {
+    const int v = c >= 'a' ? c - 'a' + 10 : c - '0';
+    memset(out, v * 17, 20);
+}
+
+/* A signed NODUS -> USDT request of the question `a` to the address 40 x `dest_c`, its payment counted
+ * as the watcher would. */
+static int n2u_counted(env_t *e, const amm_quote_answer_t *a, char tid_c, uint64_t minimum, char dest_c,
+                       amm_swap_t *s) {
+    amm_req_nodus_to_usdt_t nr = nodus_req_to(a, tid_c, minimum, dest_c);
+    return amm_engine_accept_nodus(e->eng, &nr, s) == AMM_ACC_RECEIVED && swap_of(e, a->request_number, s) &&
+           seen_counted(e, s, s->incoming_id);
+}
+
+/* A NODUS -> USDT swap of 10^14 raw NODUS (to 0xbb..), counted and DECIDED by one round: payout_pending
+ * with its first attempt stored. */
+static int decided_n2u(env_t *e, uint64_t minimum, amm_quote_answer_t *a, amm_swap_t *s) {
+    amm_engine_step_t o;
+    return amm_engine_quote(e->eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, a) == AMM_Q_OK &&
+           n2u_counted(e, a, 'f', minimum, 'b', s) && step(e, &o) == 0 && o.decided == 1 && swap_of(e, a->request_number, s) &&
+           !strcmp(s->state, "payout_pending");
+}
+
+/* The hash of the latest attempt of swap `seq`. */
+static int latest_hash(env_t *e, int64_t seq, uint8_t h[32]) {
+    amm_eattempt_t a;
+    if (amm_journal_eth_attempt_latest(e->j, seq, &a) != 0) return 0;
+    memcpy(h, a.hash, 32);
+    amm_eattempt_free(&a);
+    return 1;
+}
+
+static int head_is(env_t *e, int64_t seq, int n, const char *state) {
+    amm_eattempt_t a;
+    memset(&a, 0, sizeof(a));
+    const int ok = amm_journal_eth_attempt_head(e->j, seq, &a) == 0 && a.n == n && !strcmp(a.state, state);
+    amm_eattempt_free(&a);
+    return ok;
+}
+
+static uint64_t foundation_total(env_t *e) {
+    uint64_t t = UINT64_MAX;
+    return amm_journal_foundation_usdt(e->j, &t) == 0 ? t : UINT64_MAX;
+}
+
+/* E42 (evm-fee plan 6.5, 7.2, B1): the price question carries the user's Ethereum address and the fee it
+ * shows is the fee the decision deducts.
+ * WHAT IT PROVES, with the stub's gas by recipient class (the bot 30,000, a holder 34,800, an empty address
+ * 51,900, plus 16 per non-zero byte of the amount) and a conversion price whose product is NOT a multiple
+ * of 10^18 (P_e6 3,000,123,456), base fee 11 gwei, tip 2 gwei (max fee 24 gwei):
+ *   Case 1  a question for an empty address R: `estimatedFee` E; the signed request to R with minimum
+ *           number - E (tolerance 0) is DECIDED as a payout (not refunded) and the fee deducted is E and
+ *           the net number - E;
+ *   Case 2  the same for a holder;
+ *   Case 3  the class flips after the question: empty -> holder pays MORE than the minimum, holder -> empty
+ *           at tolerance 0 is refunded (6.5.6: not the defect, the stated consequence);
+ *   Case 4  a NODUS -> USDT question without a destination and a USDT -> NODUS question with one are
+ *           AMM_Q_BAD;
+ *   Case 5  the estimate calls of the question name R and the number;
+ *   Case 6  two questions within quote_read_fresh_ms read the fee facts and the balance once and the
+ *           destination's estimate twice; the decision reads fresh facts;
+ *   Case 7  when only R's estimate fails its decision waits alone and the next swap is decided; when every
+ *           estimate fails the whole class waits (6.5.5);
+ *   Case 8  a payout whose fee is at or above its output becomes a NODUS refund; a withdrawal in that
+ *           position is refused whole (the price is the converting one);
+ *   Case 9  an estimate that changes at every call has no fixed point: the question is unavailable and the
+ *           decision waits;
+ *   Case 10 a question whose fee is at or above its number is answered (no refusal) and its decision ends
+ *           in the NODUS refund.
+ * HOW IT COULD FALSELY PASS: the stub's classes are the test's model of the chain, not a node's estimator;
+ * before the work the question estimated transfer(self, 1) (class "bot", 30,000 gas): with an empty
+ * recipient the deducted fee exceeded the estimate and the swap of Case 1 was refunded; the constant
+ * `price_fee` (500000) of the other tests would make every equality hold on any code, which is why this
+ * test switches the price to the conversion and the estimate to the class table. */
+static void e42_question_is_the_deduction(void) {
+    printf("E42 the question carries the destination and the shown fee is the deducted fee\n");
+    uint8_t R[20];
+    addr_of('b', R);
+    amm_quote_answer_t a, b;
+    amm_swap_t s;
+    amm_engine_step_t o;
+    amm_eattempt_t at;
+
+    /* Case 1: an empty recipient */
+    env_t e;
+    env_open(&e);
+    W.est_mode = 1; W.price_mode = 1; W.p_e6 = 3000123456ULL;
+    CHECK(quote_to(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, R, 0, &a) == AMM_Q_OK && a.number == OUT_NU && a.est_fee > 0 &&
+          a.est_fee < a.number, "Case 1: the question for an empty address is answered with an estimated fee E");
+    const uint64_t E = a.est_fee;
+    CHECK(W.est_log_n >= 2 && !memcmp(W.est_log[0].to, R, 20) && W.est_log[0].amount == a.number &&
+          !memcmp(W.est_log[1].to, R, 20) && W.est_log[1].amount == a.number,
+          "Case 5: the first estimate round of the question is transfer(R, number) on both providers (R and the number reached the stub)");
+    CHECK(n2u_counted(&e, &a, 'f', a.number - E, 'b', &s) && step(&e, &o) == 0 && o.decided == 1 &&
+          state_of(&e, a.request_number, "payout_pending") && amm_journal_eth_attempt_latest(e.j, s.seq, &at) == 0 &&
+          at.fee == E && at.net == a.number - E && at.gross == a.number,
+          "Case 1: the signed request with minimum number - E is decided as a payout; the deducted fee is E and the net number - E");
+    amm_eattempt_free(&at);
+    CHECK(swap_of(&e, a.request_number, &s) && s.out_fee == E && s.out_paid == a.number - E, "  the row shows them");
+    CHECK(W.last_maxfee == 24000000000ULL, "  the price seam was quoted the max fee 2 x 11 + 2 = 24 gwei");
+    env_close(&e);
+
+    /* Case 2: a holder */
+    env_open(&e);
+    W.est_mode = 1; W.price_mode = 1; W.p_e6 = 3000123456ULL;
+    memcpy(W.holder, R, 20); W.holder_on = 1;
+    CHECK(quote_to(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, R, 0, &a) == AMM_Q_OK, "Case 2: a question for a holder");
+    const uint64_t Eh = a.est_fee;
+    CHECK(Eh < E, "  a holder's fee is below an empty address's (34,800 < 51,900 gas)");
+    CHECK(n2u_counted(&e, &a, 'f', a.number - Eh, 'b', &s) && step(&e, &o) == 0 && o.decided == 1 &&
+          amm_journal_eth_attempt_latest(e.j, s.seq, &at) == 0 && at.fee == Eh && at.net == a.number - Eh,
+          "Case 2: decided, the deducted fee is the shown one");
+    amm_eattempt_free(&at);
+    env_close(&e);
+
+    /* Case 3: the class flips after the question */
+    env_open(&e);
+    W.est_mode = 1; W.price_mode = 1; W.p_e6 = 3000123456ULL;
+    CHECK(quote_to(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, R, 0, &a) == AMM_Q_OK, "Case 3: a question for an EMPTY address");
+    memcpy(W.holder, R, 20); W.holder_on = 1;                          /* it receives USDT before the decision */
+    CHECK(n2u_counted(&e, &a, 'f', a.number - a.est_fee, 'b', &s) && step(&e, &o) == 0 && o.decided == 1 &&
+          amm_journal_eth_attempt_latest(e.j, s.seq, &at) == 0 && at.fee < a.est_fee && at.net > a.number - a.est_fee,
+          "Case 3: empty -> holder: decided, a lower fee, the user receives MORE than the minimum");
+    amm_eattempt_free(&at);
+    env_close(&e);
+    env_open(&e);
+    W.est_mode = 1; W.price_mode = 1; W.p_e6 = 3000123456ULL;
+    memcpy(W.holder, R, 20); W.holder_on = 1;
+    CHECK(quote_to(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, R, 0, &a) == AMM_Q_OK, "Case 3: a question for a HOLDER");
+    W.holder_on = 0;                                                   /* its USDT is gone before the decision */
+    CHECK(n2u_counted(&e, &a, 'f', a.number - a.est_fee, 'b', &s) && step(&e, &o) == 0 && o.decided == 0 &&
+          state_of(&e, a.request_number, "refund_pending") && amm_journal_eth_attempt_latest(e.j, s.seq, &at) == 1,
+          "Case 3: holder -> empty at tolerance 0: the fee is higher, below the minimum: a NODUS refund (6.5.6), no USDT attempt");
+    env_close(&e);
+
+    /* Case 4: the shapes */
+    env_open(&e);
+    CHECK(quote_to(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, NULL, 0, &a) == AMM_Q_BAD,
+          "Case 4: a NODUS -> USDT question without a destination: AMM_Q_BAD");
+    CHECK(quote_to(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, R, 0, &a) == AMM_Q_BAD,
+          "Case 4: a USDT -> NODUS question with a destination: AMM_Q_BAD");
+    int cnt = 7;
+    CHECK(amm_journal_state_count(e.j, "approved", &cnt) == 0 && cnt == 0, "  neither wrote an approval");
+    env_close(&e);
+
+    /* Case 6: shared reads */
+    env_open(&e);
+    W.est_mode = 1; W.price_mode = 1; W.p_e6 = 3000123456ULL;
+    W.mono_step = 0; W.mono = 1000;
+    const int b0 = W.base_reads, c0 = W.erc_reads, e0 = W.est_reads;
+    CHECK(quote_to(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, R, 0, &a) == AMM_Q_OK, "Case 6: the first question");
+    const int b1 = W.base_reads - b0, c1 = W.erc_reads - c0, e1 = W.est_reads - e0;
+    CHECK(b1 == 2 && c1 == 2 && e1 >= 4, "  it read the base fee and the balance once per provider and the estimate at least twice per provider");
+    W.mono = 2000;
+    CHECK(quote_to(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, R, 0, &b) == AMM_Q_OK && W.base_reads - b0 == b1 &&
+          W.erc_reads - c0 == c1 && W.est_reads - e0 == 2 * e1 && b.est_fee == a.est_fee,
+          "Case 6: a second question 1000 ms later: no new fee-fact or balance read, the destination's estimate read again, the same fee");
+    CHECK(n2u_counted(&e, &b, 'f', b.number - b.est_fee, 'b', &s), "  its payment counted");
+    const int bd = W.base_reads;
+    CHECK(step(&e, &o) == 0 && o.decided == 1 && W.base_reads > bd,
+          "the decision reads FRESH fee facts although the question's were shared");
+    env_close(&e);
+
+    /* Case 7: one estimate fails / every estimate fails */
+    env_open(&e);
+    W.est_mode = 1; W.price_mode = 1; W.p_e6 = 3000123456ULL;
+    amm_quote_answer_t qa, qb;
+    amm_swap_t sa, sb;
+    uint8_t Rc[20];
+    addr_of('c', Rc);
+    CHECK(quote_to(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, R, 0, &qa) == AMM_Q_OK &&
+          quote_to(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, Rc, 0, &qb) == AMM_Q_OK &&
+          n2u_counted(&e, &qa, 'f', 1, 'b', &sa) && n2u_counted(&e, &qb, 'e', 1, 'c', &sb), "Case 7: two counted swaps to different addresses");
+    memcpy(W.est_fail_to, R, 20); W.est_fail_to_on = 1;               /* only the first one's estimate reverts */
+    CHECK(step(&e, &o) == 0 && o.decided == 1 && o.undecided == 1 && state_of(&e, qa.request_number, "counted") &&
+          state_of(&e, qb.request_number, "payout_pending"),
+          "Case 7: only R's estimate fails: its decision waits ALONE, the next swap is decided");
+    W.est_fail_to_on = 0;
+    CHECK(step(&e, &o) == 0 && o.decided == 1 && state_of(&e, qa.request_number, "payout_pending"), "  and it is decided once the estimate answers");
+    env_close(&e);
+    env_open(&e);
+    W.est_mode = 1; W.price_mode = 1; W.p_e6 = 3000123456ULL;
+    CHECK(quote_to(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, R, 0, &qa) == AMM_Q_OK &&
+          quote_to(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, Rc, 0, &qb) == AMM_Q_OK &&
+          n2u_counted(&e, &qa, 'f', 1, 'b', &sa) && n2u_counted(&e, &qb, 'e', 1, 'c', &sb), "Case 7: two more counted swaps");
+    W.est_fail_all = 1;
+    CHECK(step(&e, &o) == 0 && o.decided == 0 && o.undecided == 2 && state_of(&e, qa.request_number, "counted") &&
+          state_of(&e, qb.request_number, "counted"),
+          "Case 7: every estimate fails (the probe for transfer(self, 1) fails too): the whole class waits, nothing is decided");
+    W.est_fail_all = 0;
+    CHECK(step(&e, &o) == 0 && o.decided == 2, "  both are decided once the estimates answer");
+    env_close(&e);
+
+    /* Case 8 and 10: the fee at or above the output */
+    env_open(&e);
+    W.est_mode = 1; W.price_mode = 1; W.p_e6 = 1000000000000ULL;        /* 10^12: the fee is above the whole output */
+    CHECK(quote_to(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, R, 0, &a) == AMM_Q_OK && a.est_fee >= a.number,
+          "Case 10: a question whose fee is at or above its number is ANSWERED (no refusal)");
+    CHECK(n2u_counted(&e, &a, 'f', 1, 'b', &s) && step(&e, &o) == 0 && o.decided == 0 &&
+          state_of(&e, a.request_number, "refund_pending") && amm_journal_eth_attempt_latest(e.j, s.seq, &at) == 1 &&
+          pool_is(&e, POOL_N, POOL_U),
+          "Case 8/10: its decision ends in the NODUS refund (nothing left after the Ethereum fee): refund_pending, no USDT attempt, the pool unchanged");
+    env_close(&e);
+    env_open(&e);
+    W.price_mode = 1; W.p_e6 = 6000000000ULL;                           /* the fee 10,800,000 against a USDT side of 10,000,000 */
+    wd_seed(&e, 3000000000000000ULL, 3000000000ULL, 3000000000000000ULL, 10000000000000ULL);
+    amm_req_liq_withdraw_t rw = wd_req('a', 10000, 1);
+    amm_wd_t w;
+    CHECK(amm_engine_accept_withdraw(e.eng, &rw) == AMM_ACC_RECEIVED, "Case 8: a withdrawal of 100 % of a 10^13-unit position is accepted");
+    W.eth_tip = 1300;
+    CHECK(step(&e, &o) == 0 && o.withdraws_refused == 1 && wd_row(&e, 1, "refused", &w) && strstr(w.message, "USDT side") &&
+          wd_units(&e) == 10000000000000ULL && pool_is(&e, 3000000000000000ULL, 3000000000ULL),
+          "Case 8: the USDT side is nothing after the (converted, F1) fee: the withdrawal is refused whole, units and depths unchanged");
+    env_close(&e);
+
+    /* Case 9: no fixed point */
+    env_open(&e);
+    W.est_mode = 1; W.price_mode = 1; W.p_e6 = 3000123456ULL;
+    CHECK(quote_to(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, R, 0, &a) == AMM_Q_OK && n2u_counted(&e, &a, 'f', 1, 'b', &s),
+          "Case 9: a counted swap");
+    W.est_cycle = 1;                                                    /* the estimate changes at every call */
+    CHECK(quote_to(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, R, 0, &b) == AMM_Q_UNAVAILABLE,
+          "Case 9: an estimate with no fixed point in AMM_EP_ITER_MAX rounds: the question answers `unavailable`");
+    CHECK(step(&e, &o) == 0 && o.decided == 0 && o.undecided == 1 && state_of(&e, a.request_number, "counted"),
+          "  and the decision waits");
+    W.est_cycle = 0;
+    CHECK(step(&e, &o) == 0 && o.decided == 1, "  it is decided once the estimate settles");
+    env_close(&e);
+}
+
+/* E43 (evm-fee plan 6.9, 6.10, 6.11, 6.9.6, 7.2): recovery inside the round.
+ * WHAT IT PROVES: (A) a payout whose transactions fail in blocks is sent again each round with the next fee
+ * deducted, and when the remainder cannot cover the fee its USDT goes to the pool, the swap is dropped (counted
+ * in `dropped`), the Foundation is booked the sum of the fees (90,000,000 = 3 x 30,000,000) and the user is
+ * paid nothing; (B) a payout that fails once and pays on attempt 2 shows out_paid = net 2 and out_fee = out_amount
+ * - net 2 and books fee 1 + fee 2; (C) a USDT refund that fails once and is refunded books fee 1 + fee 2 to the
+ * Foundation (a refunded refund's fee is booked); (D) a payout stuck below the base fee is replaced with the same
+ * nonce and the fields of the formula at the new base fee, paid, and the booked fee is the replacement's ceiling.
+ * HOW IT COULD FALSELY PASS: the receipts are scripted (one hash gets the failing receipt, or every hash does) and
+ * the confirmation of the paying attempt is a journal call as in E8, not a scanned block with its Transfer log;
+ * the chain of (A) ends only because the fee is a third of the output, a smaller fee would take hundreds of rounds
+ * (the bound of 6.9.5 is the money, not a count). */
+static void e43_recovery(void) {
+    printf("E43 failed and stuck USDT payouts and refunds are recovered, a remainder goes to the pool\n");
+    amm_quote_answer_t a;
+    amm_swap_t s;
+    amm_engine_step_t o;
+    amm_eattempt_t at;
+
+    /* (A) the chain of failures ends in the pool */
+    env_t e;
+    env_open(&e);
+    W.price_fee = 30000000ULL;
+    W.send_ok = 1;
+    CHECK(decided_n2u(&e, 1, &a, &s) && amm_journal_eth_attempt_latest(e.j, s.seq, &at) == 0 && at.n == 1 &&
+          at.gross == OUT_NU && at.fee == 30000000ULL && at.net == OUT_NU - 30000000ULL,
+          "(A) a payout decided with fee 30,000,000 (gross 93,652,445, net 63,652,445)");
+    amm_eattempt_free(&at);
+    CHECK(pool_is(&e, 3100000000000000ULL, 2906347555ULL), "  the pool after the decision");
+    W.rcpt_ok = 1; W.rcpt_status = 0; W.rcpt_block = 900;              /* every receipt: status 0 at the final depth */
+    CHECK(step(&e, &o) == 0 && head_is(&e, s.seq, 2, "failed") && state_of(&e, a.request_number, "payout_pending"),
+          "round 1: attempt 1 failed, it was sent again as attempt 2 (net 33,652,445), which failed too");
+    CHECK(amm_journal_eth_attempt_latest(e.j, s.seq, &at) == 0 && at.n == 2 && at.gross == OUT_NU - 30000000ULL &&
+          at.net == OUT_NU - 60000000ULL, "  attempt 2 carries attempt 1's net and has its own fee deducted");
+    amm_eattempt_free(&at);
+    CHECK(step(&e, &o) == 0 && head_is(&e, s.seq, 3, "failed") && state_of(&e, a.request_number, "payout_pending"),
+          "round 2: attempt 3 (net 3,652,445) sent and failed");
+    CHECK(step(&e, &o) == 0 && o.dropped == 1 && state_of(&e, a.request_number, "dropped"),
+          "round 3: nothing is left after the fee (3,652,445 < 30,000,000): the swap is DROPPED, counted in `dropped`");
+    CHECK(pool_is(&e, 3100000000000000ULL, 2910000000ULL),
+          "  its remaining 3,652,445 USDT was ADDED to the pool (2,906,347,555 -> 2,910,000,000); the NODUS depth is unchanged");
+    CHECK(foundation_total(&e) == 90000000ULL && amm_journal_fee_booked(e.j, s.seq, NULL) == 0,
+          "  the Foundation is booked 90,000,000 = the three fees of the failed attempts (gross - remaining)");
+    CHECK(step(&e, &o) == 0 && o.dropped == 0 && pool_is(&e, 3100000000000000ULL, 2910000000ULL) &&
+          foundation_total(&e) == 90000000ULL, "  nothing is credited or booked again in the next round");
+    env_close(&e);
+
+    /* (B) a payout fails once and pays on attempt 2 */
+    env_open(&e);
+    W.send_ok = 1;
+    uint8_t h1[32];
+    CHECK(decided_n2u(&e, 1, &a, &s) && latest_hash(&e, s.seq, h1), "(B) a payout decided (fee 500,000)");
+    memcpy(W.rcpt_only, h1, 32); W.rcpt_only_on = 1;                    /* only attempt 1 has a (failing) receipt */
+    W.rcpt_ok = 1; W.rcpt_status = 0; W.rcpt_block = 900;
+    CHECK(step(&e, &o) == 0 && head_is(&e, s.seq, 2, "submitted") && W.sends > 0,
+          "round 1: attempt 1 failed; attempt 2 was stored and broadcast (submitted, no receipt for it)");
+    CHECK(amm_journal_eth_attempt_latest(e.j, s.seq, &at) == 0 && at.n == 2 && at.gross == OUT_NU - 500000 &&
+          at.net == OUT_NU - 1000000 && at.fee == 500000, "  attempt 2: gross = attempt 1's net, fee 500,000 again, net 92,652,445");
+    amm_eattempt_free(&at);
+    CHECK(swap_of(&e, a.request_number, &s) && s.out_paid == OUT_NU - 1000000 && s.out_fee == 1000000,
+          "  the row shows 92,652,445 / 1,000,000 (both fees deducted from the user)");
+    CHECK(amm_journal_eth_attempt_finish(e.j, s.seq, "confirmed") == 0 &&
+          amm_journal_swap_transition(e.j, s.seq, "paid", NULL, NULL, NULL) == 0, "attempt 2 lands (as E8, by a journal call)");
+    CHECK(step(&e, &o) == 0 && o.fees_booked == 1 && swap_of(&e, a.request_number, &s) &&
+          s.out_paid == OUT_NU - 1000000 && s.out_fee == 1000000 && foundation_total(&e) == 1000000,
+          "the Foundation is booked 1,000,000 = fee 1 + fee 2 (gross - the confirmed attempt's net), out_paid is attempt 2's net");
+    env_close(&e);
+
+    /* (C) a USDT refund fails once and is refunded; its fee is booked */
+    env_open(&e);
+    W.send_ok = 1;
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK, "(C) a 100 USDT -> NODUS approval");
+    amm_req_usdt_t ur = usdt_req(&a, 'a', 1);
+    CHECK(amm_engine_accept_usdt(e.eng, &ur, &s) == AMM_ACC_RECEIVED && swap_of(&e, a.request_number, &s) &&
+          seen_counted(&e, &s, "eth:cc") && amm_journal_swap_transition(e.j, s.seq, "refund_pending", NULL, NULL, NULL) == 0,
+          "a USDT refund pending");
+    CHECK(step(&e, &o) == 0 && head_is(&e, s.seq, 1, "signed") && latest_hash(&e, s.seq, h1),
+          "round 1: the refund is signed (attempt 1: fee 500,000, net 99,500,000); no receipt is readable yet");
+    memcpy(W.rcpt_only, h1, 32); W.rcpt_only_on = 1;
+    W.rcpt_ok = 1; W.rcpt_status = 0; W.rcpt_block = 900;
+    CHECK(step(&e, &o) == 0 && head_is(&e, s.seq, 2, "submitted") && state_of(&e, a.request_number, "refund_pending") &&
+          amm_journal_eth_attempt_latest(e.j, s.seq, &at) == 0 && at.gross == 99500000ULL && at.net == 99000000ULL,
+          "round 2: attempt 1 failed, the refund is sent again (attempt 2: net 99,000,000), still refund_pending");
+    amm_eattempt_free(&at);
+    CHECK(amm_journal_eth_attempt_finish(e.j, s.seq, "confirmed") == 0 &&
+          amm_journal_swap_transition(e.j, s.seq, "refunded", NULL, NULL, NULL) == 0, "attempt 2 lands: refunded");
+    CHECK(step(&e, &o) == 0 && o.fees_booked == 1 && foundation_total(&e) == 1000000 &&
+          amm_journal_fee_booked(e.j, s.seq, NULL) == 0,
+          "the Ethereum fee of the refund is booked to the Foundation: 1,000,000 = amount 100,000,000 - the delivered 99,000,000");
+    CHECK(step(&e, &o) == 0 && o.fees_booked == 0 && foundation_total(&e) == 1000000, "  once");
+    env_close(&e);
+
+    /* (D) a stuck payout is replaced and paid */
+    env_open(&e);
+    W.send_ok = 1; W.rcpt_none = 1;
+    W.price_mode = 1; W.p_e6 = 1000000000ULL;                           /* 75,000 gas x 24 gwei x 10^9 / 10^18 = 1,800,000 */
+    CHECK(decided_n2u(&e, 1, &a, &s) && head_is(&e, s.seq, 1, "submitted"),
+          "(D) a payout decided at base 11 gwei (max fee 24 gwei, fee 1,800,000) and broadcast, no receipt");
+    CHECK(amm_journal_eth_attempt_latest(e.j, s.seq, &at) == 0 && at.fee == 1800000 && at.max_fee_per_gas == 24000000000ULL,
+          "  attempt 1: fee 1,800,000, max fee 24 gwei");
+    amm_eattempt_free(&at);
+    W.base_fee = 30000000000ULL;                                        /* the base fee passes its max fee */
+    CHECK(step(&e, &o) == 0 && head_is(&e, s.seq, 2, "submitted"),
+          "round: base fee 30 gwei > 24 gwei: STUCK, replaced (attempt 2) and broadcast in the same round");
+    amm_eattempt_t g[AMM_EA_GROUP_MAX];
+    int ng = 0;
+    CHECK(amm_journal_eth_attempt_group(e.j, s.seq, g, AMM_EA_GROUP_MAX, &ng) == 0 && ng == 2 && g[0].nonce == g[1].nonce &&
+          !strcmp(g[0].state, "replaced") && g[1].max_priority_fee_per_gas == 2200000000ULL &&
+          g[1].max_fee_per_gas == 62200000000ULL && g[1].fee == 4665000 && g[1].net == OUT_NU - 4665000 && g[1].gross == OUT_NU,
+          "  the same nonce, tip max(2, bump 2.2) = 2.2 gwei, max fee 62.2 gwei, fee 4,665,000, gross unchanged");
+    for (int i = 0; i < ng; i++) amm_eattempt_free(&g[i]);
+    CHECK(swap_of(&e, a.request_number, &s) && s.out_paid == OUT_NU - 4665000 && s.out_fee == 4665000,
+          "  the row shows the replacement's amounts: the user receives a little less, earlier");
+    CHECK(amm_journal_eth_attempt_finish(e.j, s.seq, "confirmed") == 0 &&
+          amm_journal_swap_transition(e.j, s.seq, "paid", NULL, NULL, NULL) == 0, "the replacement lands");
+    CHECK(step(&e, &o) == 0 && o.fees_booked == 1 && foundation_total(&e) == 4665000,
+          "the Foundation is booked the replacement's ceiling, 4,665,000 (only the attempt that landed is deducted)");
+    env_close(&e);
+}
+
+/* The journal's pre-commit hook for E44: it fails the commit that records attempt `g_hook_n` of swap
+ * `g_hook_seq` as `submitted` (the uncommitted UPDATE is visible on the same connection), which is the
+ * write amm_eth_pay_step makes when it broadcasts a stored attempt. Every other commit passes. */
+static amm_journal_t *g_hook_j;
+static int64_t g_hook_seq;
+static int g_hook_n, g_hook_fired;
+static int hook_fail_submitted(void) {
+    amm_eattempt_t a;
+    memset(&a, 0, sizeof(a));
+    int hit = amm_journal_eth_attempt_head(g_hook_j, g_hook_seq, &a) == 0 && a.n == g_hook_n &&
+              !strcmp(a.state, "submitted");
+    amm_eattempt_free(&a);
+    if (hit) g_hook_fired++;
+    return hit ? -1 : 0;
+}
+
+/* E44 (BUG-01): an error of the step that broadcasts a just-stored attempt is an error of the round.
+ * WHAT IT PROVES: when the immediate amm_eth_pay_step after (A) a stored re-send, (B) a stored replacement
+ * and (C) a signed refund returns AMM_EP_ERR (here: the journal write that records the submission fails at
+ * its commit, injected through the journal's test pre-commit hook), amm_engine_step returns -1 instead of 0;
+ * the hook fired exactly once in each case; the rolled-back attempt is still `signed`, and the next round
+ * (hook removed) broadcasts it and returns 0. FLAGS: none. LEAVES BEHIND: nothing (mkdtemp directory
+ * removed); the hook is cleared at the end of each case. HOW IT COULD FALSELY PASS: the failure is
+ * injected at the commit, not a real disk fault; if the hook fired in an earlier write (the stored
+ * attempt's own commit) the stored attempt would be absent, which the `signed` check excludes; with the
+ * old `(void)` casts the first check of each case fails because the round returns 0. */
+static void e44_immediate_step_error(void) {
+    printf("E44 an error of the step right after a stored re-send, replacement or refund fails the round\n");
+    amm_quote_answer_t a;
+    amm_swap_t s;
+    amm_engine_step_t o;
+    uint8_t h1[32];
+    env_t e;
+
+    /* (A) the re-send */
+    env_open(&e);
+    W.send_ok = 1;
+    CHECK(decided_n2u(&e, 1, &a, &s) && latest_hash(&e, s.seq, h1), "(A) a payout decided, attempt 1 signed");
+    memcpy(W.rcpt_only, h1, 32); W.rcpt_only_on = 1;
+    W.rcpt_ok = 1; W.rcpt_status = 0; W.rcpt_block = 900;
+    g_hook_j = e.j; g_hook_seq = s.seq; g_hook_n = 2; g_hook_fired = 0;
+    amm_journal_test_precommit_hook(hook_fail_submitted);
+    CHECK(step(&e, &o) != 0 && g_hook_fired == 1, "(A) the failing submission record after the re-send: the round returns an error");
+    amm_journal_test_precommit_hook(NULL);
+    CHECK(head_is(&e, s.seq, 2, "signed"), "  attempt 2 is stored and still signed (the failed write rolled back)");
+    CHECK(step(&e, &o) == 0 && head_is(&e, s.seq, 2, "submitted"), "  the next round broadcasts it and succeeds");
+    env_close(&e);
+
+    /* (B) the replacement */
+    env_open(&e);
+    W.send_ok = 1; W.rcpt_none = 1;
+    W.price_mode = 1; W.p_e6 = 1000000000ULL;
+    CHECK(decided_n2u(&e, 1, &a, &s) && head_is(&e, s.seq, 1, "submitted"), "(B) a payout decided and broadcast");
+    W.base_fee = 30000000000ULL;                                        /* stuck */
+    g_hook_j = e.j; g_hook_seq = s.seq; g_hook_n = 2; g_hook_fired = 0;
+    amm_journal_test_precommit_hook(hook_fail_submitted);
+    CHECK(step(&e, &o) != 0 && g_hook_fired == 1, "(B) the failing submission record after the replacement: the round returns an error");
+    amm_journal_test_precommit_hook(NULL);
+    CHECK(head_is(&e, s.seq, 2, "signed"), "  the replacement is stored and still signed");
+    CHECK(step(&e, &o) == 0 && head_is(&e, s.seq, 2, "submitted"), "  the next round broadcasts it and succeeds");
+    env_close(&e);
+
+    /* (C) the refund */
+    env_open(&e);
+    W.send_ok = 1; W.rcpt_none = 1;
+    CHECK(amm_engine_quote(e.eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a) == AMM_Q_OK, "(C) a 100 USDT -> NODUS approval");
+    amm_req_usdt_t ur = usdt_req(&a, 'a', 1);
+    CHECK(amm_engine_accept_usdt(e.eng, &ur, &s) == AMM_ACC_RECEIVED && swap_of(&e, a.request_number, &s) &&
+          seen_counted(&e, &s, "eth:dd") && amm_journal_swap_transition(e.j, s.seq, "refund_pending", NULL, NULL, NULL) == 0,
+          "a USDT refund pending");
+    g_hook_j = e.j; g_hook_seq = s.seq; g_hook_n = 1; g_hook_fired = 0;
+    amm_journal_test_precommit_hook(hook_fail_submitted);
+    CHECK(step(&e, &o) != 0 && g_hook_fired == 1, "(C) the failing submission record after the signed refund: the round returns an error");
+    amm_journal_test_precommit_hook(NULL);
+    CHECK(head_is(&e, s.seq, 1, "signed"), "  the refund is stored and still signed");
+    CHECK(step(&e, &o) == 0 && head_is(&e, s.seq, 1, "submitted"), "  the next round broadcasts it and succeeds");
+    env_close(&e);
+}
+
 int main(void) {
     printf("test_amm_engine\n");
     e1_quote();
@@ -3244,6 +3774,9 @@ int main(void) {
     e39_shared_cause_costs_no_bound();
     e40_the_bound_with_nothing_behind();
     e41_usdt_payouts_run_after_a_bounded_round();
+    e42_question_is_the_deduction();
+    e43_recovery();
+    e44_immediate_step_error();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
