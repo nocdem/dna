@@ -54,7 +54,11 @@ await context.route('**/*', async route => {
       assert.ok(rows.some(row => row.hash === tx.hash && row.amount === formatEther(tx.value))); durable++;
       return { jsonrpc: '2.0', id: call.id, result: tx.hash };
     }
-    const results = { eth_chainId: '0x1', eth_getBalance: '0x8ac7230489e80000', eth_call: '0x' + '0'.repeat(64), eth_estimateGas: '0x5208', eth_gasPrice: '0x3b9aca00', eth_maxPriorityFeePerGas: '0x3b9aca00', eth_getTransactionCount: '0x0', eth_getTransactionReceipt: null, eth_getBlockByNumber: { hash: '0x' + 'a'.repeat(64), parentHash: '0x' + 'b'.repeat(64), number: '0x1', timestamp: '0x65000000', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x5208', miner: '0x0000000000000000000000000000000000000001', extraData: '0x', transactions: [] } };
+    const results = { eth_chainId: '0x1', eth_getBalance: '0x8ac7230489e80000', eth_call: '0x' + '0'.repeat(64), eth_estimateGas: '0x5208', eth_gasPrice: '0x15', eth_maxPriorityFeePerGas: '0x5', eth_getTransactionCount: '0x0', eth_getTransactionReceipt: null, eth_getBlockByNumber: { hash: '0x' + 'a'.repeat(64), parentHash: '0x' + 'b'.repeat(64), number: '0x1', timestamp: '0x65000000', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x5208', miner: '0x0000000000000000000000000000000000000001', extraData: '0x', transactions: [],
+      // A full Block (the 18 required fields) with a base fee, so the fee read succeeds; distinct quotes (base 0x10, tip 0x5, gas price 0x15).
+      // Fixture only, no compile flags, leaves nothing behind (see the header). The durable-before-broadcast assertion is unchanged and could not pass
+      // falsely through this change: without a readable fee no broadcast happens and `durable` stays 0.
+      sha3Uncles: '0x' + 'c'.repeat(64), stateRoot: '0x' + 'd'.repeat(64), transactionsRoot: '0x' + 'e'.repeat(64), receiptsRoot: '0x' + 'f'.repeat(64), logsBloom: '0x' + '0'.repeat(512), mixHash: '0x' + '1'.repeat(64), size: '0x200', uncles: [], baseFeePerGas: '0x10' } };
     assert.ok(Object.hasOwn(results, call.method), call.method); return { jsonrpc: '2.0', id: call.id, result: results[call.method] };
   };
   await route.fulfill({ json: Array.isArray(body) ? await Promise.all(body.map(process)) : await process(body) });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Interface, Transaction, getAddress, verifyTypedData } from 'ethers';
+import { Interface, Transaction, formatUnits, getAddress, verifyTypedData } from 'ethers';
 import { setup, account, token, otherToken, payTo, BOT, foundationNodus, wireId, nodusPublicKey, nodusSignature } from './swap-fixture.js';
 import { liquidityAddText, liquidityAddTyped, nodusToUsdtText, usdtToNodusTyped } from '../src/background/swap-texts.js';
 import { SWAP_METHODS, SWAP_USDT_CONTRACTS, assertSwapUsdtToken } from '../src/constants/swap.js';
@@ -59,6 +59,10 @@ test('USDT -> NODUS: the typed request is signed and posted, then the USDT trans
   assert.deepEqual(f.events, ['bot', 'eth_sendRawTransaction']);
   const transaction = Transaction.from(f.raw[0]);
   assert.equal(transaction.to.toLowerCase(), token.toLowerCase()); assert.equal(transaction.chainId, 1n); assert.equal(transaction.value, 0n);
+  // Fee rule: the fixture's distinct quotes (base 0x10, tip 0x5, gas price 0x15) give a type 2 transaction with tip 0x5 and cap 0x25; the
+  // approval row shows gas limit (0x5208 x 120 %) x cap, the most the payment can cost. A path using the gas price would show 0x15.
+  assert.equal(transaction.type, 2); assert.equal(transaction.maxPriorityFeePerGas, 5n); assert.equal(transaction.maxFeePerGas, 0x25n); assert.equal(transaction.gasLimit, 25200n);
+  assert.equal(Object.fromEntries(payment.requestData.rows)['Network fee'], `Up to ${formatUnits(25200n * 0x25n, 18)} ETH`);
   const decoded = erc20.decodeFunctionData('transfer', transaction.data);
   assert.equal(decoded[0].toLowerCase(), payTo); assert.equal(decoded[1], 25000000n);
   // The payment approval shows the exact amount and destinations.
@@ -108,6 +112,8 @@ test('USDT -> NODUS: a rejected signature posts nothing; a rejected payment is r
 for (const [label, set, reason, text] of [
   ['no native coin for the fee', f => { f.state.balance = '0x0'; }, 'native_fee_short', /too little ETH on Ethereum for the network fee of the USDT payment; ETH on another network does not count\. Nothing was signed, sent to the bot or paid\./],
   ['a fee estimate that fails', f => { f.state.estimateError = true; }, 'payment_not_ready', /^The USDT payment cannot be prepared: .*Nothing was signed, sent to the bot or paid\.$/],
+  // A fee quote that cannot be read is its own failure with the fee message, not the balance sentence (plan 4.4, 4.8); the balance is full here.
+  ['a network fee that cannot be read', f => { f.state.tipError = true; }, 'payment_not_ready', /^The USDT payment cannot be prepared: Network fee could not be read from the RPC endpoint\. Nothing was signed, sent to the bot or paid\.$/],
 ]) {
   test(`USDT -> NODUS: ${label} stops the swap before any signature or post`, async t => {
     const f = await setup(t), remote = f.site(); await connectBoth(f, remote); set(f);
@@ -118,6 +124,27 @@ for (const [label, set, reason, text] of [
     assert.deepEqual(f.background.approvals.controller.state.pendingApprovals, {});
   });
 }
+
+// Proves the two later failures of the payment's second preparation (plan 4.7, 4.8). After the request reached the bot (the stub bot's hook
+// flips the fixture there): (a) a fee quote that can no longer be read ends in "delivered, not paid" with the fee message, nothing signed;
+// (b) a base fee that rose above the approved cap between the approval and the signing ends the same way with the named refusal, nothing
+// broadcast. Could falsely pass if the first preparation had already failed: the bot call list shows the request was posted both times.
+test('USDT -> NODUS: a fee failure at the second preparation or at signing leaves the request delivered and unpaid', async t => {
+  const f = await setup(t), remote = f.site(); await connectBoth(f, remote);
+  f.state.onBot = () => { f.state.tipError = true; };
+  const first = remote.request(SWAP_METHODS.sendUsdtToNodus, [usdtRequest()]); await f.walk(first, ['eth_signTypedData']);
+  const failed = await first;
+  assert.equal(failed.error.data.delivered, true); assert.equal(failed.error.data.paid, false); assert.match(failed.error.data.failure, /^Network fee could not be read from the RPC endpoint\.$/);
+  assert.equal(f.botCalls.length, 1); assert.equal(f.raw.length, 0);
+  f.state.onBot = undefined; f.state.tipError = false;
+  const second = remote.request(SWAP_METHODS.sendUsdtToNodus, [usdtRequest({ requestNumber: '123456790' })]);
+  await f.walk(second, ['eth_signTypedData']); const payment = await f.nextApproval(second);
+  f.state.base = '0x26'; await f.background.approvals.controller.acceptRequest(payment.id, true);
+  const refused = await second;
+  assert.equal(refused.error.data.delivered, true); assert.equal(refused.error.data.paid, false);
+  assert.match(refused.error.data.failure, /^Network fee rose above the approved maximum\. Prepare the transfer again\.$/);
+  assert.equal(f.botCalls.length, 2); assert.equal(f.raw.length, 0);
+});
 
 // Proves the extension, not the site, fixes what is posted and where: the site cannot choose the path, a non-https or
 // path-carrying bot address is refused before any approval, and unknown or missing fields are refused.

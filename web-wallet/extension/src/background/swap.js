@@ -112,7 +112,7 @@ async function assertPayable(session, payment, flow) {
     const short = error?.nativeShort === true;
     const message = short
       ? `Your Ethereum address has too little ${session.symbol} on ${session.networkName} for the network fee of the USDT payment; ${session.symbol} on another network does not count. Nothing was signed, sent to the bot or paid.`
-      : `The USDT payment cannot be prepared: ${error?.shortMessage ?? error?.message ?? 'unknown error'}. Nothing was signed, sent to the bot or paid.`;
+      : `The USDT payment cannot be prepared: ${String(error?.shortMessage ?? error?.message ?? 'unknown error').replace(/\.+$/, '')}. Nothing was signed, sent to the bot or paid.`;
     throw rpcErrors.internal({ message, data: { delivered: false, paid: false, answered: false, reason: short ? 'native_fee_short' : 'payment_not_ready' } });
   }
 }

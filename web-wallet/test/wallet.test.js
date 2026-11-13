@@ -63,6 +63,11 @@ test('offline ETH and SOL signatures serialize and recover the intended sender a
   const signed = await wallet.evm.signTransaction({ to, value: 123456789012345678n, chainId: 1, nonce: 0, gasLimit: 21000n, gasPrice: 1000000000n, type: 0 });
   const decoded = EthTransaction.from(signed);
   assert.equal(decoded.from, wallet.addresses.ethereum); assert.equal(decoded.to, to); assert.equal(decoded.value, 123456789012345678n); assert.equal(decoded.chainId, 1n);
+  // The fee-market envelope the adapter now signs: type 2 with distinct tip and cap recovers the same sender; a decoder that dropped a fee
+  // field or read the legacy price would show a different number (tip 5, cap 37, neither equal to the legacy 1 gwei above). Offline, no
+  // compile flags, leaves nothing behind; it proves the signing library's envelope, not the adapter's fee choice (evm-fee.test.js proves that).
+  const market = EthTransaction.from(await wallet.evm.signTransaction({ to, value: 1n, chainId: 1, nonce: 1, gasLimit: 21000n, maxPriorityFeePerGas: 5n, maxFeePerGas: 37n, type: 2 }));
+  assert.equal(market.type, 2); assert.equal(market.from, wallet.addresses.ethereum); assert.equal(market.maxPriorityFeePerGas, 5n); assert.equal(market.maxFeePerGas, 37n); assert.equal(market.gasPrice, null);
   // The wallet's Solana buffer is seed || public key; signing uses its first 32 bytes (adapters/solana.js).
   const target = getAddressDecoder().decode(ed25519.getPublicKey(new Uint8Array(32).fill(2))), owner = wallet.solana.publicKey;
   const unsigned = compileTransaction(pipe(createTransactionMessage({ version: 'legacy' }), m => setTransactionMessageFeePayer(owner, m), m => setTransactionMessageLifetimeUsingBlockhash({ blockhash: '11111111111111111111111111111111', lastValidBlockHeight: 0n }, m), m => appendTransactionMessageInstruction(getTransferSolInstruction({ source: { address: owner, role: AccountRole.WRITABLE_SIGNER }, destination: target, amount: 12345n }), m)));

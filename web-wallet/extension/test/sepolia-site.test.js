@@ -90,6 +90,8 @@ test('after the switch, a site transaction is prepared and sent for chain id 111
   const answer = await sending; assert.equal(answer.error, undefined);
   assert.equal(f.raw.length, 1); const transaction = Transaction.from(f.raw[0]);
   assert.equal(transaction.chainId, 11155111n); assert.equal(transaction.to.toLowerCase(), payTo); assert.equal(transaction.value, 123n);
+  // Fee rule on Sepolia: the fixture reports base 0x10, tip 0x5 and gas price 0x15, so type 2 with tip 0x5 and cap 0x25 (not 0x15).
+  assert.equal(transaction.type, 2); assert.equal(transaction.maxPriorityFeePerGas, 5n); assert.equal(transaction.maxFeePerGas, 0x25n);
   const sent = f.calls.find(call => call.method === 'eth_sendRawTransaction'); assert.equal(sent.url, `${SEPOLIA.endpoint}/`);
   assert.equal(answer.result, transaction.hash);
   assert.equal(f.background.nodus.chainActivity('ethereum').rows().length, 0, 'no mainnet Activity row for a Sepolia transaction');

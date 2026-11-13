@@ -20,9 +20,13 @@ test('EVM records before broadcast, rejects another pending send and cancels on 
   t.mock.method(globalThis, 'fetch', async (_url, options) => {
     const req = JSON.parse(typeof options.body === 'string' ? options.body : new TextDecoder().decode(options.body));
     const values = { eth_chainId: '0x1', eth_getBalance: '0x8ac7230489e80000', eth_estimateGas: '0x5208',
-      eth_gasPrice: '0x3b9aca00', eth_maxPriorityFeePerGas: '0x3b9aca00', eth_getTransactionCount: '0x7', eth_getTransactionReceipt: null,
-      eth_getBlockByNumber: { number: '0x10', hash: '0x' + '11'.repeat(32), parentHash: '0x' + '22'.repeat(32), timestamp: '0x1', nonce: '0x0000000000000000',
-        difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x0', miner: '0x0000000000000000000000000000000000000001', extraData: '0x', transactions: [] } };
+      // Distinct fee values (base 0x10, tip 0x5, gas price 0x15) in a full Block, so a fee path using the wrong quote cannot pass unseen.
+      // Fixture only (the assertions are unchanged), no compile flags, leaves nothing behind; a block without a base fee would route the send to
+      // the legacy fields and still pass here, which is why the fee-market raw is asserted in evm-site.test.js and evm-fee.test.js.
+      eth_gasPrice: '0x15', eth_maxPriorityFeePerGas: '0x5', eth_getTransactionCount: '0x7', eth_getTransactionReceipt: null,
+      eth_getBlockByNumber: { number: '0x10', hash: '0x' + '11'.repeat(32), parentHash: '0x' + '22'.repeat(32), sha3Uncles: '0x' + '33'.repeat(32), timestamp: '0x1', nonce: '0x0000000000000000',
+        difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x0', stateRoot: '0x' + '44'.repeat(32), transactionsRoot: '0x' + '55'.repeat(32), receiptsRoot: '0x' + '66'.repeat(32),
+        logsBloom: '0x' + '00'.repeat(256), mixHash: '0x' + '77'.repeat(32), size: '0x200', uncles: [], miner: '0x0000000000000000000000000000000000000001', extraData: '0x', transactions: [], baseFeePerGas: '0x10' } };
     let result = values[req.method];
     if (req.method === 'eth_sendRawTransaction') { assert.equal(writes[0][0].hash, keccak256(req.params[0])); result = keccak256(req.params[0]); }
     else assert.ok(Object.hasOwn(values, req.method), req.method);

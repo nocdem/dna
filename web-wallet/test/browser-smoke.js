@@ -64,7 +64,9 @@ await page.route('**/*', async route => {
   assert.ok(!JSON.stringify(body).includes(phrase));
   const process = call => {
     if (call.method === 'eth_getTransactionReceipt') return { jsonrpc: '2.0', id: call.id, result: finalized ? { transactionHash: call.params[0], blockHash: '0x' + 'a'.repeat(64), blockNumber: '0x1', status: '0x1' } : null };
-    const result = { eth_getTransactionReceipt: null, eth_chainId: networkId, eth_getBalance: '0x8ac7230489e80000', eth_call: '0x' + '0'.repeat(64), eth_estimateGas: '0x5208', eth_gasPrice: '0x3b9aca00', eth_maxPriorityFeePerGas: '0x3b9aca00', eth_getTransactionCount: '0x0', eth_getBlockByNumber: { hash: '0x' + 'a'.repeat(64), parentHash: '0x' + 'b'.repeat(64), number: '0x1', timestamp: '0x65000000', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x5208', miner: '0x0000000000000000000000000000000000000001', extraData: '0x', transactions: [] } }[call.method];
+    const result = { eth_getTransactionReceipt: null, eth_chainId: networkId, eth_getBalance: '0x8ac7230489e80000', eth_call: '0x' + '0'.repeat(64), eth_estimateGas: '0x5208', eth_gasPrice: '0x15', eth_maxPriorityFeePerGas: '0x5', eth_getTransactionCount: '0x0', eth_getBlockByNumber: { hash: '0x' + 'a'.repeat(64), parentHash: '0x' + 'b'.repeat(64), number: '0x1', timestamp: '0x65000000', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x5208', miner: '0x0000000000000000000000000000000000000001', extraData: '0x', transactions: [],
+      // A full Block (the 18 required fields) with a base fee; with the distinct quotes above (base 0x10, tip 0x5, gas price 0x15) the cap is 0x25.
+      sha3Uncles: '0x' + 'c'.repeat(64), stateRoot: '0x' + 'd'.repeat(64), transactionsRoot: '0x' + 'e'.repeat(64), receiptsRoot: '0x' + 'f'.repeat(64), logsBloom: '0x' + '0'.repeat(512), mixHash: '0x' + '1'.repeat(64), size: '0x200', uncles: [], baseFeePerGas: '0x10' } }[call.method];
     if (call.method === 'eth_sendRawTransaction') { broadcasts.push(Transaction.from(call.params[0])); return { jsonrpc: '2.0', id: call.id, result: Transaction.from(call.params[0]).hash }; }
     assert.notEqual(result, undefined, `Unexpected RPC method ${call.method}`);
     return { jsonrpc: '2.0', id: call.id, result };
@@ -410,6 +412,9 @@ try {
   await page.locator('#review-button').click(); await page.locator('#review-dialog').waitFor({ state: 'visible' }); await page.locator('#confirm-send').click();
   await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Broadcast submitted'));
   assert.equal(broadcasts.length, 1); assert.equal(broadcasts[0].from, '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb'); assert.equal(broadcasts[0].value, 10000000000000000n); assert.equal(broadcasts[0].chainId, 1n);
+  // Fee rule: the ETH send is type 2 with the quote's tip and twice its base fee plus the tip (the gas price quote 0x15 must not be used).
+  // No compile flags; leaves nothing behind (browser and server closed in finally). Could falsely pass if the mock's three quotes were equal (distinct here).
+  assert.equal(broadcasts[0].type, 2); assert.equal(broadcasts[0].maxPriorityFeePerGas, 5n); assert.equal(broadcasts[0].maxFeePerGas, 0x25n); assert.equal(broadcasts[0].gasLimit, 25200n);
   // B-1: the first send has no final result yet, so it must be marked abandoned
   // before a second same-network review can open; E-2 also clears the recipient
   // after a successful broadcast, so it is re-filled here too.
@@ -420,6 +425,7 @@ try {
   await page.selectOption('#asset','USDC'); await page.locator('#amount').fill('1.000001'); await page.locator('#review-button').click(); await page.locator('#review-dialog').waitFor({ state: 'visible' }); await page.locator('#confirm-send').click();
   await page.waitForFunction(() => document.querySelector('#wallet-status').textContent.includes('Broadcast submitted'));
   assert.equal(broadcasts.length, 2); assert.equal(broadcasts[1].to, '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'); assert.equal(broadcasts[1].value, 0n);
+  assert.equal(broadcasts[1].type, 2); assert.equal(broadcasts[1].maxPriorityFeePerGas, 5n); assert.equal(broadcasts[1].maxFeePerGas, 0x25n);
   const erc = new Interface(['function transfer(address,uint256)']); assert.equal(erc.decodeFunctionData('transfer', broadcasts[1].data)[1], 1000001n);
   assert.match(await page.locator('#activity').innerText(), /pending/);
   finalized = true; await selectNetwork('bsc'); assert.equal(await page.locator('#activity').innerText(), ''); await selectNetwork('ethereum');

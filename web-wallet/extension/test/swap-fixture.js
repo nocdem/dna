@@ -49,7 +49,7 @@ export async function setup(t) {
   // The stub bot. `mode` chooses its answer: 'ok' (HTTP 200 {"received":true}), 'refuse' (the connection is refused),
   // 'error' (HTTP 500), 'gateway' (HTTP 502 HTML, a forwarder with the bot down), 'reject' (HTTP 200 {"received":false,
   // "reason":"bad_signature"}, the bot refusing the request), 'open' (HTTP 200 {"received":false,"reason":"open_approval","openRequestNumber":state.openRequestNumber}), 'plain' (HTTP 200 text that is not the bot's JSON answer).
-  const state = { bot: 'ok', onBot: undefined, balance: '0x8ac7230489e80000' };
+  const state = { bot: 'ok', onBot: undefined, balance: '0x8ac7230489e80000', base: '0x10', tipError: false };
   async function bot(url, options) {
     events.push('bot'); botCalls.push({ url: String(url), method: options.method, body: JSON.parse(options.body), options });
     state.onBot?.();
@@ -90,12 +90,20 @@ export async function setup(t) {
         // `estimateError`: the node refuses the estimate, as for a transfer the chain would revert.
         if (state.estimateError) return new Response(JSON.stringify({ id: req.id, jsonrpc: '2.0', error: { code: 3, message: 'execution reverted', data: '0x' } }), { headers: { 'content-type': 'application/json' } });
         result = '0x5208'; break;
-      case 'eth_gasPrice': case 'eth_maxPriorityFeePerGas': result = '0x3b9aca00'; break;
+      // Three distinct fee values (base `state.base` = 0x10, tip 0x5, gas price 0x15): a fee path that used the wrong quote produces a number
+      // other than 2 x base + tip = 0x25. `tipError`: the node refuses the tip read (a fee-read failure, not a short balance).
+      case 'eth_gasPrice': result = '0x15'; break;
+      case 'eth_maxPriorityFeePerGas':
+        if (state.tipError) return new Response(JSON.stringify({ id: req.id, jsonrpc: '2.0', error: { code: -32601, message: 'method not found' } }), { headers: { 'content-type': 'application/json' } });
+        result = '0x5'; break;
       case 'eth_getTransactionCount': result = '0x7'; break;
       case 'eth_getTransactionReceipt': result = null; break;
-      case 'eth_getBlockByNumber': result = { number: '0x10', hash: '0x' + '11'.repeat(32), parentHash: '0x' + '22'.repeat(32),
-        timestamp: '0x1', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x0',
-        miner: payTo, extraData: '0x', transactions: [] }; break;
+      // A full Block (the 18 required fields) with a base fee (the fixture's header already states: no flags, nothing left behind). A test
+      // could falsely pass on legacy fields only if it did not decode the raw; the swap and Sepolia tests decode type and fee fields.
+      case 'eth_getBlockByNumber': result = { number: '0x10', hash: '0x' + '11'.repeat(32), parentHash: '0x' + '22'.repeat(32), sha3Uncles: '0x' + '33'.repeat(32),
+        timestamp: '0x1', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x0', stateRoot: '0x' + '44'.repeat(32),
+        transactionsRoot: '0x' + '55'.repeat(32), receiptsRoot: '0x' + '66'.repeat(32), logsBloom: '0x' + '00'.repeat(256), mixHash: '0x' + '77'.repeat(32), size: '0x200', uncles: [],
+        miner: payTo, extraData: '0x', transactions: [], baseFeePerGas: state.base }; break;
       case 'eth_sendRawTransaction':
         // `onRaw` runs when the broadcast call arrives (a test locks the wallet there); `failRaw` makes the call fail.
         events.push('eth_sendRawTransaction'); state.onRaw?.(); if (state.failRaw) throw new TypeError('broadcast down');

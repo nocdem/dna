@@ -54,6 +54,11 @@ test('personal, typed and transaction signing recover the account and are all gu
     const decoded = Transaction.from(await messenger.call('KeyringController:signTransaction', transaction(), from));
     assert.equal(decoded.from, getAddress(from)); assert.equal(decoded.value, 123n);
     assert.equal(decoded.to, '0x0000000000000000000000000000000000000001');
+    // The fee-market envelope the extension now signs: type 2 with distinct tip and cap, signed by the same key; decoding shows both fields.
+    // Offline, no compile flags, leaves nothing behind. Could falsely pass only if the keyring ignored the fee fields and the decoder defaulted
+    // them to 5 and 37, which no default does; it proves the keyring path signs the envelope, not the fee choice (evm-site.test.js proves that).
+    const market = Transaction.from(await messenger.call('KeyringController:signTransaction', { ...transaction(), type: 2, gasPrice: undefined, maxPriorityFeePerGas: 5n, maxFeePerGas: 37n }, from));
+    assert.equal(market.type, 2); assert.equal(market.from, getAddress(from)); assert.equal(market.maxPriorityFeePerGas, 5n); assert.equal(market.maxFeePerGas, 37n);
     assert.throws(() => messenger.call('KeyringController:getState'));
     assert.throws(() => messenger.call('KeyringController:exportSeedPhrase', 'public-password'));
     assert.deepEqual(await lockCoordinator.lock(), []);

@@ -2,14 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { Duplex } from 'readable-stream';
-import { getBytes, keccak256, Transaction, verifyMessage, verifyTypedData } from 'ethers';
+import { BaseWallet, formatUnits, getBytes, keccak256, Transaction, verifyMessage, verifyTypedData } from 'ethers';
 import { Caip25EndowmentPermissionName, setEthAccounts, setPermittedEthChainIds } from '@metamask/chain-agnostic-permission';
 import log from 'loglevel';
 import { CHAINS } from '../../src/config.js';
 import { createMockNodusModule } from '../../test/nodus-mock-module.js';
 import { deriveNodusAddress } from '../../src/nodus/derive.js';
 
-// Node >=22.14, pinned packages and CPUNK WASM; injected HTTPS JSON-RPC only, no network/disk output.
+// Node >=22.14, pinned packages and CPUNK WASM; injected HTTPS JSON-RPC only, no network/disk output; no compile flags, leaves nothing behind.
 const phrase = 'abandon '.repeat(23) + 'art', password = 'public-test-password-123';
 const account = '0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb', to = '0x0000000000000000000000000000000000000001';
 const cpunkWasmBytes = readFileSync(new URL('../../src/cpunk/legacy-dilithium.wasm', import.meta.url));
@@ -37,7 +37,7 @@ async function setup(t) {
     alarms: { onAlarm: event(), async clear() {}, async create() {} },
     windows: { onRemoved: event(), async getAll() { return []; }, async getLastFocused() { return { top: 0, left: 0, width: 1000 }; }, async create(options) { return { ...options, id: 2 }; }, async update() {} },
   };
-  const state = { wrongNetwork: false, badHash: false, balance: '0x8ac7230489e80000' };
+  const state = { wrongNetwork: false, badHash: false, balance: '0x8ac7230489e80000', base: '0x10', tip: '0x5', tipError: false };
   t.mock.method(globalThis, 'fetch', async (url, options) => {
     const req = JSON.parse(typeof options.body === 'string' ? options.body : new TextDecoder().decode(options.body));
     assert.equal(Array.isArray(req), false); calls.push({ url: String(url), ...req });
@@ -50,12 +50,18 @@ async function setup(t) {
       case 'eth_getBalance': result = state.balance; break;
       case 'eth_call': result = '0x' + (123000000n).toString(16).padStart(64, '0'); break;
       case 'eth_estimateGas': result = '0x5208'; break;
-      case 'eth_gasPrice': case 'eth_maxPriorityFeePerGas': result = '0x3b9aca00'; break;
+      // Three distinct fee values (base 0x10, tip 0x5, gas price 0x15): a fee path that used the wrong one produces a different number than 2 x base + tip = 0x25.
+      case 'eth_gasPrice': result = '0x15'; break;
+      case 'eth_maxPriorityFeePerGas':
+        if (state.tipError) return new Response(JSON.stringify({ id: req.id, jsonrpc: '2.0', error: { code: -32601, message: 'method not found' } }), { headers: { 'content-type': 'application/json' } });
+        result = state.tip; break;
       case 'eth_getTransactionCount': result = '0x7'; break;
       case 'eth_getTransactionReceipt': result = null; break;
-      case 'eth_getBlockByNumber': result = { number: '0x10', hash: '0x' + '11'.repeat(32), parentHash: '0x' + '22'.repeat(32),
-        timestamp: '0x1', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x0',
-        miner: to, extraData: '0x', transactions: [] }; break;
+      // A full Block (the 18 required fields); BNB Smart Chain reports a base fee of 0 as live, Ethereum 0x10 (`state.base` overrides it).
+      case 'eth_getBlockByNumber': result = { number: '0x10', hash: '0x' + '11'.repeat(32), parentHash: '0x' + '22'.repeat(32), sha3Uncles: '0x' + '33'.repeat(32),
+        timestamp: '0x1', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x0', stateRoot: '0x' + '44'.repeat(32),
+        transactionsRoot: '0x' + '55'.repeat(32), receiptsRoot: '0x' + '66'.repeat(32), logsBloom: '0x' + '00'.repeat(256), mixHash: '0x' + '77'.repeat(32), size: '0x200', uncles: [],
+        miner: to, extraData: '0x', transactions: [], baseFeePerGas: chainId === '0x38' ? '0x0' : state.base }; break;
       case 'eth_sendRawTransaction': raw.push(req.params[0]); result = state.badHash ? '0x' + 'ff'.repeat(32) : keccak256(req.params[0]); break;
       default: assert.fail(`Unexpected fixture method ${req.method}`);
     }
@@ -152,19 +158,65 @@ test('rejected signatures and sends return 4001; an unconnected origin cannot si
   assert.equal((await site('https://unconnected.example').request('personal_sign', ['0x1234', account])).error.code, 4100);
 });
 
-// Proves gas/fees/nonce/type and site calldata survive raw broadcast; hash-only checks could send different fields.
+// Proves gas/fees/nonce/type and site calldata survive raw broadcast; hash-only checks could send different fields. The fee is the
+// fee-market rule: type 2, tip 0x5, cap 2 x 0x10 + 0x5 = 0x25, and the review shows gas limit x cap. The site's own gasPrice, maxFeePerGas and
+// type are sent and must be ignored (plan section 5). Could falsely pass if the fixture's three quotes were equal (they are distinct).
 test('site transaction review shows fee and broadcasts the approved transaction once', async t => {
   const { background, site, connect, nextApproval, calls, raw } = await setup(t), remote = site(); await connect(remote);
-  const sending = remote.request('eth_sendTransaction', [{ from: account, to, value: '0x7b', data: '0x1234', gas: '0x7530' }]);
+  const sending = remote.request('eth_sendTransaction', [{ from: account, to, value: '0x7b', data: '0x1234', gas: '0x7530', gasPrice: '0x3b9aca00', maxFeePerGas: '0x3b9aca00', type: '0x0' }]);
   const pending = await nextApproval(sending); assert.equal(raw.length, 0);
   assert.equal(pending.requestData.to, to); assert.equal(pending.requestData.value, '123'); assert.equal(pending.requestData.data, '0x1234');
-  assert.match(pending.requestData.fee, /^Up to .+ ETH$/); await background.approvals.controller.acceptRequest(pending.id, true);
+  assert.equal(pending.requestData.fee, `Up to ${formatUnits(30000n * 0x25n, 18)} ETH`); await background.approvals.controller.acceptRequest(pending.id, true);
   const result = await sending; assert.equal(result.error, undefined); assert.equal(raw.length, 1); assert.equal(result.result, keccak256(raw[0]));
   const tx = Transaction.from(raw[0]); assert.equal(tx.from, account); assert.equal(tx.to, to); assert.equal(tx.value, 123n);
-  assert.equal(tx.data, '0x1234'); assert.equal(tx.chainId, 1n); assert.equal(tx.type, 0); assert.equal(tx.nonce, 7);
-  assert.equal(tx.gasLimit, 30000n); assert.equal(tx.gasPrice, 1000000000n);
+  assert.equal(tx.data, '0x1234'); assert.equal(tx.chainId, 1n); assert.equal(tx.type, 2); assert.equal(tx.nonce, 7);
+  assert.equal(tx.gasLimit, 30000n); assert.equal(tx.maxFeePerGas, 0x25n); assert.equal(tx.maxPriorityFeePerGas, 5n);
   assert.ok(calls.some(req => req.method === 'eth_estimateGas' && req.params[0].data === '0x1234'));
   assert.ok(calls.some(req => req.method === 'eth_getTransactionCount' && req.params[1] === 'pending'));
+});
+
+// Proves a failed tip read on a fee-market network ends before any approval is requested, with the fee message (not the balance message) and
+// no raw send; and that the wallet's own send on a zero-base-fee network (BNB Smart Chain) shows gas limit x eth_gasPrice (0x15, not the tip
+// 0x5 nor 0x25). Could falsely pass if the request failed for another reason; the message is matched exactly.
+test('an unreadable tip is refused before any approval; a zero base fee prices at eth_gasPrice', async t => {
+  const { background, site, connect, nextApproval, state, raw } = await setup(t), remote = site(); await connect(remote);
+  state.tipError = true;
+  const failing = await remote.request('eth_sendTransaction', [{ from: account, to }]);
+  assert.match(failing.error.message, /^Network fee could not be read from the RPC endpoint\.$/);
+  assert.equal(background.approvals.controller.state.pendingApprovalCount, 0); assert.equal(raw.length, 0);
+  state.tipError = false;
+  const review = await background.evm.prepareSend({ chain: 'bsc', symbol: 'BNB', to, amount: '0.01' });
+  assert.ok(review.review.some(([label, value]) => label === 'Network fee' && value === `Up to ${formatUnits(25200n * 0x15n, 18)} BNB`));
+  background.evm.cancelSend(review.id);
+  // The BSC send through the extension path signs and broadcasts type 0 priced at eth_gasPrice (0x15): a site transaction after an approved
+  // switch to chain 0x38. Could falsely pass if the fixture reported a base fee for BSC; the decoded type and exact price rule that out.
+  const switching = remote.request('wallet_switchEthereumChain', [{ chainId: '0x38' }]), switchApproval = await nextApproval(switching);
+  await background.approvals.controller.acceptRequest(switchApproval.id, true); assert.equal((await switching).error, undefined);
+  const sending = remote.request('eth_sendTransaction', [{ from: account, to, chainId: '0x38' }]), pending = await nextApproval(sending);
+  await background.approvals.controller.acceptRequest(pending.id, true);
+  assert.equal((await sending).error, undefined); assert.equal(raw.length, 1);
+  const tx = Transaction.from(raw[0]); assert.equal(tx.type, 0); assert.equal(tx.gasPrice, 0x15n); assert.equal(tx.chainId, 56n); assert.equal(tx.gasLimit, 25200n);
+});
+
+// Proves the check at signing in the extension path: a base fee above the approved cap 0x25 at signing ends with the named refusal, no
+// signature (the signing function is counted on the shared ethers wallet prototype) and no raw send; at the cap the signed raw equals the
+// approved transaction in every field. Could falsely pass if the fixture's base fee never moved (`state.base` moves it after approval) or if
+// the signing count were taken on another object; the count reaching 1 on the later success shows the spy sees the real signing.
+test('at signing a base fee above the approved maximum is refused before anything is signed or sent', async t => {
+  const { background, site, connect, nextApproval, state, raw } = await setup(t), remote = site(); await connect(remote);
+  const signing = t.mock.method(BaseWallet.prototype, 'signTransaction');
+  const sending = remote.request('eth_sendTransaction', [{ from: account, to }]), pending = await nextApproval(sending);
+  state.base = '0x26'; await background.approvals.controller.acceptRequest(pending.id, true);
+  assert.match((await sending).error.message, /^Network fee rose above the approved maximum\. Prepare the transfer again\.$/);
+  assert.equal(raw.length, 0); assert.equal(signing.mock.callCount(), 0);
+  state.base = '0x10'; // the base fee falls back: the new preparation approves the original cap 0x25 again
+  const again = remote.request('eth_sendTransaction', [{ from: account, to }]), second = await nextApproval(again);
+  state.base = '0x25'; state.tip = '0x9';  // the live tip quote changes too: the approved tip 5 must still be the one signed
+  await background.approvals.controller.acceptRequest(second.id, true);
+  assert.equal((await again).error, undefined); assert.equal(raw.length, 1); assert.equal(signing.mock.callCount(), 1);
+  const tx = Transaction.from(raw[0]);
+  assert.deepEqual({ type: tx.type, chainId: tx.chainId, nonce: tx.nonce, gasLimit: tx.gasLimit, maxFeePerGas: tx.maxFeePerGas, maxPriorityFeePerGas: tx.maxPriorityFeePerGas, to: tx.to, value: tx.value, data: tx.data },
+    { type: 2, chainId: 1n, nonce: 7, gasLimit: 25200n, maxFeePerGas: 0x25n, maxPriorityFeePerGas: 5n, to, value: 0n, data: '0x' });
 });
 
 // Proves absent gas uses the adapter's 120% estimate and wrong hash is refused; an explicit-gas send misses both branches.

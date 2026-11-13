@@ -28,9 +28,14 @@ async function evmSetup(t) {
       case 'eth_getBalance': result = '0xde0b6b3a7640000'; break;
       case 'eth_call': result = `0x${'0'.repeat(64)}`; break;
       case 'eth_estimateGas': result = '0x5208'; break;
-      case 'eth_gasPrice': case 'eth_maxPriorityFeePerGas': result = '0x3b9aca00'; break;
+      // Distinct fee values (base 0x10 on Sepolia, 0x0 on BNB Smart Chain testnet as live; tip 0x5; gas price 0x15): a wrong quote shows as a wrong number.
+      case 'eth_gasPrice': result = '0x15'; break;
+      case 'eth_maxPriorityFeePerGas': result = '0x5'; break;
       case 'eth_getTransactionCount': result = '0x7'; break;
-      case 'eth_getBlockByNumber': result = { number: '0x10', hash: `0x${'11'.repeat(32)}`, parentHash: `0x${'22'.repeat(32)}`, timestamp: '0x1', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x0', miner: to, extraData: '0x', transactions: [] }; break;
+      // A full Block (the 18 required fields); the BNB Smart Chain networks report a base fee of 0 as live, Ethereum and Sepolia 0x10.
+      case 'eth_getBlockByNumber': result = { number: '0x10', hash: `0x${'11'.repeat(32)}`, parentHash: `0x${'22'.repeat(32)}`, sha3Uncles: `0x${'33'.repeat(32)}`, timestamp: '0x1', nonce: '0x0000000000000000', difficulty: '0x0', gasLimit: '0x1c9c380', gasUsed: '0x0',
+        stateRoot: `0x${'44'.repeat(32)}`, transactionsRoot: `0x${'55'.repeat(32)}`, receiptsRoot: `0x${'66'.repeat(32)}`, logsBloom: `0x${'00'.repeat(256)}`, mixHash: `0x${'77'.repeat(32)}`, size: '0x200', uncles: [],
+        miner: to, extraData: '0x', transactions: [], baseFeePerGas: HOSTS[host] === 97 || HOSTS[host] === 56 ? '0x0' : '0x10' }; break;
       case 'eth_sendRawTransaction': raw.push({ host, tx: req.params[0] }); result = Transaction.from(req.params[0]).hash; break;
       default: assert.fail(`Unexpected fixture method ${req.method}`);
     }
@@ -119,7 +124,20 @@ test('a native send on Sepolia is built for chain id 11155111 and sent through t
   assert.equal(f.raw.length, 1); assert.equal(f.raw[0].host, 'ethereum-sepolia-rpc.publicnode.com');
   const transaction = Transaction.from(f.raw[0].tx);
   assert.equal(transaction.chainId, 11155111n); assert.equal(transaction.to.toLowerCase(), to); assert.equal(transaction.value, 10n ** 16n); assert.equal(hash, transaction.hash);
+  // Fee rule: Sepolia reports a base fee (0x10), so type 2 with tip 0x5 and cap 2 x 0x10 + 0x5; the fixture's gas price 0x15 must not appear.
+  assert.equal(transaction.type, 2); assert.equal(transaction.maxPriorityFeePerGas, 5n); assert.equal(transaction.maxFeePerGas, 0x25n);
   assert.equal(f.background.nodus.chainActivity('ethereum').rows().length, 0, 'no mainnet Activity row for a test-network send');
+});
+
+// Proves the BNB Smart Chain test network (base fee 0, as live) keeps type 0 priced at eth_gasPrice 0x15, built for chain id 97. Could falsely
+// pass if the fixture reported a base fee: the decoded type and the exact price (not the tip 0x5, not 0x25) rule that out.
+test('a native send on the BNB Smart Chain test network stays type 0 at eth_gasPrice', async t => {
+  const f = await evmSetup(t);
+  await f.client.request('setChainNetwork', ['bsc', 'testnet']);
+  const review = await f.client.request('prepareEvmSend', [{ chain: 'bsc', symbol: 'tBNB', to, amount: '0.01' }]);
+  await f.client.request('confirmEvmSend', [review.id]);
+  assert.equal(f.raw.length, 1); const transaction = Transaction.from(f.raw[0].tx);
+  assert.equal(transaction.chainId, 97n); assert.equal(transaction.type, 0); assert.equal(transaction.gasPrice, 0x15n);
 });
 
 // Proves opening the wallet again returns every selector, and the sites' provider, to mainnet (plan 5.6 d; operator

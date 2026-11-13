@@ -55,9 +55,10 @@ function ethersProvider(endpoint) {
   return new JsonRpcProvider(transport, undefined, { batchMaxCount: 1 });
 }
 
-// Operator-approved adaptation: sites supply to/value/data/gas themselves.
-// All network, fee, nonce, balance and broadcast checks mirror the unchanged
-// web-wallet adapter at the commit above, src/adapters/evm.js:22-54.
+// Operator-approved adaptation: sites supply to/value/data/gas themselves; a
+// site's fee fields are not read (plan 2026-11-12-evm-fee section 5). The
+// network, nonce, balance and broadcast checks mirror the web-wallet adapter,
+// src/adapters/evm.js; the fee rule is that adapter's shared function.
 export async function prepareSiteTransaction({ chain, wallet, fields, endpoint, assertCurrent }) {
   const config = chainConfig(chain);
   if (fields.chainId !== undefined && rawInteger(fields.chainId) !== BigInt(config.chainId)) throw rpcErrors.invalidParams('Transaction is for a different network.');
@@ -68,19 +69,21 @@ export async function prepareSiteTransaction({ chain, wallet, fields, endpoint, 
   assertCurrent(); await checkNetwork(chain, endpoint); assertCurrent();
   const provider = ethersProvider(endpoint);
   try {
-    // Adapter :34-40: pending nonce, legacy gas price, 120% estimate, balance.
-    const [gas, fees, nonce, balance] = await timed('evm', 'fee-reads', { chain, host: hostOf(endpoint) }, () => Promise.all([provider.estimateGas(tx), provider.getFeeData(),
+    // Pending nonce, the shared fee rule's fields, 120% estimate, balance.
+    const [gas, fee, nonce, balance] = await timed('evm', 'fee-reads', { chain, host: hostOf(endpoint) }, () => Promise.all([provider.estimateGas(tx), adapter.networkFee(endpoint),
       provider.getTransactionCount(tx.from, 'pending'), provider.getBalance(tx.from)]));
     assertCurrent();
-    const gasLimit = fields.gas === undefined ? gas * 120n / 100n : rawInteger(fields.gas), gasPrice = fees.gasPrice;
-    // `nativeShort` lets a caller tell this refusal apart from a failed read (swap.js checks it before posting a request).
-    if (!gasPrice || balance < gasLimit * gasPrice + tx.value) throw Object.assign(new Error('Insufficient native balance for amount and network fee.'), { nativeShort: true });
-    const unsigned = { ...tx, chainId: config.chainId, nonce, gasLimit, gasPrice, type: 0 }; delete unsigned.from;
-    return { fee: `Up to ${formatUnits(gasLimit * gasPrice, 18)} ${config.symbol}`, expiresAt: Date.now() + 60000, nonce,
+    const gasLimit = fields.gas === undefined ? gas * 120n / 100n : rawInteger(fields.gas);
+    // `nativeShort` lets a caller tell this refusal apart from a failed fee read (swap.js checks it before posting a request).
+    if (balance < gasLimit * fee.perGas + tx.value) throw Object.assign(new Error('Insufficient native balance for amount and network fee.'), { nativeShort: true });
+    const unsigned = { ...tx, chainId: config.chainId, nonce, gasLimit, ...fee.fields }; delete unsigned.from;
+    return { fee: `Up to ${formatUnits(gasLimit * fee.perGas, 18)} ${config.symbol}`, expiresAt: Date.now() + 60000, nonce,
       async send(onBroadcast) {
-        // Adapter :42-50: check immediately around every asynchronous key use.
+        // Check immediately around every asynchronous key use.
         assertCurrent(); assertWalletActive(wallet); await checkNetwork(chain, endpoint);
         assertCurrent(); assertWalletActive(wallet);
+        // A type 2 cap the latest base fee has passed is refused before signing; the approved fields are never raised.
+        if (unsigned.type === 2) { await adapter.assertFeeCovered(endpoint, unsigned.maxFeePerGas); assertCurrent(); assertWalletActive(wallet); }
         const signed = await wallet.evm.signTransaction(unsigned);
         assertCurrent(); assertWalletActive(wallet);
         const hash = keccak256(signed);
