@@ -17,7 +17,10 @@
  *   H3  `0x` + lowercase hex of an exact length, nothing else;
  *   H4  the routes against a STUB backend: the price question answers with
  *       every field and every refusal word (one per engine code), a bad
- *       direction or amount is bad_request (no backend call); the signed
+ *       direction or amount is bad_request (no backend call); the NODUS -> USDT
+ *       question carries `destination` (three keys, its 20 bytes reach the
+ *       backend; the old two-key shape is page_out_of_date; a wrong, upper-case
+ *       or misplaced destination is bad_request, evm-fee plan 6.5.3); the signed
  *       request of both kinds reaches the backend decoded (sender, amounts,
  *       signature bytes, text, 2592-byte key, 4627-byte signature), every
  *       delivery code has its word, open_approval carries the open request
@@ -156,6 +159,8 @@ static void h3_hex(void) {
 typedef struct {
     int      quote_rc, swap_rc, calls;
     amm_dir_t dir; uint64_t amount;
+    int      quote_has_dest;         /* the destination the stub was given (0 = NULL) */
+    uint8_t  quote_dest[20];
     char     sender[64], dest[200], amt[32], mnm[32], rno[32];
     uint8_t  sig0, sig64;
     size_t   text_len; uint8_t text0; uint8_t pk0, pk_last, sg0, sg_last;
@@ -167,9 +172,12 @@ typedef struct {
 
 static be_t B;
 
-static int b_quote(void *c, amm_dir_t dir, uint64_t amount, uint64_t dl, amm_quote_answer_t *o) {
+static int b_quote(void *c, amm_dir_t dir, uint64_t amount, const uint8_t *dest, uint64_t dl,
+                   amm_quote_answer_t *o) {
     (void)c; (void)dl;
     B.calls++; B.dir = dir; B.amount = amount;
+    B.quote_has_dest = dest != NULL;
+    if (dest) memcpy(B.quote_dest, dest, 20);
     if (B.quote_rc != AMM_Q_OK) return B.quote_rc;
     memset(o, 0, sizeof(*o));
     o->dir = dir; o->amount = amount; o->number = 93652445369406ULL; o->est_fee = 7;
@@ -275,9 +283,13 @@ static void h4_routes(void) {
     amm_http_ctx_t c = mkctx();
     char out[2048];
     memset(&B, 0, sizeof(B));
+    /* a NODUS -> USDT question carries the user's Ethereum address (evm-fee plan
+     * 6.5.3): exactly three keys. Used by the refusal-word loop and the 500 case. */
+    static const char Q3[] = "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\","
+                             "\"destination\":\"0x0102030405060708090a0b0c0d0e0f1011121314\"}";
 
     CHECK(route(&c, "POST", "/amm/quote", "{\"direction\":\"usdt_to_nodus\",\"amount\":\"100000000\"}", out, sizeof(out)) == 200 &&
-          B.dir == AMM_USDT_TO_NODUS && B.amount == 100000000ULL &&
+          B.dir == AMM_USDT_TO_NODUS && B.amount == 100000000ULL && !B.quote_has_dest &&
           !strcmp(out, "{\"approved\":true,\"direction\":\"usdt_to_nodus\",\"amount\":\"100000000\","
                        "\"number\":\"93652445369406\",\"estimatedFee\":\"7\",\"requestNumber\":\"16909060\","
                        "\"validUntil\":\"10300\",\"payTo\":\"0xabc\"}"),
@@ -294,11 +306,11 @@ static void h4_routes(void) {
         B.quote_rc = Q[i].rc;
         snprintf(want, sizeof(want), "{\"approved\":false,\"reason\":\"%s\"}", Q[i].word);
         snprintf(msg, sizeof(msg), "refusal word %s", Q[i].word);
-        CHECK(route(&c, "POST", "/amm/quote", "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\"}", out, sizeof(out)) == 200 &&
+        CHECK(route(&c, "POST", "/amm/quote", Q3, out, sizeof(out)) == 200 &&
               !strcmp(out, want) && B.dir == AMM_NODUS_TO_USDT, msg);
     }
     B.quote_rc = AMM_Q_ERR;
-    CHECK(route(&c, "POST", "/amm/quote", "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\"}", out, sizeof(out)) == 500 &&
+    CHECK(route(&c, "POST", "/amm/quote", Q3, out, sizeof(out)) == 500 &&
           strstr(out, "internal"), "a journal fault is a 500 internal");
     B.quote_rc = AMM_Q_OK;
     int before = B.calls;
@@ -314,6 +326,40 @@ static void h4_routes(void) {
         if (route(&c, "POST", "/amm/quote", badq[i], out, sizeof(out)) != 400 || !strstr(out, "bad_request"))
             allbad = 0;
     CHECK(allbad && B.calls == before, "every malformed question is 400 bad_request and never reaches the backend");
+
+    /* the destination (evm-fee plan 6.5.3, 7.2, K5). WHAT IT PROVES: the
+     * three-key NODUS -> USDT body reaches the backend with its 20 parsed bytes;
+     * the old two-key NODUS -> USDT body is 400 page_out_of_date and never
+     * reaches the backend; a destination of the wrong length, in upper case,
+     * without 0x, on usdt_to_nodus, or a third key that is not `destination`
+     * is 400 bad_request and never reaches the backend. HOW IT COULD FALSELY
+     * PASS: the stub only records the bytes it is handed; a parser that handed
+     * over a fixed address would pass the byte check if the same address were
+     * used again, so the address bytes are 0x01..0x14 (all different). */
+    memset(&B, 0, sizeof(B));
+    CHECK(route(&c, "POST", "/amm/quote", Q3, out, sizeof(out)) == 200 && B.calls == 1 &&
+          B.dir == AMM_NODUS_TO_USDT && B.amount == 5 && B.quote_has_dest &&
+          !memcmp(B.quote_dest, (const uint8_t[20]){0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+                                                     0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14}, 20) &&
+          strstr(out, "\"approved\":true"), "the three-key NODUS -> USDT question reaches the backend with its 20 bytes");
+    before = B.calls;
+    CHECK(route(&c, "POST", "/amm/quote", "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\"}", out, sizeof(out)) == 400 &&
+          !strcmp(out, "{\"approved\":false,\"reason\":\"page_out_of_date\"}") && B.calls == before,
+          "the old two-key NODUS -> USDT question is 400 page_out_of_date, without the backend");
+    static const char *baddest[] = {
+        "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\",\"destination\":\"0x0102\"}",
+        "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\",\"destination\":\"0x0102030405060708090A0B0C0D0E0F1011121314\"}",
+        "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\",\"destination\":\"0102030405060708090a0b0c0d0e0f101112131415\"}",
+        "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\",\"to\":\"0x0102030405060708090a0b0c0d0e0f1011121314\"}",
+        "{\"direction\":\"usdt_to_nodus\",\"amount\":\"5\",\"destination\":\"0x0102030405060708090a0b0c0d0e0f1011121314\"}",
+        "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\",\"destination\":\"0x0102030405060708090a0b0c0d0e0f1011121314\",\"x\":\"y\"}",
+    };
+    allbad = 1;
+    for (size_t i = 0; i < sizeof(baddest) / sizeof(baddest[0]); i++)
+        if (route(&c, "POST", "/amm/quote", baddest[i], out, sizeof(out)) != 400 || !strstr(out, "bad_request"))
+            allbad = 0;
+    CHECK(allbad && B.calls == before,
+          "a destination of the wrong length, upper case, no 0x, on usdt_to_nodus, another key, or a fourth key: 400 bad_request, no backend call");
 
     /* the signed request, USDT -> NODUS */
     char sig[2 + 130 + 1], body[1024];
@@ -722,11 +768,13 @@ static void h8_log(void) {
     memset(&B, 0, sizeof(B));
     B.quote_rc = AMM_Q_PAUSED;
     CHECK(route(&c, "POST", "/amm/quote",
-                "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\"}", out, sizeof(out)) == 200,
+                "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\","
+                "\"destination\":\"0x0102030405060708090a0b0c0d0e0f1011121314\"}", out, sizeof(out)) == 200,
           "a refused quote answers 200");
     B.quote_rc = AMM_Q_OK;
     CHECK(route(&c, "POST", "/amm/quote",
-                "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\"}", out, sizeof(out)) == 200,
+                "{\"direction\":\"nodus_to_usdt\",\"amount\":\"5\","
+                "\"destination\":\"0x0102030405060708090a0b0c0d0e0f1011121314\"}", out, sizeof(out)) == 200,
           "an approved quote answers 200");
     CHECK(route(&c, "GET", "/amm/nothing", NULL, out, sizeof(out)) == 404, "an unknown path is 404");
     {   /* an accepted withdrawal with request number 77 */

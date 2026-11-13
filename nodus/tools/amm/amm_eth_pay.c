@@ -37,7 +37,7 @@ amm_eth_pay_t *amm_eth_pay_new(const amm_eth_pay_cfg_t *cfg) {
     for (int i = 0; i < cfg->n_providers; i++) {
         const amm_eth_provider_t *p = &cfg->providers[i];
         if (!p->chain_id || !p->block_number || !p->get_receipt || !p->get_balance ||
-            !p->erc20_balance || !p->tx_count || !p->estimate_gas || !p->gas_price ||
+            !p->erc20_balance || !p->tx_count || !p->estimate_gas || !p->base_fee ||
             !p->max_priority_fee || !p->send_raw) return NULL;
     }
     amm_eth_pay_t *p = calloc(1, sizeof(*p));
@@ -121,7 +121,7 @@ static int qualify(amm_eth_pay_t *p, rd_t *rd) {
     return n;
 }
 
-typedef enum { R_TIP, R_COUNT_PENDING, R_COUNT_LATEST, R_GASPRICE, R_PRIO } rk_t;
+typedef enum { R_TIP, R_COUNT_PENDING, R_COUNT_LATEST, R_BASEFEE, R_PRIO } rk_t;
 
 static int cmp_desc(const void *a, const void *b) {
     uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
@@ -142,7 +142,7 @@ static int qth(amm_eth_pay_t *p, const rd_t *rd, rk_t k, uint64_t *out) {
         case R_TIP:           rc = pr->block_number(pr->ctx, &x, rd->dl); break;
         case R_COUNT_PENDING: rc = pr->tx_count(pr->ctx, p->self, 1, &x, rd->dl); break;
         case R_COUNT_LATEST:  rc = pr->tx_count(pr->ctx, p->self, 0, &x, rd->dl); break;
-        case R_GASPRICE:      rc = pr->gas_price(pr->ctx, &x, rd->dl); break;
+        case R_BASEFEE:       rc = pr->base_fee(pr->ctx, &x, rd->dl); break;
         default:              rc = pr->max_priority_fee(pr->ctx, &x, rd->dl); break;
         }
         if (rc == AMM_ETH_OK) v[n++] = x;
@@ -192,9 +192,11 @@ static int min_balance(amm_eth_pay_t *p, const rd_t *rd, int erc, evm_u256 *out)
 }
 
 /* The gas estimate of a call: the Q-th largest answer, as qth() takes every
- * other quorum read, so one provider alone can neither raise the estimate
- * (and the fee deducted from the user) nor lower it below what Q providers
- * report. An error object ("execution reverted") is an unanswered provider.
+ * other quorum read. With Q >= 2 one provider can move the selected value only
+ * within the other providers' answers (it can neither raise it above, nor
+ * lower it below, what Q - 1 others report); with Q = 1 it sets the value
+ * alone (evm-fee plan 2.4.2). An error object ("execution reverted") is an
+ * unanswered provider.
  * @return 0 / 1 (not enough answers: the payout stays unsent). */
 typedef struct {
     const amm_eth_pay_t *p;
@@ -390,12 +392,13 @@ static int owes_usdt(const amm_swap_t *s) {
 
 static int is_payout(const amm_swap_t *s) { return s->dir == AMM_NODUS_TO_USDT; }
 
-/* Finish the attempt and move the swap in ONE journal transaction. */
-static int finish_and_move(amm_eth_pay_t *p, const amm_swap_t *s, const char *att_state,
+/* Settle attempt `n` of the swap (every other attempt of its nonce becomes
+ * voided) and move the swap in ONE journal transaction. */
+static int finish_and_move(amm_eth_pay_t *p, const amm_swap_t *s, int n, const char *att_state,
                            const char *swap_to, const char *msg) {
     amm_journal_t *j = p->cfg.journal;
     if (amm_journal_tx_begin(j) != 0) return -1;
-    if (amm_journal_eth_attempt_finish(j, s->seq, att_state) != 0 ||
+    if (amm_journal_eth_attempt_settle(j, s->seq, n, att_state) != 0 ||
         (swap_to && amm_journal_swap_transition(j, s->seq, swap_to, NULL, NULL, msg) != 0)) {
         amm_journal_tx_rollback(j);
         return -1;
@@ -403,32 +406,74 @@ static int finish_and_move(amm_eth_pay_t *p, const amm_swap_t *s, const char *at
     return amm_journal_tx_commit(j) == 0 ? 0 : -1;
 }
 
-/* ── sign ─────────────────────────────────────────────────────────────── */
+/* ── the fee formula (evm-fee plan 6.3), pure ─────────────────────────── */
 
-/* Plan, estimate, check the funds and SIGN a payout of `gross` USDT to
- * `recipient` WITHOUT touching the journal: `at` is filled (raw on the heap,
- * the caller stores it or frees it) when the result is AMM_EP_OK. The minimum
- * is compared with the amount after the Ethereum fee (0 = none). ZERO and
- * BELOW_MIN are only returned; moving a swap is the engine's (plan section 12,
- * revision 12: the decision is made once). `p->mu` is held by the caller. */
-static int prepare_locked(amm_eth_pay_t *p, const uint8_t recipient[20], uint64_t gross,
-                          uint64_t minimum, uint64_t deadline_ms, amm_eattempt_t *at,
-                          amm_ep_step_t *out) {
-    amm_journal_t *j = p->cfg.journal;
-    memset(at, 0, sizeof(*at));
-    if (p->cfg.payouts_paused) { say(out, "payouts paused"); return AMM_EP_PAUSED; }
+int amm_eth_pay_max_fee(uint64_t base, uint64_t prio, uint64_t *max_fee) {
+    if (!max_fee || prio > (uint64_t)INT64_MAX) return -1;          /* checked first: the
+                                                                      * subtraction below is unsigned */
+    if (base > ((uint64_t)INT64_MAX - prio) / 2) return -1;        /* result within INT64_MAX */
+    const uint64_t m = 2 * base + prio;
+    if (m == 0 || m < prio) return -1;
+    *max_fee = m;
+    return 0;
+}
 
+int amm_eth_pay_bump(uint64_t x, uint64_t *out) {
+    const uint64_t step = x / 10 > 1 ? x / 10 : 1;                 /* floor(x * 110 / 100) = x + x / 10 */
+    if (!out || x > (uint64_t)INT64_MAX || step > (uint64_t)INT64_MAX - x) return -1;
+    *out = x + step;
+    return 0;
+}
+
+int amm_eth_pay_replacement_fees(uint64_t base, uint64_t prio, uint64_t old_max_fee,
+                                 uint64_t old_prio, uint64_t *max_fee, uint64_t *prio_out) {
+    uint64_t bp, bm, pr, mf;
+    if (!max_fee || !prio_out || amm_eth_pay_bump(old_prio, &bp) != 0 ||
+        amm_eth_pay_bump(old_max_fee, &bm) != 0) return -1;
+    pr = prio > bp ? prio : bp;
+    if (amm_eth_pay_max_fee(base, pr, &mf) != 0 || mf < bm) return -1;
+    *max_fee = mf;
+    *prio_out = pr;
+    return 0;
+}
+
+/* ── planning (evm-fee plan 6.5.2): read-only, no payer lock ──────────── */
+
+/* The fee facts: the providers on the configured chain id, the base fee and
+ * the tip at the quorum, the max fee from the formula. `why` (may be NULL) is
+ * the reason of a failure. */
+static int facts_read(amm_eth_pay_t *p, uint64_t deadline_ms, amm_ep_facts_t *f, const char **why) {
     rd_t rd = { .dl = deadline_ms };
-    if (qualify(p, &rd) < p->cfg.quorum) { say(out, "providers below the quorum"); return AMM_EP_UNKNOWN; }
-
-    /* the fee fields of the transaction (plan silent: reading in the header) */
-    uint64_t max_fee = 0, prio = 0;
-    if (qth(p, &rd, R_GASPRICE, &max_fee) != 0 || qth(p, &rd, R_PRIO, &prio) != 0 ||
-        max_fee == 0 || max_fee > (uint64_t)INT64_MAX) {
-        say(out, "the gas price is not readable");
+    memset(f, 0, sizeof(*f));
+    f->n_usable = qualify(p, &rd);
+    memcpy(f->use, rd.use, sizeof(f->use));
+    if (f->n_usable < p->cfg.quorum) {
+        if (why) *why = "providers below the quorum";
         return AMM_EP_UNKNOWN;
     }
-    if (prio > max_fee) prio = max_fee;
+    if (qth(p, &rd, R_BASEFEE, &f->base) != 0 || qth(p, &rd, R_PRIO, &f->prio) != 0 ||
+        amm_eth_pay_max_fee(f->base, f->prio, &f->max_fee) != 0) {
+        if (why) *why = "the network fee is not readable";
+        return AMM_EP_UNKNOWN;
+    }
+    return AMM_EP_OK;
+}
+
+int amm_eth_pay_fee_facts(amm_eth_pay_t *p, uint64_t deadline_ms, amm_ep_facts_t *out) {
+    if (!p || !out) return AMM_EP_ERR;
+    return facts_read(p, deadline_ms, out, NULL);
+}
+
+int amm_eth_pay_plan(amm_eth_pay_t *p, const amm_ep_facts_t *facts, const uint8_t recipient[20],
+                     uint64_t gross, uint64_t minimum, uint64_t deadline_ms,
+                     amm_ep_plan_t *out) {
+    if (!p || !facts || !recipient || !out) return AMM_EP_ERR;
+    memset(out, 0, sizeof(*out));
+    if (gross == 0 || gross > (uint64_t)INT64_MAX || facts->max_fee == 0 ||
+        facts->max_fee > (uint64_t)INT64_MAX) return AMM_EP_ERR;
+    rd_t rd = { .dl = deadline_ms };
+    memcpy(rd.use, facts->use, sizeof(rd.use));
+    const uint64_t max_fee = facts->max_fee;
 
     /* gas first (plan line 267), net from it, until the estimated call data
      * is the call data that will be signed */
@@ -438,7 +483,7 @@ static int prepare_locked(amm_eth_pay_t *p, const uint8_t recipient[20], uint64_
         uint8_t cd[AMM_TX_TRANSFER_DATA_LEN];
         amm_tx_transfer_calldata(recipient, a, cd);
         if (max_estimate(p, &rd, cd, sizeof(cd), &gas) != 0) {
-            say(out, "the gas estimate failed: payout left unsent");
+            snprintf(out->msg, sizeof(out->msg), "the gas estimate failed: payout left unsent");
             return AMM_EP_UNKNOWN;
         }
         /* the estimate is raised by 25%, rounded up: Boltz bumpGasLimit
@@ -447,64 +492,128 @@ static int prepare_locked(amm_eth_pay_t *p, const uint8_t recipient[20], uint64_
          * no margin; without one a payout can run out of gas (status 0). The
          * bumped limit is what is quoted to the price seam and signed. */
         if (gas > (UINT64_MAX - 99) / 125) {
-            say(out, "the gas estimate is out of range");
+            snprintf(out->msg, sizeof(out->msg), "the gas estimate is out of range");
             return AMM_EP_UNKNOWN;
         }
         gas = (gas * 125 + 99) / 100;
         if (gas > (uint64_t)INT64_MAX ||
             p->cfg.price.fee_usdt(p->cfg.price.ctx, gas, max_fee, &fee, deadline_ms) != AMM_ETH_OK) {
-            say(out, "the ETH price is not readable: nothing signed");
+            snprintf(out->msg, sizeof(out->msg), "the ETH price is not readable: nothing signed");
             return AMM_EP_UNKNOWN;
         }
         amm_ep_verdict_t v = amm_eth_pay_judge(gross, fee, minimum, &net);
         if (v == AMM_EP_NOTHING) break;
         if (net == a) fixed = 1; else a = net;
     }
-    if (out) { out->fee = fee; out->net = net; }
 
-    /* nothing left, or a payout below its minimum: no attempt is signed */
+    /* nothing left, or a payout below its minimum */
     amm_ep_verdict_t v = amm_eth_pay_judge(gross, fee, minimum, &net);
-    if (out) { out->fee = fee; out->net = net; }
+    out->gas = gas; out->fee = fee; out->net = net; out->verdict = v;
     if (v == AMM_EP_NOTHING) {
-        say(out, "nothing is left after the Ethereum fee: nothing signed");
-        return AMM_EP_ZERO;
+        snprintf(out->msg, sizeof(out->msg), "nothing is left after the Ethereum fee: nothing signed");
+        return AMM_EP_OK;
     }
-    if (!fixed) { say(out, "the gas estimate did not settle: payout left unsent"); return AMM_EP_UNKNOWN; }
-    if (v == AMM_EP_BELOW) {
-        say(out, "below the signed minimum after the Ethereum fee: nothing signed");
-        return AMM_EP_BELOW_MIN;
+    if (!fixed) {
+        snprintf(out->msg, sizeof(out->msg), "the gas estimate did not settle: payout left unsent");
+        return AMM_EP_UNKNOWN;
+    }
+    if (v == AMM_EP_BELOW)
+        snprintf(out->msg, sizeof(out->msg), "below the signed minimum after the Ethereum fee: nothing signed");
+    return AMM_EP_OK;
+}
+
+/* ── sign ─────────────────────────────────────────────────────────────── */
+
+/* Plan, estimate, check the funds and SIGN a payout of `gross` USDT to
+ * `recipient` WITHOUT touching the journal: `at` is filled (raw on the heap,
+ * the caller stores it or frees it) when the result is AMM_EP_OK. The minimum
+ * is compared with the amount after the Ethereum fee (0 = none). ZERO and
+ * BELOW_MIN are only returned; moving a swap is the engine's (plan section 12,
+ * revision 12: the decision is made once). `repl` (NULL for a first attempt or a
+ * re-send) is the stuck head a REPLACEMENT replaces: it is signed with the
+ * head's nonce, the fields of the formula raised to the pool's replacement
+ * minimum (6.11.3), and the funds of its nonce are counted once, at the larger
+ * of the two attempts (6.11.4, 6.13). `p->mu` is held by the caller. */
+static int build_locked(amm_eth_pay_t *p, const uint8_t recipient[20], uint64_t gross,
+                        uint64_t minimum, uint64_t deadline_ms, const amm_eattempt_t *repl,
+                        amm_eattempt_t *at, amm_ep_step_t *out) {
+    amm_journal_t *j = p->cfg.journal;
+    memset(at, 0, sizeof(*at));
+    if (p->cfg.payouts_paused) { say(out, "payouts paused"); return AMM_EP_PAUSED; }
+
+    amm_ep_facts_t f;
+    const char *why = NULL;
+    if (facts_read(p, deadline_ms, &f, &why) != AMM_EP_OK) { say(out, why); return AMM_EP_UNKNOWN; }
+    uint64_t max_fee = f.max_fee, prio = f.prio;
+    if (repl) {
+        uint64_t rmf = 0, rpr = 0;
+        if (amm_eth_pay_replacement_fees(f.base, f.prio, repl->max_fee_per_gas,
+                                         repl->max_priority_fee_per_gas, &rmf, &rpr) != 0) {
+            say(out, "the replacement fee cannot be computed");
+            return AMM_EP_UNKNOWN;
+        }
+        max_fee = rmf; prio = rpr;
+        f.max_fee = rmf; f.prio = rpr;
     }
 
-    /* balance check before signing (plan line 266) */
+    amm_ep_plan_t pl;
+    int pr = amm_eth_pay_plan(p, &f, recipient, gross, minimum, deadline_ms, &pl);
+    if (out) { out->fee = pl.fee; out->net = pl.net; }
+    if (pr != AMM_EP_OK) { say(out, pl.msg); return pr; }
+    if (pl.verdict == AMM_EP_NOTHING) { say(out, pl.msg); return AMM_EP_ZERO; }
+    if (pl.verdict == AMM_EP_BELOW) { say(out, pl.msg); return AMM_EP_BELOW_MIN; }
+    const uint64_t gas = pl.gas, fee = pl.fee, net = pl.net;
+
+    /* balance check before signing (plan line 266; evm-fee plan 6.13): the
+     * USDT and the ether of the bot's own pending payouts are counted, once per
+     * nonce */
+    rd_t rd = { .dl = deadline_ms };
+    memcpy(rd.use, f.use, sizeof(rd.use));
     evm_u256 usdt_bal, eth_bal;
     if (min_balance(p, &rd, 1, &usdt_bal) != 0 || min_balance(p, &rd, 0, &eth_bal) != 0) {
         say(out, "a balance is not readable");
         return AMM_EP_UNKNOWN;
     }
     uint64_t pending = 0;
-    if (amm_journal_eth_pending_usdt(j, &pending) != 0) return AMM_EP_ERR;
-    evm_u256 pend, avail, need_usdt, g256, mf, need_eth;
+    evm_u256 pend_e;
+    if (amm_journal_eth_pending(j, p->cfg.chain_id, repl ? &repl->nonce : NULL,
+                                &pending, &pend_e) != 0) return AMM_EP_ERR;
+    evm_u256 pend, avail, need_usdt, g256, mf, need_eth, total_eth;
     evm_u256_from_u64(&pend, pending);
     amm_sub_sat(&avail, &usdt_bal, &pend);
-    evm_u256_from_u64(&need_usdt, net);
+    evm_u256_from_u64(&need_usdt, repl && repl->net > net ? repl->net : net);
     evm_u256_from_u64(&g256, gas);
     evm_u256_from_u64(&mf, max_fee);
     evm_u256_mul(&need_eth, &g256, &mf);            /* 64 x 64 bit: no wrap     */
-    if (evm_u256_cmp(&avail, &need_usdt) < 0 || evm_u256_cmp(&eth_bal, &need_eth) < 0) {
+    if (repl) {                                     /* its nonce at the larger of the two */
+        evm_u256 og, om, old_eth;
+        evm_u256_from_u64(&og, repl->gas_limit);
+        evm_u256_from_u64(&om, repl->max_fee_per_gas);
+        evm_u256_mul(&old_eth, &og, &om);
+        if (evm_u256_cmp(&old_eth, &need_eth) > 0) need_eth = old_eth;
+    }
+    if (amm_add(&total_eth, &pend_e, &need_eth) != AMM_OK) return AMM_EP_ERR;
+    if (evm_u256_cmp(&avail, &need_usdt) < 0 || evm_u256_cmp(&eth_bal, &total_eth) < 0) {
         say(out, "the bot's USDT or ether cannot cover the payout");
         return AMM_EP_FUNDS;
     }
 
-    /* nonce under the one lock the caller holds (plan line 265) */
-    uint64_t base = 0, jn = 0, nonce;
-    if (qth(p, &rd, R_COUNT_PENDING, &base) != 0) {
-        say(out, "the nonce is not readable");
-        return AMM_EP_UNKNOWN;
+    /* nonce under the one lock the caller holds (plan line 265); a
+     * replacement keeps its head's nonce */
+    uint64_t nonce;
+    if (repl) {
+        nonce = repl->nonce;
+    } else {
+        uint64_t base = 0, jn = 0;
+        if (qth(p, &rd, R_COUNT_PENDING, &base) != 0) {
+            say(out, "the nonce is not readable");
+            return AMM_EP_UNKNOWN;
+        }
+        int nr = amm_journal_eth_next_nonce(j, p->cfg.chain_id, &jn);
+        if (nr < 0) return AMM_EP_ERR;
+        if (nr == 1) jn = 0;
+        nonce = base > jn ? base : jn;
     }
-    int nr = amm_journal_eth_next_nonce(j, p->cfg.chain_id, &jn);
-    if (nr < 0) return AMM_EP_ERR;
-    if (nr == 1) jn = 0;
-    nonce = base > jn ? base : jn;
 
     uint8_t cd[AMM_TX_TRANSFER_DATA_LEN];
     amm_tx_transfer_calldata(recipient, net, cd);
@@ -558,16 +667,10 @@ static int sign_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t gross,
         return AMM_EP_ERR;
     }
     amm_eattempt_t at;
-    int rc = prepare_locked(p, recipient, gross, 0, deadline_ms, &at, out);
-    if (rc == AMM_EP_ZERO) {
-        /* a refund whose Ethereum fee is at or above it is dropped (not sent,
-         * not held; givens items 89, 90) */
-        if (amm_journal_swap_transition(j, swap_seq, AMM_S_DROPPED, NULL, NULL,
-                                        "Ethereum fee at or above the refund: dropped") != 0)
-            return AMM_EP_ERR;
-        if (out) out->worked = 1;
-        return AMM_EP_ZERO;
-    }
+    /* a refund whose Ethereum fee is at or above it is not sent (givens items
+     * 89, 90): AMM_EP_ZERO, nothing signed and nothing moved here; the engine
+     * puts its USDT in the pool and drops the swap (givens item 114 "4 a") */
+    int rc = build_locked(p, recipient, gross, 0, deadline_ms, NULL, &at, out);
     if (rc != AMM_EP_OK) return rc;
     at.swap_seq = swap_seq;
     /* WRITE-AHEAD: stored here, broadcast only by amm_eth_pay_step */
@@ -599,7 +702,7 @@ int amm_eth_pay_prepare(amm_eth_pay_t *p, const char *recipient_hex, uint64_t gr
     amm_ep_step_t st;
     memset(&st, 0, sizeof(st));
     pthread_mutex_lock(&p->mu);
-    int rc = prepare_locked(p, recipient, gross, minimum, deadline_ms, &out->attempt, &st);
+    int rc = build_locked(p, recipient, gross, minimum, deadline_ms, NULL, &out->attempt, &st);
     pthread_mutex_unlock(&p->mu);
     out->fee = st.fee;
     out->net = st.net;
@@ -626,15 +729,26 @@ static int step_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
     amm_swap_t s;
     if (amm_journal_swap_by_seq(j, swap_seq, &s) != 0) { say(out, "no such swap"); return AMM_EP_ERR; }
     if (!owes_usdt(&s)) { say(out, "the swap owes no USDT payout"); return AMM_EP_ERR; }
-    amm_eattempt_t a;
-    int g = amm_journal_eth_attempt_latest(j, swap_seq, &a);
+    /* the HEAD of the swap's attempts and, while it waits, its GROUP: the head
+     * and the attempts it replaced (same nonce; only one can be included) */
+    amm_eattempt_t head;
+    int g = amm_journal_eth_attempt_head(j, swap_seq, &head);
     if (g < 0) return AMM_EP_ERR;
     if (g == 1) return AMM_EP_NEED_SIGN;
     int rc = AMM_EP_ERR;
     amm_eth_receipt_t *r = NULL;
-    if (!strcmp(a.state, AMM_EA_FAILED)) { say(out, "the payout failed on chain"); rc = AMM_EP_FAILED; goto done; }
-    if (strcmp(a.state, AMM_EA_SIGNED) && strcmp(a.state, AMM_EA_SUBMITTED)) {
+    amm_eattempt_t grp[AMM_EA_GROUP_MAX];
+    int ng = 0;
+    /* `a` is the attempt the rest of the step is about: the head, or the member
+     * that landed (a shallow view: the heap bytes belong to `head` and `grp`) */
+    amm_eattempt_t a = head;
+    if (!strcmp(head.state, AMM_EA_FAILED)) { say(out, "the payout failed on chain"); rc = AMM_EP_FAILED; goto done; }
+    if (strcmp(head.state, AMM_EA_SIGNED) && strcmp(head.state, AMM_EA_SUBMITTED)) {
         say(out, "the attempt is already final");
+        rc = AMM_EP_ERR;
+        goto done;
+    }
+    if (amm_journal_eth_attempt_group(j, swap_seq, grp, AMM_EA_GROUP_MAX, &ng) != 0 || ng < 1) {
         rc = AMM_EP_ERR;
         goto done;
     }
@@ -644,10 +758,33 @@ static int step_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
     uint64_t tip = 0;
     if (qth(p, &rd, R_TIP, &tip) != 0) { say(out, "the tip is not readable"); rc = AMM_EP_UNKNOWN; goto done; }
     r = calloc(1, sizeof(*r));
-    if (!r) { rc = AMM_EP_ERR; goto done; }
-    int deep = 0;
-    rr_t rr = read_receipt(p, &rd, a.hash, r, &deep);
-    if (rr == RR_UNKNOWN) { say(out, "the receipt is not readable or the providers disagree"); rc = AMM_EP_UNKNOWN; goto done; }
+    amm_eth_receipt_t *tmp = calloc(1, sizeof(*tmp));
+    if (!r || !tmp) { free(tmp); rc = AMM_EP_ERR; goto done; }
+    /* every member's receipt (plan 6.11.5): one not readable at the quorum
+     * changes nothing; one found is the attempt that landed */
+    int deep = 0, nfound = 0, unreadable = 0;
+    rr_t rr = RR_NONE;
+    for (int i = 0; i < ng; i++) {
+        int dp = 0;
+        rr_t ri = read_receipt(p, &rd, grp[i].hash, tmp, &dp);
+        if (ri == RR_UNKNOWN) { unreadable = 1; break; }
+        if (ri == RR_FOUND) {
+            nfound++;
+            *r = *tmp;
+            deep = dp;
+            a = grp[i];
+        }
+    }
+    free(tmp);
+    if (unreadable) { say(out, "the receipt is not readable or the providers disagree"); rc = AMM_EP_UNKNOWN; goto done; }
+    if (nfound > 1) {
+        /* one nonce is included at most once: two receipts cannot both be true */
+        QGP_LOG_ERROR(LOG_TAG, "swap %s: receipts for two attempts of one nonce: unknown", s.id);
+        say(out, "two attempts of one nonce have receipts: unreadable");
+        rc = AMM_EP_UNKNOWN;
+        goto done;
+    }
+    if (nfound == 1) rr = RR_FOUND;
 
     if (rr == RR_FOUND) {
         if (!deep) { rc = AMM_EP_OK; goto done; }              /* waiting for the final depth (joint vote) */
@@ -660,7 +797,7 @@ static int step_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
             if (unhex20(is_payout(&s) ? s.dest : s.sender, rcpt) != 0) { rc = AMM_EP_ERR; goto done; }
             lg_t lg = check_transfer_log(p, r, rcpt, a.net, &logged, &fits, val);
             if (lg == LG_MISSING) {
-                if (finish_and_move(p, &s, AMM_EA_UNKNOWN, AMM_S_UNKNOWN,
+                if (finish_and_move(p, &s, a.n, AMM_EA_UNKNOWN, AMM_S_UNKNOWN,
                                     "receipt status 1 but no USDT Transfer log from the bot to the recipient") != 0) {
                     rc = AMM_EP_ERR;
                     goto done;
@@ -686,7 +823,7 @@ static int step_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
                 }
                 /* the transfer happened: the attempt is confirmed, the swap is
                  * held for manual handling (what follows is DEFERRED, plan line 277) */
-                if (finish_and_move(p, &s, AMM_EA_CONFIRMED, AMM_S_HELD, m) != 0) {
+                if (finish_and_move(p, &s, a.n, AMM_EA_CONFIRMED, AMM_S_HELD, m) != 0) {
                     rc = AMM_EP_ERR;
                     goto done;
                 }
@@ -694,25 +831,26 @@ static int step_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
                 rc = AMM_EP_HELD;
                 goto done;
             }
-            if (finish_and_move(p, &s, AMM_EA_CONFIRMED,
+            if (finish_and_move(p, &s, a.n, AMM_EA_CONFIRMED,
                                 is_payout(&s) ? AMM_S_PAID : AMM_S_REFUNDED, NULL) != 0) {
                 rc = AMM_EP_ERR;
                 goto done;
             }
             char th[65];
-            QGP_LOG_INFO(LOG_TAG, "swap %s: USDT %s 0x%s confirmed in block %llu (%llu units)",
+            QGP_LOG_INFO(LOG_TAG, "swap %s: USDT %s 0x%s confirmed in block %llu (attempt %d, %llu units%s)",
                          s.id, is_payout(&s) ? "payout" : "refund", hash_hex(a.hash, th),
-                         (unsigned long long)r->block_number, (unsigned long long)a.net);
+                         (unsigned long long)r->block_number, a.n, (unsigned long long)a.net,
+                         ng > 1 ? ", an attempt of a replaced group: the others are voided" : "");
             if (out) { out->worked = 1; out->confirmed = 1; }
             rc = AMM_EP_OK;
             goto done;
         }
-        if (amm_journal_eth_attempt_finish(j, swap_seq, AMM_EA_FAILED) != 0) { rc = AMM_EP_ERR; goto done; }
+        if (amm_journal_eth_attempt_settle(j, swap_seq, a.n, AMM_EA_FAILED) != 0) { rc = AMM_EP_ERR; goto done; }
         if (out) out->worked = 1;
         {
             char th[65];
-            QGP_LOG_WARN(LOG_TAG, "swap %s: USDT transaction 0x%s failed in block %llu (receipt status %d)",
-                         s.id, hash_hex(a.hash, th), (unsigned long long)r->block_number, r->status);
+            QGP_LOG_WARN(LOG_TAG, "swap %s: USDT transaction 0x%s failed in block %llu (attempt %d, receipt status %d)",
+                         s.id, hash_hex(a.hash, th), (unsigned long long)r->block_number, a.n, r->status);
         }
         say(out, "the payout transaction failed (receipt status is not 1)");
         rc = AMM_EP_FAILED;
@@ -723,7 +861,7 @@ static int step_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
     uint64_t confirmed = 0;
     if (qth(p, &rd, R_COUNT_LATEST, &confirmed) != 0) { say(out, "the confirmed nonce is not readable"); rc = AMM_EP_UNKNOWN; goto done; }
     if (confirmed > a.nonce) {
-        if (finish_and_move(p, &s, AMM_EA_ORPHANED, AMM_S_UNKNOWN,
+        if (finish_and_move(p, &s, a.n, AMM_EA_ORPHANED, AMM_S_UNKNOWN,
                             "payout transaction orphaned: its nonce was used by another transaction") != 0) {
             rc = AMM_EP_ERR;
             goto done;
@@ -738,10 +876,36 @@ static int step_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
         rc = AMM_EP_ORPHANED;
         goto done;
     }
-    if (strcmp(a.state, AMM_EA_SIGNED) != 0) { rc = AMM_EP_OK; goto done; }   /* submitted: wait */
-    if (p->cfg.payouts_paused) { say(out, "payouts paused"); rc = AMM_EP_PAUSED; goto done; }
+    /* no receipt, the nonce unused: a head whose max fee per gas the latest
+     * block's base fee (Q-th largest) has passed cannot be included as it is
+     * (a block refuses a max fee per gas below its base fee), and it holds this nonce and every
+     * later payout's. Nothing is written; the engine calls amm_eth_pay_replace.
+     * A base fee that cannot be read at the quorum replaces nothing now. */
+    uint64_t base_now = 0;
+    if (qth(p, &rd, R_BASEFEE, &base_now) == 0 && base_now > a.max_fee_per_gas) {
+        char th[65];
+        QGP_LOG_WARN(LOG_TAG, "swap %s: USDT transaction 0x%s (attempt %d, nonce %llu) cannot be included: "
+                     "the base fee %llu is above its max fee per gas %llu",
+                     s.id, hash_hex(a.hash, th), a.n, (unsigned long long)a.nonce,
+                     (unsigned long long)base_now, (unsigned long long)a.max_fee_per_gas);
+        say(out, "stuck: the base fee is above the max fee per gas of the payout transaction");
+        rc = AMM_EP_STUCK;
+        goto done;
+    }
+    const int signed_head = !strcmp(a.state, AMM_EA_SIGNED);
+    /* a submitted head is sent again only once per new block (the latest block
+     * above the tip of its last broadcast); a replaced attempt never */
+    if (!signed_head && tip <= a.last_submit_tip) { rc = AMM_EP_OK; goto done; }
+    if (p->cfg.payouts_paused) {
+        if (signed_head) { say(out, "payouts paused"); rc = AMM_EP_PAUSED; }
+        else rc = AMM_EP_OK;
+        goto done;
+    }
 
-    /* stored, never broadcast: send the SAME STORED BYTES to every usable provider */
+    /* the SAME STORED BYTES to every usable provider: a signed attempt that was
+     * never broadcast (or a restart between store and broadcast), or a submitted
+     * one again (a node that holds it answers "already known", a node that
+     * dropped it takes it back) */
     int accepted = 0;
     for (int i = 0; i < p->cfg.n_providers; i++) {
         if (!rd.use[i]) continue;
@@ -752,6 +916,17 @@ static int step_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
     }
     char th[65];
     hash_hex(a.hash, th);
+    if (!signed_head) {
+        /* stays submitted whatever the answers; recorded, so a new broadcast
+         * waits for the next block */
+        if (amm_journal_eth_attempt_broadcast_tip(j, swap_seq, tip) != 0) { rc = AMM_EP_ERR; goto done; }
+        QGP_LOG_INFO(LOG_TAG, "swap %s: USDT transaction 0x%s (attempt %d, nonce %llu) sent again as the "
+                     "same bytes: %d providers took it, latest block %llu", s.id, th, a.n,
+                     (unsigned long long)a.nonce, accepted, (unsigned long long)tip);
+        if (out) out->worked = 1;
+        rc = AMM_EP_OK;
+        goto done;
+    }
     if (accepted == 0) {
         QGP_LOG_WARN(LOG_TAG, "swap %s: USDT transaction 0x%s: no provider took it", s.id, th);
         say(out, "no provider took the transaction");
@@ -759,13 +934,169 @@ static int step_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
         goto done;
     }
     if (amm_journal_eth_attempt_submitted(j, swap_seq, tip) != 0) { rc = AMM_EP_ERR; goto done; }
-    QGP_LOG_INFO(LOG_TAG, "swap %s: USDT transaction 0x%s submitted (nonce %llu, %d providers took it, latest block %llu)",
-                 s.id, th, (unsigned long long)a.nonce, accepted, (unsigned long long)tip);
+    QGP_LOG_INFO(LOG_TAG, "swap %s: USDT transaction 0x%s submitted (attempt %d, nonce %llu, max fee per gas %llu, "
+                 "max priority fee per gas %llu, %d providers took it, latest block %llu)",
+                 s.id, th, a.n, (unsigned long long)a.nonce, (unsigned long long)a.max_fee_per_gas,
+                 (unsigned long long)a.max_priority_fee_per_gas, accepted, (unsigned long long)tip);
     if (out) { out->worked = 1; out->submitted = 1; }
     rc = AMM_EP_OK;
 done:
     free(r);
-    amm_eattempt_free(&a);
+    for (int i = 0; i < ng; i++) amm_eattempt_free(&grp[i]);
+    amm_eattempt_free(&head);
+    return rc;
+}
+
+/* ── re-send of a failed payout (evm-fee plan 6.9) ────────────────────── */
+
+static int resend_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
+                         amm_ep_step_t *out) {
+    amm_journal_t *j = p->cfg.journal;
+    amm_swap_t s;
+    if (amm_journal_swap_by_seq(j, swap_seq, &s) != 0) { say(out, "no such swap"); return AMM_EP_ERR; }
+    if (!owes_usdt(&s)) { say(out, "the swap owes no USDT payout"); return AMM_EP_ERR; }
+    amm_eattempt_t head;
+    int g = amm_journal_eth_attempt_head(j, swap_seq, &head);
+    if (g < 0) return AMM_EP_ERR;
+    if (g == 1) { say(out, "the swap has no payout transaction to re-send"); return AMM_EP_ERR; }
+    /* only `failed` is re-sent: orphaned and unknown stop the bot, held stays held */
+    if (strcmp(head.state, AMM_EA_FAILED) != 0) {
+        amm_eattempt_free(&head);
+        say(out, "the head attempt did not fail: not re-sent");
+        return AMM_EP_ERR;
+    }
+    if (p->cfg.payouts_paused) { amm_eattempt_free(&head); say(out, "payouts paused"); return AMM_EP_PAUSED; }
+    uint8_t recipient[20];
+    memcpy(recipient, head.recipient, 20);
+    const uint64_t gross = head.net;      /* what the failed attempt carried and did not deliver */
+    const int failed_n = head.n;
+    amm_eattempt_free(&head);
+    amm_eattempt_t at;
+    int rc = build_locked(p, recipient, gross, 0, deadline_ms, NULL, &at, out);
+    if (rc != AMM_EP_OK) return rc;
+    at.swap_seq = swap_seq;
+    /* WRITE-AHEAD: stored here, broadcast only by amm_eth_pay_step */
+    int jr = amm_journal_eth_attempt_sign(j, &at);
+    if (jr != AMM_J_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "the re-sent payout was not stored (%d)", jr);
+        amm_eattempt_free(&at);
+        say(out, "the re-sent payout was not stored");
+        return AMM_EP_ERR;
+    }
+    char th[65];
+    QGP_LOG_WARN(LOG_TAG, "swap %s: attempt %d failed; re-sent as attempt %d (nonce %llu, hash 0x%s, gross %llu, "
+                 "fee %llu, net %llu)", s.id, failed_n, at.n, (unsigned long long)at.nonce,
+                 hash_hex(at.hash, th), (unsigned long long)at.gross, (unsigned long long)at.fee,
+                 (unsigned long long)at.net);
+    amm_eattempt_free(&at);
+    if (out) { out->worked = 1; out->signed_ = 1; }
+    return AMM_EP_OK;
+}
+
+int amm_eth_pay_resend(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
+                       amm_ep_step_t *out) {
+    if (out) { memset(out, 0, sizeof(*out)); out->swap_seq = swap_seq; }
+    if (!p) return AMM_EP_ERR;
+    pthread_mutex_lock(&p->mu);
+    int rc = resend_locked(p, swap_seq, deadline_ms, out);
+    pthread_mutex_unlock(&p->mu);
+    return rc;
+}
+
+/* ── replacement of a stuck payout (evm-fee plan 6.11) ────────────────── */
+
+static int replace_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
+                          amm_ep_step_t *out) {
+    amm_journal_t *j = p->cfg.journal;
+    amm_swap_t s;
+    if (amm_journal_swap_by_seq(j, swap_seq, &s) != 0) { say(out, "no such swap"); return AMM_EP_ERR; }
+    if (!owes_usdt(&s)) { say(out, "the swap owes no USDT payout"); return AMM_EP_ERR; }
+    amm_eattempt_t head, grp[AMM_EA_GROUP_MAX];
+    int ng = 0;
+    int g = amm_journal_eth_attempt_head(j, swap_seq, &head);
+    if (g < 0) return AMM_EP_ERR;
+    if (g == 1) { say(out, "the swap has no payout transaction to replace"); return AMM_EP_ERR; }
+    int rc = AMM_EP_ERR;
+    if (strcmp(head.state, AMM_EA_SIGNED) && strcmp(head.state, AMM_EA_SUBMITTED)) {
+        say(out, "the head attempt is not waiting: nothing to replace");
+        goto done;
+    }
+    if (p->cfg.payouts_paused) { say(out, "payouts paused"); rc = AMM_EP_PAUSED; goto done; }
+    if (amm_journal_eth_attempt_group(j, swap_seq, grp, AMM_EA_GROUP_MAX, &ng) != 0 || ng < 1) goto done;
+
+    /* the trigger again, with fresh reads (the engine's call may come later in
+     * the round): no receipt of any attempt of the nonce, the nonce unused, the
+     * base fee above the head's max fee per gas */
+    rd_t rd = { .dl = deadline_ms };
+    if (qualify(p, &rd) < p->cfg.quorum) { say(out, "providers below the quorum"); rc = AMM_EP_UNKNOWN; goto done; }
+    amm_eth_receipt_t *tmp = calloc(1, sizeof(*tmp));
+    if (!tmp) goto done;
+    int unreadable = 0, found = 0;
+    for (int i = 0; i < ng && !unreadable && !found; i++) {
+        int dp = 0;
+        rr_t ri = read_receipt(p, &rd, grp[i].hash, tmp, &dp);
+        if (ri == RR_UNKNOWN) unreadable = 1;
+        else if (ri == RR_FOUND) found = 1;
+    }
+    free(tmp);
+    if (unreadable) { say(out, "the receipt is not readable or the providers disagree"); rc = AMM_EP_UNKNOWN; goto done; }
+    uint64_t confirmed = 0, base_now = 0;
+    if (!found && qth(p, &rd, R_COUNT_LATEST, &confirmed) != 0) {
+        say(out, "the confirmed nonce is not readable");
+        rc = AMM_EP_UNKNOWN;
+        goto done;
+    }
+    if (found || confirmed > head.nonce || qth(p, &rd, R_BASEFEE, &base_now) != 0 ||
+        base_now <= head.max_fee_per_gas) {
+        say(out, "the payout is no longer stuck: not replaced");
+        rc = AMM_EP_OK;                                 /* nothing written, out->worked stays 0 */
+        goto done;
+    }
+
+    uint8_t recipient[20];
+    memcpy(recipient, head.recipient, 20);
+    /* gross unchanged: the replaced attempt can never execute together with
+     * its replacement, so only the ceiling of the one that lands is deducted
+     * (the extra fee is fee_r - fee_head); minimum 0 */
+    amm_eattempt_t at;
+    rc = build_locked(p, recipient, head.gross, 0, deadline_ms, &head, &at, out);
+    if (rc != AMM_EP_OK) goto done;                     /* ZERO: the old attempt stays */
+    at.swap_seq = swap_seq;
+    int jr = amm_journal_eth_attempt_replace(j, &at);
+    if (jr != AMM_J_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "the replacement payout was not stored (%d)", jr);
+        amm_eattempt_free(&at);
+        say(out, "the replacement payout was not stored");
+        rc = AMM_EP_ERR;
+        goto done;
+    }
+    {
+        char th[65];
+        QGP_LOG_WARN(LOG_TAG, "swap %s: attempt %d (nonce %llu) is stuck at base fee %llu; replaced by attempt %d "
+                     "(hash 0x%s): max fee per gas %llu -> %llu, max priority fee per gas %llu -> %llu, "
+                     "extra fee %lld", s.id, head.n, (unsigned long long)head.nonce,
+                     (unsigned long long)base_now, at.n, hash_hex(at.hash, th),
+                     (unsigned long long)head.max_fee_per_gas, (unsigned long long)at.max_fee_per_gas,
+                     (unsigned long long)head.max_priority_fee_per_gas,
+                     (unsigned long long)at.max_priority_fee_per_gas,
+                     (long long)((int64_t)at.fee - (int64_t)head.fee));
+    }
+    amm_eattempt_free(&at);
+    if (out) { out->worked = 1; out->signed_ = 1; }
+    rc = AMM_EP_OK;
+done:
+    for (int i = 0; i < ng; i++) amm_eattempt_free(&grp[i]);
+    amm_eattempt_free(&head);
+    return rc;
+}
+
+int amm_eth_pay_replace(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
+                        amm_ep_step_t *out) {
+    if (out) { memset(out, 0, sizeof(*out)); out->swap_seq = swap_seq; }
+    if (!p) return AMM_EP_ERR;
+    pthread_mutex_lock(&p->mu);
+    int rc = replace_locked(p, swap_seq, deadline_ms, out);
+    pthread_mutex_unlock(&p->mu);
     return rc;
 }
 

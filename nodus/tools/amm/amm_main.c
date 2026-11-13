@@ -97,10 +97,11 @@ typedef struct {
     amm_journal_t *j;
 } app_t;
 
-static int be_quote(void *c, amm_dir_t dir, uint64_t amount, uint64_t dl, amm_quote_answer_t *o) {
+static int be_quote(void *c, amm_dir_t dir, uint64_t amount, const uint8_t *dest, uint64_t dl,
+                    amm_quote_answer_t *o) {
     app_t *a = c;
     pthread_mutex_lock(&g_eng_mu);
-    int rc = amm_engine_quote(a->eng, dir, amount, dl, o);
+    int rc = amm_engine_quote(a->eng, dir, amount, dest, dl, o);
     pthread_mutex_unlock(&g_eng_mu);
     return rc;
 }
@@ -312,11 +313,24 @@ static int setup_log_file(const char *dir) {
 
 int main(int argc, char **argv) {
     const char *cfg_path = NULL;
+    /* `--check-journal <file>` as the only arguments: opens that journal COPY (migrating a version 8
+     * file), prints the version and every table's row count before and after, exits 0 when they are
+     * equal and the version is current, 1 otherwise. No config, no key, no network (evm-fee plan 9.4). */
+    if (argc == 3 && !strcmp(argv[1], "--check-journal")) {
+        amm_jcheck_t r;
+        const int cr = amm_journal_check_copy(argv[2], &r);
+        if (cr < 0) { fprintf(stderr, "check-journal: cannot read %s\n", argv[2]); return 1; }
+        printf("version %lld %lld\n", (long long)r.ver_before, (long long)r.ver_after);
+        for (int i = 0; i < r.n; i++)
+            printf("%s %lld %lld\n", r.t[i].name, (long long)r.t[i].before, (long long)r.t[i].after);
+        printf("%s\n", cr == 0 ? "OK" : "NOT OK");
+        return cr == 0 ? 0 : 1;
+    }
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--config") && i + 1 < argc) cfg_path = argv[++i];
-        else { fprintf(stderr, "usage: %s --config <file>\n", argv[0]); return 2; }
+        else { fprintf(stderr, "usage: %s --config <file> | --check-journal <file>\n", argv[0]); return 2; }
     }
-    if (!cfg_path) { fprintf(stderr, "usage: %s --config <file>\n", argv[0]); return 2; }
+    if (!cfg_path) { fprintf(stderr, "usage: %s --config <file> | --check-journal <file>\n", argv[0]); return 2; }
     umask(077);
 
     amm_cfg_t cfg;

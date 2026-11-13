@@ -2192,8 +2192,38 @@ or replace `eth.key` or the identity files while funds sit at those addresses.
 
 **8. Honest limits.** The key files sit on a node host: a root compromise reaches them and the witness key. A swap in state
 `unknown` stops new approvals (`/amm/status` `"stopped":true`) and there is no operator tool in this version to resolve it
-(plan section 20). Not built: stake for later pools, fee raising for a stuck payout, a higher-fee replacement for an expired NODUS
-payout, commission, key rotation (`SWAP_BOT.md` section 6).
+(plan section 20). Not built: stake for later pools, a higher-fee replacement for an expired NODUS payout, commission, key
+rotation (`SWAP_BOT.md` section 6). A stuck Ethereum USDT payout is replaced with the same nonce and a failed one is sent again
+(`SWAP_BOT.md` section 2, "The Ethereum fee of a USDT payout").
+
+**9. Updating a bot that has a version 8 journal to the version 9 binary** (the Ethereum fee work; ORCHESTRATOR's steps on the
+operator's word, the node host is touched). The new binary migrates a version 8 `journal.db` when it opens it
+(`amm_journal.c`, `migrate_8_to_9`): `eth_attempts` is rebuilt in one transaction with every row carried over. Before it starts on
+the live file:
+1. Stop the bot: `systemctl stop nodus-amm`.
+2. Copy the live journal file as the backup (`/var/lib/nodus-amm/journal.db`, and its `-wal` / `-shm` files if present, copied
+   together while the bot is stopped); keep the copy until the new bot has run.
+3. Make a second copy (the `-wal` / `-shm` files with it) and run the new binary's open (`amm_journal_open`, the migration)
+   against that copy, not the live file: `nodus-amm --check-journal <copy>`. It reads no config, key or network; it prints
+   `version <before> <after>` and one line `<table> <before> <after>` per table, then `OK` or `NOT OK`. It must exit 0 with the
+   version `8 9` (or `9 9`) and equal counts on every table, including `eth_attempts`; exit 1 means stop.
+4. Only when every count is equal, start the new binary on the live file: `systemctl start nodus-amm`, and read the journal
+   lines (`journalctl -u nodus-amm -n 30`): "the journal was migrated from version 8 to 9 (<n> USDT attempts carried over)", then
+   "listening on 127.0.0.1:<port>".
+
+A migration that fails is rolled back: the file stays at version 8, the bot does not start, and the log says "the journal could not
+be migrated from version 8 to 9: the file is unchanged and the bot does not start". The previous binary can then be started on the
+same file again. A version 9 file cannot be opened by the previous binary (it refuses a newer schema), so after a successful start
+a rollback to the previous binary needs the backup copy of step 2, which holds nothing that the new binary stored after the
+backup was taken: restore it only on the operator's word.
+
+**The bot and the swap site go live within minutes of each other.** The new bot refuses a `nodus_to_usdt` price question that has no
+`destination` (HTTP 400, `page_out_of_date`), and the previous bot refuses a three-key question that has one (the previous bot accepts
+exactly two keys). The new swap page sends the three-key question. Whichever side goes live first, price questions for NODUS to
+USDT are refused until the other is live; `usdt_to_nodus` questions are unaffected; a refused question starts no swap and moves no
+money. Install the bot on 62.171.136.77 and deploy the swap site to EU-6 within minutes of each other and record both times. A
+browser tab opened before the site deployment still holds the old page script until it is reloaded, and shows
+"The bot refused: page_out_of_date." for a NODUS to USDT question.
 
 ---
 

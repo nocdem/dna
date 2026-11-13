@@ -81,11 +81,18 @@
  *      round and the next owed swap is served (amm_nodus_pay.h, RESERVED
  *      COINS).
  *   h. USDT payouts through amm_eth_pay: settlement and broadcast of the stored
- *      transactions; a USDT refund is signed here (dropped when its Ethereum
- *      fee is not below it).
+ *      transactions; a USDT refund is signed here. A payout or refund whose
+ *      transaction FAILED in a block is signed again (amm_eth_pay_resend; its
+ *      new fee is deducted from the same user, givens item 113 "3 a"); one whose
+ *      head no block can include (the base fee passed its max fee per gas) is
+ *      replaced with the same nonce (amm_eth_pay_replace, item 115 "1"); a
+ *      refund or re-send that is not above its Ethereum fee is DROPPED and its
+ *      USDT is added to the pool (amm_journal_usdt_to_pool, item 114 "4 a").
  *   i. the line for room again (a payout or a refund done released room).
- *   j. the Ethereum fee deducted from a paid USDT payout is booked to the
- *      Foundation AS USDT (givens items 80, 92; amm_journal_book_fee).
+ *   j. the Ethereum fee deducted from a paid USDT payout or a refunded USDT
+ *      refund (the sum of the deducted ceilings of the attempts that landed) is
+ *      booked to the Foundation AS USDT (givens items 80, 92, evm-fee plan
+ *      6.10.3; amm_journal_book_fee).
  *   k. release: an `approved` swap whose payment window is FULLY OBSERVED
  *      becomes expired (plan section 13 window rule: it holds no room, so this
  *      only decides when it stops matching payments).
@@ -233,7 +240,11 @@ typedef struct {
     char      pay_to[AMM_ADDR_NODUS + 3];  /* "0x" + 40 hex or 128 hex         */
 } amm_quote_answer_t;
 
-int amm_engine_quote(amm_engine_t *e, amm_dir_t dir, uint64_t amount,
+/** The price question. `dest` is the user's 20-byte Ethereum address: REQUIRED
+ *  for NODUS -> USDT (the estimate shown is the fee the payer plans for
+ *  transfer(dest, number) by the same planning code the decision runs, evm-fee
+ *  plan 6.5.2), NULL for USDT -> NODUS; anything else is AMM_Q_BAD. */
+int amm_engine_quote(amm_engine_t *e, amm_dir_t dir, uint64_t amount, const uint8_t *dest,
                      uint64_t deadline_ms, amm_quote_answer_t *out);
 
 /* ── 2. the signed request ───────────────────────────────────────────── */
@@ -324,7 +335,8 @@ typedef struct {
     int decided;               /* counted swaps decided to a payout             */
     int to_refund;             /* counted swaps decided to a refund             */
     int undecided;             /* counted swaps whose decision cannot be completed */
-    int dropped;               /* refunds dropped                               */
+    int dropped;               /* refunds and re-sent payouts dropped: their USDT
+                                * went to the pool (items 113 "3 a", 114 "4 a")  */
     int held_records;          /* Ethereum records held                         */
     int fees_booked;
     int expired;

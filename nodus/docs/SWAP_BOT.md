@@ -61,7 +61,7 @@ at `amm_http.c:696`). Any other path is 404, a wrong method is 405.
 
 | Route | What it does |
 |---|---|
-| `POST /amm/quote` | The site's price question, unsigned: `{"direction":"usdt_to_nodus"\|"nodus_to_usdt","amount":"<raw>"}`. Answer: an approval (indicative output before the network fee, estimated fee, a random 32-bit request number, time it holds, where to pay) or `{"approved":false,"reason":"<word>"}`. A question holds no room (givens item 94). |
+| `POST /amm/quote` | The site's price question, unsigned, exactly one of two shapes. `usdt_to_nodus`: two keys, `{"direction":"usdt_to_nodus","amount":"<raw>"}`. `nodus_to_usdt`: three keys, `{"direction":"nodus_to_usdt","amount":"<raw>","destination":"0x<40 lowercase hex>"}`, where `destination` is the Ethereum address the user would receive the USDT at; the estimated fee in the answer is the fee the payer plans for `transfer(destination, number)` (below). A `nodus_to_usdt` question with only two keys is what a page script cached from before the bot's update sends: it gets HTTP 400 `{"approved":false,"reason":"page_out_of_date"}` and no estimate is computed for another address. A `destination` that is not `0x` and 40 lowercase hex digits, or a `destination` on `usdt_to_nodus`, is 400 `bad_request` (`amm_http.c:316-358`, `amm_http.h` header comment). Answer: an approval (indicative output before the network fee, estimated fee, a random 32-bit request number, time it holds, where to pay) or `{"approved":false,"reason":"<word>"}`. A question holds no room (givens item 94). The approval row stores the estimate only, not the destination: the swap's destination is the one the signed request carries. |
 | `POST /amm/swap` | The paying extension's signed request. The answer is a delivery result only (`received` true or false with a reason). |
 | `GET /amm/swap/<request number>` | The state of one swap. |
 | `POST /amm/liquidity/quote` | The add question: one side's amount; answer is the exact pair at the pool's ratio and where to pay each side; below `liquidity_min_nodus` it answers `below_minimum`. |
@@ -84,6 +84,8 @@ at `amm_http.c:696`). Any other path is 404, a wrong method is 405.
    otherwise refunded (givens item 93). The network fee is deducted from the
    payout and stays with the Foundation (givens items 80, 95). The payout is
    stored before it is sent and resubmitted as the SAME bytes after a restart.
+   The Ethereum payout's fee rule, its recovery and its books are described
+   below under "The Ethereum fee of a USDT payout".
 5. In-flight USDT is limited to `inflight_max_usdt` (500 USDT); a payment that
    arrives at a full limit waits in line (givens item 94).
 
@@ -94,14 +96,114 @@ receipt with that provider's tip for the depth vote), or the payer asks one
 (qualify, a balance, a gas estimate, a receipt with that provider's tip), it
 asks all of them at once, one short-lived thread per provider, and examines the
 answers in provider order only after every call has returned. The payer's other
-reads (the tip, the nonce counts and the fee prices, `qth` in
-`tools/amm/amm_eth_pay.c`) and its sending of a payment still ask the providers
+reads (the tip, the nonce counts, the latest block's base fee and the suggested
+priority fee, `qth` in `tools/amm/amm_eth_pay.c`) and its sending of a payment still ask the providers
 one after another. The quorum rules that combine the answers are unchanged. A
 group therefore waits for every one of its calls; each request keeps its own
 transfer timeout, and no upper bound on the time of the whole group is set. If
 a thread cannot be started, that provider's call runs on the calling thread
 before the join, and the line
 `AMM_FANOUT: k of n provider calls ran on the calling thread` is written.
+
+**The Ethereum fee of a USDT payout** (`tools/amm/amm_eth_pay.h` header comment,
+"FEES OF THE TRANSACTION", "SETTLEMENT", "RE-SEND", "REPLACEMENT"; plan
+`docs/plans/approved/2026-11-13-evm-fee.md`). Every USDT payout and refund is
+one type 2 transaction signed from the bot's key. The bot reads, at the provider
+quorum (the Q-th largest answer of the usable providers, `eth_quorum`), the
+latest block's base fee and `eth_maxPriorityFeePerGas`, and signs
+
+- max priority fee per gas = the suggested priority fee;
+- max fee per gas = 2 × the latest block's base fee + that priority fee
+  (`amm_eth_pay_max_fee`, one pure function used by every planning path).
+
+The gas limit is the quorum's `eth_estimateGas` of the exact call raised by 25 %,
+rounded up. The Ethereum fee deducted from the user is the ceiling: gas limit ×
+max fee per gas converted into USDT at the price median and rounded up (givens
+item 95), so on a network whose base fee is large the user pays up to about twice
+the base-fee part of what the chain finally charges; the difference stays with
+the Foundation (givens item 80). A base fee, a priority fee, a price or an estimate
+that cannot be read at the quorum leaves the payout unsent and retried; nothing
+is signed with a guessed value. `eth_gasPrice` is no longer read by the payer or
+the engine.
+
+- **The estimate is the payout's own planning.** For `nodus_to_usdt` the price
+  question carries the user's Ethereum address, and the `estimatedFee` the bot
+  answers is computed by the same planning function the payout runs
+  (`amm_eth_pay_plan`) for `transfer(that address, number)`, with the minimum
+  ignored. The shown estimate therefore equals the deducted fee when the same
+  providers answer, the base fee, priority fee, gas estimate, price median and
+  pool are unchanged between the question and the decision, and the payout
+  converges to a positive amount. A move of any of those between the two (a rising
+  base fee on mainnet moves the ceiling by twice its change; an address that
+  held USDT being emptied, or an empty address receiving USDT, changes the gas)
+  can still make the real fee differ from the estimate, and a payout whose
+  amount after the real fee falls below the user's signed minimum is refunded
+  (givens items 82, 93). The site's minimum is computed from the estimate. The
+  question path reuses the fee facts (usable providers, base fee, priority fee,
+  max fee per gas) for `quote_read_fresh_ms`; the destination's gas estimate and
+  the price conversion are read for every question. The decision, a re-send, a
+  replacement and the shared-outage probe always read fresh facts.
+- **A payout or refund whose transaction fails in a block is sent again
+  automatically** (givens item 113 "3 a"). When the receipt at the final depth
+  has status other than 1, the attempt is `failed` and the engine calls the
+  payer's re-send, which signs and stores a new attempt (the next number, a new
+  nonce) of the failed attempt's net with a new fee, before anything is sent. The
+  failed attempt's fee and the new attempt's fee are both taken from the user's
+  USDT: neither the Foundation's key nor the pool pays. The signed minimum is not
+  compared again, so a re-sent payout can deliver less than that minimum by the
+  later attempts' fees. An estimate that fails (a paused USDT contract, a short
+  balance) sends nothing and costs nothing; the re-send is retried every round.
+- **A payout that no block includes is replaced** (givens item 115 "1"). When the
+  head attempt is `signed` or `submitted`, no attempt of its nonce has a receipt
+  at the quorum, the nonce is not yet used, and the latest block's base fee at the
+  quorum is above the head's max fee per gas, the payer signs a replacement with
+  the same nonce and the same amount owed: the priority fee is the larger of the
+  current suggestion and the old one raised by 10 % (at least 1 wei), the max fee comes from the
+  same formula at the current base fee, and the replacement is refused if its max
+  fee is not at least 10 % (and at least 1 wei) above the old one
+  (`amm_eth_pay_replacement_fees`; the minimum a go-ethereum-family transaction
+  pool accepts for a same-nonce replacement). The extra fee is deducted from the
+  same user. The replacement is stored and the old attempt marked `replaced` in
+  one journal transaction. If nothing is left after the replacement's fee, nothing
+  is replaced and the old attempt waits, holding its nonce. Only one attempt of a
+  nonce can be included: every step reads the receipt of every attempt of the
+  nonce, settles the one that landed with its own amount, and marks the others
+  `voided`.
+- **A `submitted` payout is broadcast again as the same stored bytes** to every
+  usable provider when the latest block is above the block of its last
+  broadcast, at most once per new block, and stays `submitted` whatever the
+  answers.
+- **USDT that cannot cover its fee goes to the pool** (givens items 113 "3 a",
+  114 "4 a"). A USDT refund, or a re-sent payout, whose amount is not above its
+  fee is not sent: in one journal transaction the amount is added to the pool's
+  USDT depth (NODUS depth and units unchanged, so every provider's share rises),
+  the swap becomes `dropped`, and the fees of attempts that landed and failed are
+  booked to the Foundation. The user receives nothing (givens item 89). A first
+  NODUS to USDT payout whose amount is nothing after its fee is still refunded in
+  NODUS at the decision, and a NODUS refund that is nothing after its Nodus fee
+  keeps its earlier rule.
+- **The Ethereum fee of a USDT refund is booked to the Foundation** like a payout's
+  (`fee_booking`, `amm_journal_book_fee`: a `paid` NODUS to USDT payout or a
+  `refunded` USDT to NODUS refund). The booked fee is the amount owed minus the
+  amount the confirmed attempt delivered, the sum of the fees of the attempts that
+  landed.
+- **The ether of pending payouts is counted before signing.** The check before
+  signing requires the bot's ether to cover the largest `gas limit × max fee per
+  gas` of every other pending payout (per nonce, `signed`, `submitted` or
+  `replaced`) plus the one being signed, and the USDT check subtracts the same
+  per-nonce largest nets (`amm_journal_eth_pending`). A shortfall is
+  `AMM_EP_FUNDS`: nothing is signed or stored, and it is retried. Payouts decided
+  in one round therefore no longer each see the whole ether balance.
+- **The journal is version 9** (`amm_journal.c`, `SCHEMA_VERSION`). `eth_attempts`
+  gains the states `replaced` and `voided`, and its `UNIQUE(chain_id, nonce)`
+  becomes a partial unique index over the attempts not in those two states, so a
+  stuck payout can be replaced and a swap can hold several attempts. A version 8
+  file is migrated when the new binary opens it: one transaction copies every
+  `eth_attempts` row, compares the two row counts, drops the old table, renames the
+  new one, creates the index and sets `user_version` 9; any failure rolls back, the
+  file stays at version 8 and the bot does not start. Versions 1 to 7 are still
+  refused and a version above 9 is refused. A binary of the earlier version cannot
+  open a version 9 file. The deployment step is in the runbook, section 2.9.
 
 **Liquidity add and withdraw** (`amm_engine.h`, "LIQUIDITY ADD" and "LIQUIDITY
 WITHDRAW"): others add and withdraw without stake. An add carries at least
@@ -235,8 +337,10 @@ no value is named here; the Foundation writes them.
 ## 6. What it does NOT do (plan section 20, deferred; not built)
 
 - No stake for later pools; only the Foundation's pool first (givens items 10-12).
-- No replacement of an expired NODUS payout at a higher fee (givens item 97) and
-  no fee raising of a stuck Ethereum payout; no coin joining on Nodus.
+- No replacement of an expired NODUS payout at a higher fee (givens item 97); no
+  coin joining on Nodus. (A stuck Ethereum USDT payout is replaced with the same
+  nonce and a failed one is sent again: see "The Ethereum fee of a USDT payout" in
+  section 2.)
 - No commission: the setting exists and only `0` is accepted (givens item 73).
 - No value cap on liquidity adds, no upper limit (givens item 25).
 - No operator tool to clear a `reversed` or `unknown` swap; no hand-move tool for

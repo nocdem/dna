@@ -758,6 +758,30 @@ static int block_required_ok(const jn_t *nd, int o) {
     return 1;
 }
 
+/* The base fee of the LATEST block (the fee rule of the payer, evm-fee plan
+ * 6.2): eth_getBlockByNumber ["latest", false], block.yaml:63; the result must
+ * be a Block that passes the strict required-field check, and its
+ * `baseFeePerGas` (schemas/block.yaml:72-74, `uint`) is the answer, wei per gas.
+ * A `null` result, a block without `baseFeePerGas`, a malformed value or one
+ * above uint64 is AMM_ETH_ERR: there is no NOT_FOUND answer. */
+static int m_base_fee(void *ctx, uint64_t *out, uint64_t dl) {
+    doc_t d;
+    if (!out || rpc_call(ctx, "eth_getBlockByNumber", "[\"latest\",false]", dl, &d) != 0)
+        return AMM_ETH_ERR;
+    const jn_t *nd = d.nodes;
+    int rc = AMM_ETH_ERR;
+    if (nd[d.result].t == J_OBJ && block_required_ok(nd, d.result)) {
+        int ib = obj_get(nd, d.result, "baseFeePerGas");
+        uint64_t v = 0;
+        if (ib >= 0 && q_u64(&nd[ib], &v) == 0) {
+            *out = v;
+            rc = AMM_ETH_OK;
+        }
+    }
+    doc_free(&d);
+    return rc;
+}
+
 /* eth_getBlockByNumber: block.yaml:63; result oneOf [notFound, Block] */
 static int m_get_block(void *ctx, uint64_t number, amm_eth_block_t *out, uint64_t dl) {
     char params[64];
@@ -1133,6 +1157,7 @@ void amm_eth_rpc_provider(amm_eth_rpc_t *r, amm_eth_provider_t *out) {
     out->tx_count = m_tx_count;
     out->estimate_gas = m_estimate_gas;
     out->gas_price = m_gas_price;
+    out->base_fee = m_base_fee;
     out->max_priority_fee = m_max_priority_fee;
     out->send_raw = m_send_raw;
 }

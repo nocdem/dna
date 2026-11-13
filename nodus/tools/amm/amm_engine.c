@@ -32,7 +32,10 @@ struct amm_engine {
     int64_t adds_after[3];     /* liquidity_adds(): signed, approved, signed
                                 * with no deposit matched                    */
     /* the question path's shared reads (givens item 98) */
-    struct { int valid; uint64_t at_ms; uint64_t v; } rc_usdt, rc_nodus, rc_ethfee;
+    struct { int valid; uint64_t at_ms; uint64_t v; } rc_usdt, rc_nodus;
+    /* the payer's fee facts (providers, base fee, tip, max fee), all
+     * independent of the recipient (evm-fee plan 6.5.4) */
+    struct { int valid; uint64_t at_ms; amm_ep_facts_t f; } rc_facts;
     /* the log: the last wait written per swap, so a wait is written once when
      * it starts or changes (in memory; a restart writes each wait again) */
     struct { int64_t seq; char why[96]; } waits[16];
@@ -56,9 +59,12 @@ amm_engine_t *amm_engine_new(const amm_engine_cfg_t *c) {
         !c->now_unix || !c->rand_fn || !c->node.ruleset_info || !c->node.balance ||
         c->page < 0 || c->page > AMM_ENGINE_PAGE_MAX)
         return NULL;
+    /* the engine reads no fee and no gas estimate itself any more (the payer's
+     * planning does, evm-fee plan 6.1, 6.5): its one remaining provider read is
+     * the USDT balance */
     for (int i = 0; i < c->n_providers; i++) {
         const amm_eth_provider_t *p = &c->providers[i];
-        if (!p->estimate_gas || !p->gas_price || !p->erc20_balance) return NULL;
+        if (!p->erc20_balance) return NULL;
     }
     amm_engine_t *e = calloc(1, sizeof(*e));
     if (!e) return NULL;
@@ -107,20 +113,6 @@ static int be32_to_u64(const uint8_t b[32], uint64_t *out) {
     uint64_t v = 0;
     for (int i = 24; i < 32; i++) v = (v << 8) | b[i];
     *out = v;
-    return 0;
-}
-
-static int desc(const void *a, const void *b) {
-    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
-    return x < y ? 1 : (x > y ? -1 : 0);
-}
-
-/* The Q-th largest of the answers (at least Q providers report that value or
- * more), as amm_eth_pay does. -1 when fewer than Q answered. */
-static int kth_largest(uint64_t *v, int n, int q, uint64_t *out) {
-    if (n < q) return -1;
-    qsort(v, (size_t)n, sizeof(uint64_t), desc);
-    *out = v[q - 1];
     return 0;
 }
 
@@ -182,29 +174,17 @@ static int read_nodus_balance(amm_engine_t *e, uint64_t dl, uint64_t *bal) {
     return 0;
 }
 
-/* The estimated Ethereum fee of one USDT payout, in USDT raw (plan section
- * 10; givens item 82, shown apart): the gas of a transfer(self, 1) estimated
- * by the providers (Q-th largest, bumped 25% rounded up as the payer does),
- * the gas price likewise, converted with the price seam. Unknown -> -1. */
-static int estimate_eth_fee(amm_engine_t *e, uint64_t dl, uint64_t *fee) {
-    uint8_t self[20], data[AMM_TX_TRANSFER_DATA_LEN];
-    amm_eth_pay_self(e->c.eth_pay, self);
-    amm_tx_transfer_calldata(self, 1, data);
-    uint64_t gas[AMM_ETH_MAX_PROVIDERS], px[AMM_ETH_MAX_PROVIDERS];
-    int ng = 0, np = 0;
-    for (int i = 0; i < e->c.n_providers; i++) {
-        const amm_eth_provider_t *p = &e->c.providers[i];
-        uint64_t g = 0, pr = 0;
-        if (p->estimate_gas(p->ctx, self, e->cfg.usdt_contract, data, sizeof(data), &g, dl) == AMM_ETH_OK)
-            gas[ng++] = g;
-        if (p->gas_price(p->ctx, &pr, dl) == AMM_ETH_OK) px[np++] = pr;
-    }
-    uint64_t g = 0, pr = 0;
-    if (kth_largest(gas, ng, e->c.quorum, &g) != 0 ||
-        kth_largest(px, np, e->c.quorum, &pr) != 0 || g == 0) return -1;
-    if (g > (UINT64_MAX - 99) / 125) return -1;
-    g = (g * 125 + 99) / 100;
-    return e->c.price.fee_usdt(e->c.price.ctx, g, pr, fee, dl) == AMM_ETH_OK ? 0 : -1;
+/* The Ethereum fee the payer plans for a USDT payout of `gross` to `dest`, in
+ * USDT raw (plan section 10; givens item 82, shown apart; evm-fee plan 6.5.2):
+ * the payer's own planning code (amm_eth_pay_plan), the one the decision runs,
+ * with minimum 0 and the fee facts `f`. The fee is answered whatever the verdict
+ * (a payout or nothing). Unknown -> -1. */
+static int plan_eth_fee(amm_engine_t *e, const amm_ep_facts_t *f, const uint8_t dest[20],
+                        uint64_t gross, uint64_t dl, uint64_t *fee) {
+    amm_ep_plan_t pl;
+    if (amm_eth_pay_plan(e->c.eth_pay, f, dest, gross, 0, dl, &pl) != AMM_EP_OK) return -1;
+    *fee = pl.fee;
+    return 0;
 }
 
 /* The NODUS the bot's payout of `gross` would cost in Nodus fee (the planner's
@@ -218,13 +198,15 @@ static int estimate_nodus_fee(amm_engine_t *e, uint64_t gross, uint64_t dl, uint
 }
 
 /* Shared reads of the QUESTION path (givens item 98): the bot's USDT balance,
- * the Ethereum fee estimate (gas estimate and gas price of every provider) and
- * the bot's Nodus balance are reused by the next question for
- * `quote_read_fresh_ms` of the monotonic clock instead of being read for every
- * question. Only this path: the decision and the payouts read through
- * amm_eth_pay_prepare / amm_nodus_pay_prepare and never through these, so nothing
- * a payment receives is computed from a reused read. A failed read is not
- * stored. */
+ * the payer's fee facts (the usable providers, the base fee, the tip and the max
+ * fee per gas, none of which depends on the recipient) and the bot's Nodus
+ * balance are reused by the next question for `quote_read_fresh_ms` of the
+ * monotonic clock instead of being read for every question. The destination's
+ * gas estimate and the price conversion are NOT shared: they run for every
+ * question. Only this path: the decision, every refund, withdrawal, re-send and
+ * replacement, and the probe of a shared outage read through the payer with
+ * fresh facts and never through these, so nothing a payment receives is computed
+ * from a reused read. A failed read is not stored. */
 #define CACHED_READ(NAME, FIELD, CALL)                                          \
     static int NAME(amm_engine_t *e, uint64_t dl, uint64_t *out) {              \
         const uint64_t now = mono_now_ms(e);                                    \
@@ -241,7 +223,22 @@ static int estimate_nodus_fee(amm_engine_t *e, uint64_t gross, uint64_t dl, uint
     }
 CACHED_READ(q_usdt_balance, rc_usdt, read_usdt_balance)
 CACHED_READ(q_nodus_balance, rc_nodus, read_nodus_balance)
-CACHED_READ(q_eth_fee, rc_ethfee, estimate_eth_fee)
+
+/* The fee facts of the question path, cached like CACHED_READ (their value is a
+ * structure, not a number). */
+static int q_eth_facts(amm_engine_t *e, uint64_t dl, amm_ep_facts_t *out) {
+    const uint64_t now = mono_now_ms(e);
+    if (e->rc_facts.valid && now >= e->rc_facts.at_ms &&
+        now - e->rc_facts.at_ms < e->cfg.quote_read_fresh_ms) {
+        *out = e->rc_facts.f;
+        return 0;
+    }
+    amm_ep_facts_t f;
+    if (amm_eth_pay_fee_facts(e->c.eth_pay, dl, &f) != AMM_EP_OK) return -1;
+    e->rc_facts.valid = 1; e->rc_facts.at_ms = now; e->rc_facts.f = f;
+    *out = f;
+    return 0;
+}
 
 static int swaps_paused_now(amm_engine_t *e, int *paused);
 
@@ -255,12 +252,14 @@ static int questions_at_limit(amm_engine_t *e) {
 
 /* ── 1. the price question ───────────────────────────────────────────── */
 
-int amm_engine_quote(amm_engine_t *e, amm_dir_t dir, uint64_t amount,
+int amm_engine_quote(amm_engine_t *e, amm_dir_t dir, uint64_t amount, const uint8_t *dest,
                      uint64_t deadline_ms, amm_quote_answer_t *out) {
     if (!e || !out) return AMM_Q_ERR;
     if ((dir != AMM_USDT_TO_NODUS && dir != AMM_NODUS_TO_USDT) || amount == 0 ||
         amount > (uint64_t)INT64_MAX)
         return AMM_Q_BAD;
+    /* the destination is required for NODUS -> USDT and refused otherwise */
+    if ((dir == AMM_NODUS_TO_USDT) != (dest != NULL)) return AMM_Q_BAD;
 
     /* the refusals that need no read come first (the journal repeats them
      * inside the approval transaction) */
@@ -328,7 +327,12 @@ int amm_engine_quote(amm_engine_t *e, amm_dir_t dir, uint64_t amount,
     if (dir == AMM_USDT_TO_NODUS) {
         if (estimate_nodus_fee(e, number, deadline_ms, &est) != 0) return AMM_Q_UNAVAILABLE;
     } else {
-        if (q_eth_fee(e, deadline_ms, &est) != 0) return AMM_Q_UNAVAILABLE;
+        /* the fee the payer plans for transfer(dest, number): the payout's own
+         * call by the decision's own planning code (evm-fee plan 6.5.2) */
+        amm_ep_facts_t facts;
+        if (q_eth_facts(e, deadline_ms, &facts) != 0 ||
+            plan_eth_fee(e, &facts, dest, number, deadline_ms, &est) != 0)
+            return AMM_Q_UNAVAILABLE;
     }
 
     uint64_t tip = 0;
@@ -1016,9 +1020,16 @@ static int decide_refund(amm_engine_t *e, const amm_swap_t *s, const char *why,
  *   computed                                   row-specific. */
 enum { B_PAUSED = 1, B_NODUS_LIVE = 2, B_ETH = 4, B_NODUS_NODE = 8 };
 
+/* The probe stays independent of the recipient: FRESH fee facts and the payer's
+ * plan for transfer(self, 1) with minimum 0 (evm-fee plan 6.5.5); down = either
+ * is unreadable, any verdict (pay or nothing) means readable; and the balance. */
 static int eth_class_down(amm_engine_t *e, uint64_t dl) {
-    uint64_t f = 0, b = 0;
-    return estimate_eth_fee(e, dl, &f) != 0 || read_usdt_balance(e, dl, &b) != 0;
+    uint64_t b = 0, f = 0;
+    uint8_t self[20];
+    amm_ep_facts_t facts;
+    amm_eth_pay_self(e->c.eth_pay, self);
+    if (amm_eth_pay_fee_facts(e->c.eth_pay, dl, &facts) != AMM_EP_OK) return 1;
+    return plan_eth_fee(e, &facts, self, 1, dl, &f) != 0 || read_usdt_balance(e, dl, &b) != 0;
 }
 
 static int nodus_class_down(amm_engine_t *e, uint64_t dl) {
@@ -1540,8 +1551,55 @@ static int nodus_payouts(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
     return 0;
 }
 
+/* The USDT of a payout or refund that cannot cover its Ethereum fee is ADDED
+ * TO THE POOL and the swap is dropped, in one journal transaction (givens items
+ * 113 "3 a", 114 "4 a"; evm-fee plan 6.10.2): the pool's USDT depth is raised by
+ * `remaining`, its NODUS depth and units are unchanged, so every provider's share
+ * rises in proportion. Nothing is booked to the Foundation for the remainder
+ * (the fees of attempts that landed and failed are booked by the same journal
+ * call). The payer returned AMM_EP_ZERO without moving the swap, so a refusal or
+ * an unreadable pool leaves it owed and it is tried again next round. 0 / -1
+ * (a journal fault). */
+static int usdt_to_pool(amm_engine_t *e, const amm_swap_t *s, uint64_t remaining,
+                        amm_engine_step_t *o) {
+    amm_pool_t before, after;
+    int g = amm_journal_pool_get(e->c.journal, &before);
+    if (g < 0) return -1;
+    if (g == 1) {
+        QGP_LOG_WARN(LOG_TAG, "swap %s: %llu USDT units cannot cover their Ethereum fee but there is no "
+                     "pool to add them to: left owed", s->id, (unsigned long long)remaining);
+        return 0;
+    }
+    evm_u256 add;
+    after = before;
+    evm_u256_from_u64(&add, remaining);
+    if (amm_add(&after.depth_u, &before.depth_u, &add) != AMM_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "swap %s: the pool's USDT depth would overflow: left owed", s->id);
+        return 0;
+    }
+    int jr = amm_journal_usdt_to_pool(e->c.journal, s->seq, remaining, &before, &after,
+                                      "USDT not above its Ethereum fee: added to the pool");
+    if (jr == -1) return -1;
+    if (jr != AMM_J_OK) {
+        QGP_LOG_WARN(LOG_TAG, "swap %s: the USDT credit to the pool wrote nothing (%d)", s->id, jr);
+        return 0;
+    }
+    o->dropped++;
+    uint64_t db = 0, da = 0;
+    const int fb = amm_to_u64(&db, &before.depth_u) == AMM_OK;
+    const int fa = amm_to_u64(&da, &after.depth_u) == AMM_OK;
+    QGP_LOG_INFO(LOG_TAG, "swap %s dropped: %llu USDT units are not above their Ethereum fee and were added "
+                 "to the pool (USDT depth %llu -> %llu%s)", s->id, (unsigned long long)remaining,
+                 (unsigned long long)db, (unsigned long long)da,
+                 fb && fa ? "" : ", a depth above 64 bits is shown saturated as 0");
+    return 0;
+}
+
 /* h. USDT payouts through amm_eth_pay: settlement and broadcast of the stored
- * transactions; a USDT refund is signed here. */
+ * transactions; a USDT refund is signed here; a payout or refund whose head
+ * FAILED in a block is signed again, one whose head is STUCK (the base fee passed
+ * its max fee per gas) is replaced with the same nonce, and USDT that cannot cover
+ * its fee goes to the pool. */
 static int usdt_payouts(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
     const int pg = e->page;
     amm_swap_t *l = malloc(sizeof(*l) * (size_t)pg);
@@ -1563,23 +1621,57 @@ static int usdt_payouts(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
             if (a == 0) {
                 amm_eattempt_free(&at);
                 int r = amm_eth_pay_step(e->c.eth_pay, s->seq, dl, &st);
-                if (r == AMM_EP_ERR) rc = -1;
+                if (r == AMM_EP_ERR) { rc = -1; continue; }
+                if (r == AMM_EP_FAILED) {
+                    /* a receipt with status other than 1 at the final depth
+                     * (givens item 113 "3 a"): the USDT the failed attempt
+                     * carried goes out again with a new fee deducted from it */
+                    amm_eattempt_t hd;
+                    int hg = amm_journal_eth_attempt_head(e->c.journal, s->seq, &hd);
+                    if (hg < 0) { rc = -1; continue; }
+                    if (hg == 1) continue;
+                    const uint64_t remaining = hd.net;
+                    amm_eattempt_free(&hd);
+                    amm_ep_step_t rs;
+                    int rr = amm_eth_pay_resend(e->c.eth_pay, s->seq, dl, &rs);
+                    if (rr == AMM_EP_ERR) rc = -1;
+                    else if (rr == AMM_EP_ZERO) rc = usdt_to_pool(e, s, remaining, o);
+                    else if (rr == AMM_EP_OK) {
+                        /* the stored re-send is broadcast now; a journal fault or bad
+                         * argument is an error of the round, any other result waits */
+                        amm_ep_step_t s2;
+                        if (amm_eth_pay_step(e->c.eth_pay, s->seq, dl, &s2) == AMM_EP_ERR) rc = -1;
+                    }
+                } else if (r == AMM_EP_STUCK) {
+                    /* the payout no block can include (item 115 "1"): replaced
+                     * with the same nonce; nothing left after the new fee leaves
+                     * the old attempt waiting (AMM_EP_ZERO) */
+                    amm_ep_step_t rs;
+                    int rr = amm_eth_pay_replace(e->c.eth_pay, s->seq, dl, &rs);
+                    if (rr == AMM_EP_ERR) rc = -1;
+                    else if (rr == AMM_EP_OK && rs.worked) {
+                        amm_ep_step_t s2;
+                        if (amm_eth_pay_step(e->c.eth_pay, s->seq, dl, &s2) == AMM_EP_ERR) rc = -1;
+                    }
+                }
                 continue;
             }
+            amm_eattempt_free(&at);
             if (strcmp(s->state, AMM_S_REFUND_PENDING) != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "swap %s is payout_pending with no stored transaction: not signed here",
                               s->id);
                 continue;
             }
             /* a USDT refund that is nothing after its Ethereum fee is not
-             * broadcast and not held (givens items 89, 90): the payer drops it */
+             * broadcast (givens items 89, 90): its USDT goes to the pool
+             * (item 114 "4 a") */
             int sr = amm_eth_pay_sign(e->c.eth_pay, s->seq, s->amount, dl, &st);
             if (sr == AMM_EP_ERR) rc = -1;
-            else if (sr == AMM_EP_ZERO) o->dropped++;
+            else if (sr == AMM_EP_ZERO) rc = usdt_to_pool(e, s, s->amount, o);
             else if (sr == AMM_EP_OK) {
                 amm_ep_step_t s2;
                 memset(&s2, 0, sizeof(s2));
-                (void)amm_eth_pay_step(e->c.eth_pay, s->seq, dl, &s2);
+                if (amm_eth_pay_step(e->c.eth_pay, s->seq, dl, &s2) == AMM_EP_ERR) rc = -1;
             }
         }
         if (rc != 0 || n < pg) break;
@@ -1610,13 +1702,28 @@ static int fee_booking(amm_engine_t *e, amm_engine_step_t *o) {
             after = l[i].seq;
             amm_eattempt_t at;
             memset(&at, 0, sizeof(at));
-            int a = amm_journal_eth_attempt_latest(e->c.journal, l[i].seq, &at);
+            /* the attempt that landed is the swap's head (a replaced or voided
+             * sibling of its nonce is never the head) */
+            int a = amm_journal_eth_attempt_head(e->c.journal, l[i].seq, &at);
             if (a < 0) { rc = -1; break; }
             if (a == 1) continue;
-            const uint64_t fee = at.fee;
+            /* the Ethereum fee deducted from the user over the swap: the sum of
+             * the ceilings of the attempts that landed, gross at the decision (a
+             * payout's out_amount, a refund's amount) less what the confirmed
+             * attempt delivers (evm-fee plan 6.9.6, 6.10.3) */
+            const uint64_t gross0 = l[i].dir == AMM_USDT_TO_NODUS ? l[i].amount : l[i].out_amount;
+            const uint64_t net = at.net;
             const int confirmed = !strcmp(at.state, AMM_EA_CONFIRMED);
             amm_eattempt_free(&at);
-            if (!confirmed || fee == 0) continue;
+            if (!confirmed) continue;
+            if (net > gross0) {
+                QGP_LOG_ERROR(LOG_TAG, "swap %s: the confirmed attempt carries %llu, more than the %llu owed: "
+                              "fee not booked", l[i].id, (unsigned long long)net,
+                              (unsigned long long)gross0);
+                continue;
+            }
+            const uint64_t fee = gross0 - net;
+            if (fee == 0) continue;
             int r = amm_journal_book_fee(e->c.journal, l[i].seq, fee);
             if (r == AMM_J_OK) o->fees_booked++;
             else if (r != AMM_J_ILLEGAL) rc = -1;

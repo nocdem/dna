@@ -143,7 +143,8 @@
  *       refund of a USDT -> NODUS swap to its Ethereum sender), net + fee ==
  *       gross and net > 0 (givens item 52), keccak256(raw) == hash, gas
  *       limit > 0, fees within INT64_MAX; stored, read back byte for byte, kept
- *       across a reopen; ONE attempt per swap; the database's UNIQUE(hash)
+ *       across a reopen; a second attempt only after a `failed` head (J31);
+ *       the database's UNIQUE(hash)
  *       and UNIQUE(chain_id, nonce) refuse a duplicate hash and a duplicate
  *       nonce on the same chain (another chain id is another key); the next
  *       nonce is the highest stored + 1 and survives a reopen; the pending
@@ -152,6 +153,16 @@
  *       table allows; payout_pending -> refund_pending is refused while a USDT
  *       attempt is signed or submitted and allowed for a swap with none; a
  *       stored attempt whose bytes no longer hash to its hash fails the read;
+ *   J31 several attempts per swap (evm-fee plan 6.9, 6.11): the re-send after a
+ *       failed head, the replacement with the same nonce, the head and the group,
+ *       the settlement of each member (the later ones voided first), the
+ *       broadcast tip and the sums of the pending USDT and ether, one term per
+ *       nonce;
+ *   J32 the USDT of a payout or refund that cannot cover its fee goes to the
+ *       pool and the swap is dropped; the fee of a USDT refund is booked;
+ *   J33 the journal layout 9 and the migration of a version 8 file (every row
+ *       kept, the partial nonce index, a failed migration leaves version 8,
+ *       versions 7 and 10 refused); each is documented at its function.
  * WHAT IT REQUIRES: a default build; one mkdtemp directory under /tmp,
  *   removed at the end; no network.
  * LEAVES BEHIND: nothing.
@@ -1960,6 +1971,22 @@ static int mkeatt(amm_eattempt_t *a, int64_t swap_seq, uint8_t recip, uint64_t g
     return keccak256(a->raw, a->raw_len, a->hash) == 0;
 }
 
+/* A swap that reaches payout_pending through drive() has no decision, so its row's out_amount is 0; the
+ * decision writes out_amount / out_fee / out_paid with the first attempt in one transaction
+ * (amm_journal_swap_decide, J27). The journal refuses to confirm an attempt whose net exceeds the row's
+ * out_amount, so a test that stores attempts alone writes the row's three amounts here, as the decision
+ * would, through a second connection (the pattern of J13). */
+static int set_out(int64_t seq, uint64_t gross, uint64_t fee) {
+    char sql[200];
+    sqlite3 *db = NULL;
+    snprintf(sql, sizeof(sql), "UPDATE swaps SET out_amount=%llu, out_fee=%llu, out_paid=%llu WHERE seq=%lld",
+             (unsigned long long)gross, (unsigned long long)fee, (unsigned long long)(gross - fee), (long long)seq);
+    int ok = sqlite3_open(g_path, &db) == SQLITE_OK && sqlite3_busy_timeout(db, 5000) == SQLITE_OK &&
+             sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK;
+    sqlite3_close(db);
+    return ok;
+}
+
 static void j24_eth_attempts(void) {
     printf("J24 USDT payout attempts\n");
     fresh();
@@ -1975,6 +2002,8 @@ static void j24_eth_attempts(void) {
     amm_eattempt_free(&at);
     CHECK(drive(&s, "payout_pending", "nodus:e1") && drive(&s2, "payout_pending", "nodus:e2") &&
           drive(&s3, "payout_pending", "nodus:e3"), "the swaps reach payout_pending");
+    CHECK(set_out(s.seq, 1000, 100) && set_out(s2.seq, 2000, 100) && set_out(s3.seq, 500, 100),
+          "setup: each row holds its decided amounts (out_amount = the attempt's gross)");
     CHECK(amm_journal_swap_list_usdt_owed(g_j, lst, 8, &n) == 0 && n == 3 && lst[0].seq == s.seq &&
           lst[1].seq == s2.seq && lst[2].seq == s3.seq, "all three owe a USDT payout, oldest first");
     CHECK(amm_journal_swap_list_usdt_owed(g_j, lst, 2, &n) == -1, "a list above the cap is a fault, never cut");
@@ -2020,10 +2049,10 @@ static void j24_eth_attempts(void) {
     amm_eattempt_free(&at);                           /* the attempt built at the write-ahead record above */
     CHECK(amm_journal_eth_next_nonce(g_j, 1, &nx) == 0 && nx == 6, "nonce uniqueness state survives a reopen");
 
-    /* one attempt per swap; UNIQUE on the hash and on (chain, nonce) */
+    /* a second attempt only after a failed head (J31); UNIQUE on the hash and on (chain, nonce) */
     amm_eattempt_t dup;
     CHECK(mkeatt(&dup, s.seq, 0xbb, 1000, 100, 6, 2) && amm_journal_eth_attempt_sign(g_j, &dup) == AMM_J_ILLEGAL,
-          "a second attempt of the same swap: ILLEGAL (no automatic replacement)");
+          "a second attempt of the same swap while its head is not failed: ILLEGAL");
     amm_eattempt_free(&dup);
     CHECK(mkeatt(&dup, s2.seq, 0xbb, 1000, 100, 6, 1) && amm_journal_eth_attempt_sign(g_j, &dup) == AMM_J_ILLEGAL,
           "the same transaction hash on another swap: refused by UNIQUE(hash)");
@@ -2069,8 +2098,8 @@ static void j24_eth_attempts(void) {
     amm_approve_t b1 = mk_n2u('c', 1, 1, "nodus:f1"), b2 = mk_n2u('d', 2, 2, "nodus:f2");
     CHECK(approve_ok(&b1, &s) && approve_ok(&b2, &s2) && drive(&s, "payout_pending", "nodus:f1") &&
           drive(&s2, "payout_pending", "nodus:f2"), "setup: two NODUS -> USDT swaps in payout_pending");
-    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 100, 0, 4) && amm_journal_eth_attempt_sign(g_j, &at) == 0,
-          "setup: an attempt is signed");
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 100, 0, 4) && amm_journal_eth_attempt_sign(g_j, &at) == 0 &&
+          set_out(s.seq, 1000, 100), "setup: an attempt is signed (the row holds its decided amounts)");
     amm_eattempt_free(&at);
     CHECK(tr(s.seq, "refund_pending", NULL) == AMM_J_ILLEGAL, "refused while the USDT attempt is signed");
     CHECK(amm_journal_eth_attempt_submitted(g_j, s.seq, 10) == 0 && tr(s.seq, "refund_pending", NULL) == AMM_J_ILLEGAL,
@@ -2922,6 +2951,658 @@ static void j30_withdraw(void) {
     unlink(oldp);
 }
 
+/* ── J31-J33: the Ethereum fee work (evm-fee plan 6.9-6.13, 7.2) ────────── */
+
+/* A pool of depth_n / depth_u / units, stored. */
+static void put_pool(uint64_t dn, uint64_t du, uint64_t un) {
+    amm_pool_t p;
+    evm_u256_from_u64(&p.depth_n, dn);
+    evm_u256_from_u64(&p.depth_u, du);
+    evm_u256_from_u64(&p.units, un);
+    if (amm_journal_pool_put(g_j, &p) != 0) { printf("FATAL pool_put\n"); exit(2); }
+}
+
+static int pool_depth_u_is(uint64_t du) {
+    amm_pool_t g;
+    evm_u256 w;
+    evm_u256_from_u64(&w, du);
+    return amm_journal_pool_get(g_j, &g) == 0 && evm_u256_cmp(&g.depth_u, &w) == 0;
+}
+
+/* A NODUS -> USDT swap (destination 0xbb..) DECIDED through amm_journal_swap_decide: the pool
+ * gives `gross` (its USDT depth falls by it) and the first attempt carries gross - fee on `nonce`
+ * (max fee per gas 30 gwei, as mkeatt). The swap row then holds out_amount = gross, out_fee = fee,
+ * out_paid = gross - fee. Needs a stored pool with depth_u >= gross. */
+static int decided_payout(char c, const char *inc, uint64_t gross, uint64_t fee, uint64_t nonce,
+                          uint8_t tag, amm_swap_t *out) {
+    amm_approve_t a = mk_n2u(c, 1000, 5, inc);
+    amm_swap_t s;
+    amm_pool_t p0, p1;
+    amm_eattempt_t ea;
+    amm_decision_t dc;
+    if (!approve_ok(&a, &s) || !drive(&s, "counted", inc)) return 0;
+    if (amm_journal_pool_get(g_j, &p0) != 0) return 0;
+    evm_u256 g;
+    evm_u256_from_u64(&g, gross);
+    p1 = p0;
+    if (evm_u256_sub(&p1.depth_u, &p0.depth_u, &g) != 0) return 0;
+    memset(&dc, 0, sizeof(dc));
+    dc.seq = s.seq; dc.out_amount = gross; dc.out_fee = fee; dc.out_paid = gross - fee;
+    dc.pool_before = &p0; dc.pool_after = &p1;
+    if (!mkeatt(&ea, 0, 0xbb, gross, fee, nonce, tag)) return 0;
+    dc.eattempt = &ea;
+    int rc = amm_journal_swap_decide(g_j, &dc);
+    amm_eattempt_free(&ea);
+    return rc == 0 && amm_journal_swap_by_seq(g_j, s.seq, out) == 0;
+}
+
+/* The head of the swap is attempt `n` in `state` (read through the journal). */
+static int head_is(int64_t seq, int n, const char *state) {
+    amm_eattempt_t h;
+    memset(&h, 0, sizeof(h));
+    int ok = amm_journal_eth_attempt_head(g_j, seq, &h) == 0 && h.n == n && !strcmp(h.state, state);
+    amm_eattempt_free(&h);
+    return ok;
+}
+
+/* Attempt (swap, n) is in `state`, read through a SECOND connection (the state column itself, so
+ * the journal's own reads cannot hide a wrong write). */
+static int state_of_n(int64_t seq, int n, const char *state) {
+    int ok = 0;
+    char sql[200];
+    snprintf(sql, sizeof(sql), "SELECT 1 FROM eth_attempts WHERE swap_seq=%lld AND n=%d AND state='%s'",
+             (long long)seq, n, state);
+    sqlite3 *db = NULL;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_open(g_path, &db) == SQLITE_OK && sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK)
+        ok = sqlite3_step(st) == SQLITE_ROW;
+    sqlite3_finalize(st);
+    sqlite3_close(db);
+    return ok;
+}
+
+/* A decided payout with attempt 1 (gross 1000, fee 100, nonce 20, max fee 30 gwei) REPLACED by
+ * attempt 2 (gross 1000, fee 150, nonce 20, max fee 40 gwei, priority 3 gwei). Needs a pool. */
+static int mk_group(char c, const char *inc, amm_swap_t *s) {
+    amm_eattempt_t r;
+    if (!decided_payout(c, inc, 1000, 100, 20, 10, s)) return 0;
+    if (!mkeatt(&r, s->seq, 0xbb, 1000, 150, 20, 11)) return 0;
+    r.max_fee_per_gas = 40000000000ULL;
+    r.max_priority_fee_per_gas = 3000000000ULL;
+    int rc = amm_journal_eth_attempt_replace(g_j, &r);
+    amm_eattempt_free(&r);
+    return rc == 0;
+}
+
+/* J31: several attempts per swap, the re-send after a failure, the replacement with the
+ * same nonce, the group and its settlement, the broadcast tip, the sums of what is pending
+ * (evm-fee plan 6.9.3, 6.11.4, 6.11.5, 6.12, 6.13).
+ * WHAT IT PROVES: a second attempt is legal only after `failed` with gross == the head's net
+ * and the same recipient (n = latest + 1, a new nonce, the payout row's out_paid / out_fee
+ * follow); every other head state, another gross, another recipient, a nonce held by another
+ * swap or by its own failed attempt is refused and writes nothing; the replacement stores
+ * attempt 2 with the same nonce, the head `replaced`, in one transaction, only with higher
+ * fee fields and the head's gross, nonce and recipient; the head and the group read as the
+ * plan defines them; settling the replacement, the replaced member (the later one is
+ * `voided` first), a failed replaced member (then re-sendable) and an orphaned head each
+ * leave the states and the amount in flight the plan names; the reverse order of the
+ * settlement is refused by the index; the pending sums count one term per nonce at the
+ * largest value and can leave a nonce out; a broadcast tip is recorded without changing
+ * the state.
+ * HOW IT COULD FALSELY PASS: states are read back through a second connection (so the
+ * journal's own reads cannot hide a wrong write); the `net` and `fee` values differ per
+ * attempt (900/850) so a copied column shows; the amounts of the pending sums are chosen
+ * so that a sum over every row (not per nonce) would differ (900 + 850 + 450 vs 900 + 450). */
+static void j31_resend_replace(void) {
+    printf("J31 re-send, replacement, group, settlement, pending sums\n");
+    fresh();
+    put_pool(1000000, 5000000, 100);
+    amm_swap_t s, s2;
+    amm_eattempt_t at, got;
+    uint64_t nx;
+
+    /* the re-send after a failure */
+    CHECK(decided_payout('c', "nodus:q1", 1000, 100, 5, 1, &s), "setup: a decided payout (attempt 1: gross 1000, fee 100, nonce 5)");
+    CHECK(s.out_amount == 1000 && s.out_fee == 100 && s.out_paid == 900, "  its row: out_amount 1000, out_fee 100, out_paid 900");
+    CHECK(mkeatt(&at, s.seq, 0xbb, 900, 50, 6, 2) && amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "a second attempt while the head is signed: ILLEGAL");
+    amm_eattempt_free(&at);
+    CHECK(amm_journal_eth_attempt_submitted(g_j, s.seq, 10) == 0 && mkeatt(&at, s.seq, 0xbb, 900, 50, 6, 2) &&
+          amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_ILLEGAL, "  while it is submitted: ILLEGAL");
+    amm_eattempt_free(&at);
+    CHECK(amm_journal_eth_attempt_finish(g_j, s.seq, "failed") == 0 && head_is(s.seq, 1, "failed"),
+          "attempt 1 fails: it is the head, state failed");
+    CHECK(mkeatt(&at, s.seq, 0xbb, 901, 50, 6, 2) && amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "gross != the failed attempt's net (901 vs 900): ILLEGAL");
+    amm_eattempt_free(&at);
+    CHECK(mkeatt(&at, s.seq, 0xaa, 900, 50, 6, 2) && amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "another recipient: ILLEGAL");
+    amm_eattempt_free(&at);
+    CHECK(mkeatt(&at, s.seq, 0xbb, 900, 50, 5, 2) && amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "the nonce of its own failed attempt (live in the index): ILLEGAL");
+    amm_eattempt_free(&at);
+    CHECK(amm_journal_eth_attempt_latest(g_j, s.seq, &got) == 0 && got.n == 1, "the refusals stored nothing");
+    amm_eattempt_free(&got);
+    CHECK(mkeatt(&at, s.seq, 0xbb, 900, 50, 6, 2) && amm_journal_eth_attempt_sign(g_j, &at) == 0 &&
+          at.n == 2 && !strcmp(at.state, "signed"), "the re-send is stored as attempt 2 (new nonce 6, gross 900 = net 1)");
+    amm_eattempt_free(&at);
+    CHECK(head_is(s.seq, 2, "signed") && state_of_n(s.seq, 1, "failed") &&
+          amm_journal_swap_by_seq(g_j, s.seq, &s) == 0 && s.out_paid == 850 && s.out_fee == 150 && s.out_amount == 1000,
+          "head = attempt 2, attempt 1 stays failed, the row shows the amount in flight (850 / 150 of 1000)");
+    CHECK(mkeatt(&at, s.seq, 0xbb, 850, 10, 7, 3) && amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "a third attempt while attempt 2 is signed: ILLEGAL");
+    amm_eattempt_free(&at);
+    CHECK(amm_journal_eth_next_nonce(g_j, 1, &nx) == 0 && nx == 7, "the next nonce counts the re-send's nonce");
+
+    /* a nonce held by another swap's row, in any state */
+    CHECK(decided_payout('d', "nodus:q2", 1000, 100, 9, 4, &s2), "setup: another decided payout on nonce 9");
+    CHECK(amm_journal_eth_attempt_finish(g_j, s.seq, "failed") == 0 && mkeatt(&at, s.seq, 0xbb, 850, 10, 9, 5) &&
+          amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "a re-send on the nonce another swap holds: ILLEGAL");
+    amm_eattempt_free(&at);
+    CHECK(amm_journal_eth_attempt_finish(g_j, s2.seq, "confirmed") == 0 && mkeatt(&at, s.seq, 0xbb, 850, 10, 9, 5) &&
+          amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "  also when that swap's attempt is confirmed (any state)");
+    amm_eattempt_free(&at);
+
+    /* the replacement */
+    fresh();
+    put_pool(1000000, 5000000, 100);
+    CHECK(decided_payout('c', "nodus:q3", 1000, 100, 20, 10, &s), "setup: a decided payout (nonce 20, max fee 30 gwei, priority 2 gwei)");
+    CHECK(amm_journal_eth_attempt_submitted(g_j, s.seq, 77) == 0, "its attempt is submitted at tip 77");
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 150, 20, 11) && (at.max_fee_per_gas = 30000000000ULL, 1) &&
+          amm_journal_eth_attempt_replace(g_j, &at) == AMM_J_ILLEGAL,
+          "a replacement whose max fee is not above the old one: ILLEGAL");
+    amm_eattempt_free(&at);
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 150, 20, 11) && (at.max_fee_per_gas = 40000000000ULL, 1) &&
+          (at.max_priority_fee_per_gas = 2000000000ULL, 1) && amm_journal_eth_attempt_replace(g_j, &at) == AMM_J_ILLEGAL,
+          "  nor its priority fee: ILLEGAL");
+    amm_eattempt_free(&at);
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 150, 21, 11) && (at.max_fee_per_gas = 40000000000ULL, 1) &&
+          (at.max_priority_fee_per_gas = 3000000000ULL, 1) && amm_journal_eth_attempt_replace(g_j, &at) == AMM_J_ILLEGAL,
+          "another nonce is not a replacement: ILLEGAL");
+    amm_eattempt_free(&at);
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1001, 150, 20, 11) && (at.max_fee_per_gas = 40000000000ULL, 1) &&
+          (at.max_priority_fee_per_gas = 3000000000ULL, 1) && amm_journal_eth_attempt_replace(g_j, &at) == AMM_J_ILLEGAL,
+          "another gross is not a replacement: ILLEGAL");
+    amm_eattempt_free(&at);
+    CHECK(mkeatt(&at, s.seq, 0xaa, 1000, 150, 20, 11) && (at.max_fee_per_gas = 40000000000ULL, 1) &&
+          (at.max_priority_fee_per_gas = 3000000000ULL, 1) && amm_journal_eth_attempt_replace(g_j, &at) == AMM_J_ILLEGAL,
+          "another recipient: ILLEGAL");
+    amm_eattempt_free(&at);
+    CHECK(head_is(s.seq, 1, "submitted"), "the refusals changed nothing: the head is attempt 1, submitted");
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 150, 20, 11) && (at.max_fee_per_gas = 40000000000ULL, 1) &&
+          (at.max_priority_fee_per_gas = 3000000000ULL, 1) && amm_journal_eth_attempt_replace(g_j, &at) == 0 &&
+          at.n == 2 && !strcmp(at.state, "signed"), "the replacement is stored as attempt 2 (same nonce 20)");
+    amm_eattempt_free(&at);
+    CHECK(state_of_n(s.seq, 1, "replaced") && state_of_n(s.seq, 2, "signed") && head_is(s.seq, 2, "signed"),
+          "attempt 1 is `replaced`, attempt 2 is the head, state signed");
+    CHECK(amm_journal_swap_by_seq(g_j, s.seq, &s) == 0 && s.out_paid == 850 && s.out_fee == 150 && s.out_amount == 1000,
+          "the row shows the replacement's amounts (850 / 150 of 1000)");
+    CHECK(amm_journal_eth_attempt_latest(g_j, s.seq, &got) == 0 && got.n == 2 && got.nonce == 20 &&
+          got.max_fee_per_gas == 40000000000ULL, "the latest attempt is attempt 2");
+    amm_eattempt_free(&got);
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 160, 20, 12) && (at.max_fee_per_gas = 50000000000ULL, 1) &&
+          (at.max_priority_fee_per_gas = 4000000000ULL, 1) && amm_journal_eth_attempt_replace(g_j, &at) == 0 &&
+          at.n == 3, "a second replacement (the head signed) is stored as attempt 3");
+    amm_eattempt_free(&at);
+    CHECK(state_of_n(s.seq, 1, "replaced") && state_of_n(s.seq, 2, "replaced") && head_is(s.seq, 3, "signed"),
+          "attempts 1 and 2 are replaced, attempt 3 is the head");
+    amm_eattempt_t grp[AMM_EA_GROUP_MAX];
+    int ng = 0;
+    CHECK(amm_journal_eth_attempt_group(g_j, s.seq, grp, AMM_EA_GROUP_MAX, &ng) == 0 && ng == 3 &&
+          grp[0].n == 1 && grp[1].n == 2 && grp[2].n == 3 && !strcmp(grp[0].state, "replaced") &&
+          !strcmp(grp[2].state, "signed") && grp[0].nonce == 20 && grp[2].nonce == 20,
+          "the group is the three attempts of nonce 20, ordered by n, the head last");
+    for (int i = 0; i < ng; i++) amm_eattempt_free(&grp[i]);
+    CHECK(amm_journal_eth_attempt_group(g_j, s.seq, grp, 2, &ng) == -1, "a group above the capacity is a fault, never cut");
+    /* the replaced attempt's hash is still known */
+    CHECK(mkeatt(&at, s.seq, 0xbb, 1000, 150, 20, 11) && amm_journal_eth_attempt_by_hash(g_j, at.hash, &got) == 0 &&
+          got.n == 2 && !strcmp(got.state, "replaced"), "a replaced attempt is still found by its hash (its receipt is still read)");
+    amm_eattempt_free(&got);
+    amm_eattempt_free(&at);
+
+    /* the broadcast tip: recorded, the state unchanged */
+    CHECK(amm_journal_eth_attempt_broadcast_tip(g_j, s.seq, 90) == 0 && head_is(s.seq, 3, "signed") &&
+          amm_journal_eth_attempt_head(g_j, s.seq, &got) == 0 && got.last_submit_tip == 90,
+          "a broadcast call is recorded (tip 90) on a signed head without making it submitted");
+    amm_eattempt_free(&got);
+    CHECK(amm_journal_eth_attempt_submitted(g_j, s.seq, 91) == 0 && amm_journal_eth_attempt_broadcast_tip(g_j, s.seq, 95) == 0 &&
+          head_is(s.seq, 3, "submitted") && amm_journal_eth_attempt_head(g_j, s.seq, &got) == 0 && got.last_submit_tip == 95,
+          "and on a submitted head, which stays submitted");
+    amm_eattempt_free(&got);
+
+    /* the index: a replaced member cannot become live again while the head is live */
+    CHECK(!side_sql("UPDATE eth_attempts SET state='confirmed' WHERE n=1"),
+          "reverse order refused by the index: a replaced member to `confirmed` while the head is live");
+    CHECK(side_sql("UPDATE eth_attempts SET state='voided' WHERE n=3") &&
+          side_sql("UPDATE eth_attempts SET state='confirmed' WHERE n=1"),
+          "the settlement order is accepted: the head to `voided`, then the member to `confirmed`");
+
+    /* the settlement of each member (the journal's own order) */
+    fresh();
+    put_pool(1000000, 5000000, 100);
+    CHECK(mk_group('c', "nodus:q4", &s) && head_is(s.seq, 2, "signed"), "setup: a group of attempt 1 (replaced) and attempt 2 (head)");
+    CHECK(amm_journal_eth_attempt_settle(g_j, s.seq, 2, "paid") == AMM_J_ILLEGAL &&
+          amm_journal_eth_attempt_settle(g_j, s.seq, 3, "confirmed") == AMM_J_ILLEGAL,
+          "an unknown final state and a number that is not stored are refused");
+    CHECK(amm_journal_eth_attempt_settle(g_j, s.seq, 2, "confirmed") == 0 && state_of_n(s.seq, 2, "confirmed") &&
+          state_of_n(s.seq, 1, "voided") && head_is(s.seq, 2, "confirmed"),
+          "the replacement lands: it is confirmed, the replaced attempt is voided");
+    CHECK(amm_journal_swap_by_seq(g_j, s.seq, &s) == 0 && s.out_paid == 850 && s.out_fee == 150,
+          "  out_paid = the replacement's net");
+    CHECK(amm_journal_eth_attempt_settle(g_j, s.seq, 1, "confirmed") == AMM_J_ILLEGAL,
+          "a voided attempt cannot settle");
+
+    fresh();
+    put_pool(1000000, 5000000, 100);
+    CHECK(mk_group('c', "nodus:q5", &s), "setup: a second group");
+    CHECK(amm_journal_eth_attempt_settle(g_j, s.seq, 1, "confirmed") == 0 && state_of_n(s.seq, 1, "confirmed") &&
+          state_of_n(s.seq, 2, "voided") && head_is(s.seq, 1, "confirmed"),
+          "the REPLACED attempt lands: it is confirmed with its own net, the later replacement is voided first");
+    CHECK(amm_journal_swap_by_seq(g_j, s.seq, &s) == 0 && s.out_paid == 900 && s.out_fee == 100,
+          "  out_paid = the replaced attempt's own net (900), not the replacement's (850)");
+
+    fresh();
+    put_pool(1000000, 5000000, 100);
+    CHECK(mk_group('c', "nodus:q6", &s), "setup: a third group");
+    CHECK(amm_journal_eth_attempt_settle(g_j, s.seq, 1, "failed") == 0 && state_of_n(s.seq, 1, "failed") &&
+          state_of_n(s.seq, 2, "voided") && head_is(s.seq, 1, "failed"),
+          "the replaced attempt lands and FAILS: it is `failed` and the head, the replacement is voided");
+    CHECK(mkeatt(&at, s.seq, 0xbb, 900, 40, 21, 13) && amm_journal_eth_attempt_sign(g_j, &at) == 0 && at.n == 3,
+          "the re-send takes gross == the replaced attempt's net (900), number 3 (latest + 1 over the voided one)");
+    amm_eattempt_free(&at);
+    CHECK(head_is(s.seq, 3, "signed") && amm_journal_swap_by_seq(g_j, s.seq, &s) == 0 && s.out_paid == 860,
+          "  the head is attempt 3, the row shows 860");
+
+    fresh();
+    put_pool(1000000, 5000000, 100);
+    CHECK(mk_group('c', "nodus:q7", &s), "setup: a fourth group");
+    CHECK(amm_journal_eth_attempt_settle(g_j, s.seq, 2, "orphaned") == 0 && state_of_n(s.seq, 2, "orphaned") &&
+          state_of_n(s.seq, 1, "voided"), "the head orphaned: the replaced attempt is voided");
+
+    /* the pending sums: one term per (chain, nonce) at the largest value */
+    fresh();
+    put_pool(1000000, 5000000, 100);
+    CHECK(mk_group('c', "nodus:q8", &s) && decided_payout('d', "nodus:q9", 500, 50, 21, 14, &s2),
+          "setup: a group on nonce 20 (nets 900 and 850; max fee 30 and 40 gwei) and a payout on nonce 21 (net 450, 30 gwei)");
+    uint64_t pu = 0;
+    evm_u256 pe, want;
+    CHECK(amm_journal_eth_pending(g_j, 1, NULL, &pu, &pe) == 0, "the sums are read");
+    evm_u256_from_u64(&want, 65000ULL * 40000000000ULL + 65000ULL * 30000000000ULL);
+    CHECK(pu == 900 + 450 && evm_u256_cmp(&pe, &want) == 0,
+          "USDT: 900 + 450 (the nonce counted once, at the larger net); ether: 65000 x 40 gwei + 65000 x 30 gwei");
+    CHECK(amm_journal_eth_pending_usdt(g_j, &pu) == 0 && pu == 900 + 450, "amm_journal_eth_pending_usdt is the USDT sum");
+    uint64_t sn = 20;
+    CHECK(amm_journal_eth_pending(g_j, 1, &sn, &pu, &pe) == 0 && pu == 450, "leaving nonce 20 out: USDT 450");
+    evm_u256_from_u64(&want, 65000ULL * 30000000000ULL);
+    CHECK(evm_u256_cmp(&pe, &want) == 0, "  ether 65000 x 30 gwei");
+    CHECK(amm_journal_eth_pending(g_j, 2, &sn, &pu, &pe) == 0 && pu == 900 + 450,
+          "leaving out nonce 20 of ANOTHER chain leaves the sums whole");
+    CHECK(amm_journal_eth_attempt_settle(g_j, s.seq, 2, "confirmed") == 0 &&
+          amm_journal_eth_pending(g_j, 1, NULL, &pu, &pe) == 0 && pu == 450,
+          "a settled group is no longer pending");
+
+    /* a big product does not wrap: 2^62 gas x 2^62 max fee needs 124 bits */
+    fresh();
+    put_pool(1000000, 5000000, 100);
+    CHECK(decided_payout('c', "nodus:qa", 1000, 100, 3, 15, &s), "setup: a payout");
+    CHECK(side_sql("UPDATE eth_attempts SET gas_limit=4611686018427387904, max_fee=4611686018427387904"),
+          "its gas limit and max fee set to 2^62 (second connection)");
+    evm_u256 two62, sq;
+    evm_u256_from_u64(&two62, 4611686018427387904ULL);
+    evm_u256_mul(&sq, &two62, &two62);
+    CHECK(amm_journal_eth_pending(g_j, 1, NULL, &pu, &pe) == 0 && evm_u256_cmp(&pe, &sq) == 0,
+          "the ether term is the 124-bit product, not a wrapped 64-bit one");
+}
+
+/* J32: the USDT of a payout or refund that cannot cover its fee goes to the pool, and the
+ * fee of a USDT refund is booked (evm-fee plan 6.10).
+ * WHAT IT PROVES: on a refund_pending swap with no attempt, amm_journal_usdt_to_pool raises
+ * the pool's USDT depth by the refund and nothing else (NODUS depth and units unchanged),
+ * moves the swap to `dropped` with the message and releases its room, books nothing; on a
+ * payout_pending swap whose head failed it credits the head's net and books the fees of the
+ * failed attempts (out_amount - remaining) to the Foundation; a pool that is not the one
+ * the credit was computed from, a pool_after that is not exactly the credit, a remaining
+ * that is not the swap's amount (no attempt) or the head's net, a swap with a live attempt
+ * and a swap that owes nothing each write nothing; the general transition still refuses
+ * payout_pending -> dropped; amm_journal_book_fee accepts a refunded USDT refund (and not a
+ * refunded NODUS refund or a paid NODUS payout), and the unbooked list contains it.
+ * HOW IT COULD FALSELY PASS: the pool and every swap column are compared before and after
+ * each refusal; the fee booked (140 = 100 + 40) differs from either attempt's fee, so a
+ * booking of only the last (40) or only the first (100) fails. */
+static void j32_pool_credit(void) {
+    printf("J32 USDT to the pool, the refund fee booked\n");
+    fresh();
+    put_pool(3000, 2000, 7);
+    amm_pool_t p0, p1, cur;
+    amm_swap_t u, g, s;
+    amm_eattempt_t at, got;
+    uint64_t fee = 0, total = 0;
+    CHECK(amm_journal_pool_get(g_j, &p0) == 0, "setup: a pool (3000 / 2000 / 7)");
+    amm_approve_t ra = mk('a', 500, 1);
+    CHECK(approve_ok(&ra, &u) && drive(&u, "refund_pending", "nodus:z1"), "a USDT -> NODUS swap in refund_pending, amount 500");
+    p1 = p0;
+    evm_u256_from_u64(&p1.depth_u, 2500);
+    amm_pool_t wrong = p1;
+    evm_u256_from_u64(&wrong.depth_u, 2501);
+    amm_pool_t other = p0, other_after = p0;
+    evm_u256_from_u64(&other.depth_u, 2001);
+    evm_u256_from_u64(&other_after.depth_u, 2501);            /* consistent with `other` (+500), not with the stored pool */
+    CHECK(amm_journal_usdt_to_pool(g_j, u.seq, 500, &other, &other_after, "m") == AMM_J_ILLEGAL,
+          "a pool that is not the stored one (2001 instead of 2000): nothing written");
+    CHECK(amm_journal_usdt_to_pool(g_j, u.seq, 500, &p0, &wrong, "m") == AMM_J_RANGE,
+          "a pool after that is not exactly the credit: nothing written");
+    CHECK(amm_journal_usdt_to_pool(g_j, u.seq, 499, &p0, &p1, "m") == AMM_J_RANGE,
+          "a remaining that does not match the credit of the pool after (499 vs 2500 - 2000): RANGE");
+    amm_pool_t p499 = p0;
+    evm_u256_from_u64(&p499.depth_u, 2499);
+    CHECK(amm_journal_usdt_to_pool(g_j, u.seq, 499, &p0, &p499, "m") == AMM_J_ILLEGAL,
+          "a remaining that is not the swap's amount (no attempt): nothing written");
+    char longm[200];
+    memset(longm, 'x', 160);
+    longm[160] = '\0';
+    CHECK(amm_journal_usdt_to_pool(g_j, u.seq, 500, &p0, &p1, longm) == AMM_J_RANGE,
+          "a message that does not fit (160 bytes): RANGE");
+    CHECK(amm_journal_pool_get(g_j, &cur) == 0 && !memcmp(&cur, &p0, sizeof(cur)) &&
+          amm_journal_swap_by_seq(g_j, u.seq, &g) == 0 && state_is(&g, "refund_pending"), "  nothing of the refusals was written");
+    CHECK(amm_journal_usdt_to_pool(g_j, u.seq, 500, &p0, &p1, "added to the pool") == 0 &&
+          amm_journal_swap_by_seq(g_j, u.seq, &g) == 0 && state_is(&g, "dropped") &&
+          !strcmp(g.message, "added to the pool") && pool_depth_u_is(2500),
+          "the refund's USDT is added to the pool (2000 -> 2500) and the swap is dropped with its message");
+    CHECK(amm_journal_pool_get(g_j, &cur) == 0 && !memcmp(&cur.depth_n, &p0.depth_n, sizeof(cur.depth_n)) &&
+          !memcmp(&cur.units, &p0.units, sizeof(cur.units)), "  the NODUS depth and the units are unchanged");
+    CHECK(amm_journal_fee_booked(g_j, u.seq, NULL) == 1, "  nothing is booked to the Foundation for a refund with no attempt");
+    uint64_t infl = 99;
+    CHECK(amm_journal_inflight_sum(g_j, 0, &infl) == 0 && infl == 0, "  its room is released");
+    amm_pool_t p2 = p1;
+    evm_u256_from_u64(&p2.depth_u, 3000);
+    CHECK(amm_journal_usdt_to_pool(g_j, u.seq, 500, &p1, &p2, "again") == AMM_J_ILLEGAL && pool_depth_u_is(2500),
+          "a dropped swap is not credited again");
+
+    /* a swap that owes nothing, and a swap with a live attempt */
+    fresh();
+    put_pool(3000, 2000, 7);
+    amm_pool_t q0, q1;
+    CHECK(amm_journal_pool_get(g_j, &q0) == 0, "a fresh pool");
+    q1 = q0;
+    evm_u256_from_u64(&q1.depth_u, 2500);
+    amm_approve_t rc1 = mk('a', 500, 1);
+    CHECK(approve_ok(&rc1, &u) && drive(&u, "counted", "nodus:z2") &&
+          amm_journal_usdt_to_pool(g_j, u.seq, 500, &q0, &q1, "m") == AMM_J_ILLEGAL,
+          "a counted swap owes no USDT: ILLEGAL");
+    CHECK(tr(u.seq, "refund_pending", NULL) == 0 && mkeatt(&at, u.seq, 0xaa, 500, 20, 3, 21) &&
+          amm_journal_eth_attempt_sign(g_j, &at) == 0, "its refund has a signed attempt");
+    amm_eattempt_free(&at);
+    CHECK(amm_journal_usdt_to_pool(g_j, u.seq, 500, &q0, &q1, "m") == AMM_J_ILLEGAL,
+          "a refund with a live attempt: ILLEGAL (it can still reach the chain)");
+    CHECK(amm_journal_eth_attempt_finish(g_j, u.seq, "failed") == 0 &&
+          amm_journal_usdt_to_pool(g_j, u.seq, 500, &q0, &q1, "m") == AMM_J_ILLEGAL,
+          "a failed head carries net 480: a remaining of 500 is not it: ILLEGAL");
+    amm_pool_t q480 = q0;
+    evm_u256_from_u64(&q480.depth_u, 2480);
+    CHECK(amm_journal_usdt_to_pool(g_j, u.seq, 480, &q0, &q480, "m") == 0 && pool_depth_u_is(2480) &&
+          amm_journal_swap_by_seq(g_j, u.seq, &g) == 0 && state_is(&g, "dropped"),
+          "after a failed attempt the head's net (480) goes to the pool");
+    CHECK(amm_journal_fee_booked(g_j, u.seq, &fee) == 0 && fee == 20,
+          "  the failed attempt's fee (500 - 480 = 20) is booked to the Foundation in the same transaction");
+
+    /* a payout whose attempts failed twice: the fees of both are booked */
+    fresh();
+    put_pool(1000000, 5000, 100);
+    CHECK(decided_payout('c', "nodus:z3", 1000, 100, 5, 30, &s), "setup: a payout (gross 1000, fee 100) on a pool of 4000 after the decision");
+    CHECK(pool_depth_u_is(4000), "  the decision took 1000 from the pool");
+    CHECK(tr(s.seq, "dropped", NULL) == AMM_J_ILLEGAL, "the general transition still refuses payout_pending -> dropped");
+    CHECK(amm_journal_eth_attempt_finish(g_j, s.seq, "failed") == 0 && mkeatt(&at, s.seq, 0xbb, 900, 40, 6, 31) &&
+          amm_journal_eth_attempt_sign(g_j, &at) == 0 && at.n == 2, "attempt 1 failed, the re-send (gross 900, fee 40) is attempt 2");
+    amm_eattempt_free(&at);
+    amm_pool_t r0, r1, r1bad;
+    CHECK(amm_journal_pool_get(g_j, &r0) == 0, "the pool before the credit");
+    r1 = r0;
+    evm_u256_from_u64(&r1.depth_u, 4000 + 860);
+    r1bad = r0;
+    evm_u256_from_u64(&r1bad.depth_u, 4000 + 861);
+    CHECK(amm_journal_usdt_to_pool(g_j, s.seq, 860, &r0, &r1, "m") == AMM_J_ILLEGAL,
+          "attempt 2 is still signed: ILLEGAL");
+    CHECK(amm_journal_eth_attempt_finish(g_j, s.seq, "failed") == 0 &&
+          amm_journal_usdt_to_pool(g_j, s.seq, 861, &r0, &r1bad, "m") == AMM_J_ILLEGAL,
+          "attempt 2 failed: a remaining other than its net (860) is refused");
+    CHECK(pool_depth_u_is(4000) && amm_journal_fee_booked(g_j, s.seq, NULL) == 1, "  nothing was written");
+    CHECK(amm_journal_usdt_to_pool(g_j, s.seq, 860, &r0, &r1, "net 860 added to the pool") == 0 &&
+          pool_depth_u_is(4860) && amm_journal_swap_by_seq(g_j, s.seq, &g) == 0 && state_is(&g, "dropped"),
+          "the head's net (860) goes to the pool, the swap is dropped");
+    CHECK(amm_journal_fee_booked(g_j, s.seq, &fee) == 0 && fee == 140 &&
+          amm_journal_foundation_usdt(g_j, &total) == 0 && total == 140,
+          "the Foundation is booked 140 = 100 + 40 (out_amount 1000 - remaining 860)");
+    CHECK(amm_journal_eth_attempt_head(g_j, s.seq, &got) == 0 && !strcmp(got.state, "failed"), "the attempts stay as they were");
+    amm_eattempt_free(&got);
+
+    /* the Ethereum fee of a USDT refund is booked (BUG-01, 6.10.3) */
+    fresh();
+    put_pool(3000, 2000, 7);
+    amm_swap_t rf, nr, pn;
+    amm_approve_t rx = mk('a', 500, 1), ry = mk_n2u('c', 600, 1, "nodus:z5"), rz = mk('b', 700, 1);
+    CHECK(approve_ok(&rx, &rf) && drive(&rf, "refunded", "nodus:z4") && approve_ok(&ry, &nr) && drive(&nr, "refunded", "nodus:z5") &&
+          approve_ok(&rz, &pn) && drive(&pn, "paid", "nodus:z6"),
+          "a refunded USDT -> NODUS swap, a refunded NODUS -> USDT swap (a NODUS refund), a paid USDT -> NODUS swap");
+    amm_swap_t lst[8];
+    int cnt = 0;
+    CHECK(amm_journal_swap_list_unbooked_paid(g_j, 0, lst, 8, &cnt) == 0 && cnt == 1 && lst[0].seq == rf.seq,
+          "the unbooked list holds the refunded USDT refund only");
+    CHECK(amm_journal_book_fee(g_j, nr.seq, 5) == AMM_J_ILLEGAL && amm_journal_book_fee(g_j, pn.seq, 5) == AMM_J_ILLEGAL,
+          "a refunded NODUS refund and a paid NODUS payout are not booked");
+    CHECK(amm_journal_book_fee(g_j, rf.seq, 20) == 0 && amm_journal_foundation_usdt(g_j, &total) == 0 && total == 20 &&
+          amm_journal_swap_list_unbooked_paid(g_j, 0, lst, 8, &cnt) == 0 && cnt == 0,
+          "the refunded USDT refund's fee is booked (20) and leaves the list");
+}
+
+/* The dump of every eth_attempts row, column by column (blobs as hex), ordered: the migration
+ * must keep every row byte for byte. */
+static int dump_attempts(const char *path, char *out, size_t cap) {
+    sqlite3 *db = NULL;
+    sqlite3_stmt *st = NULL;
+    int ok = 0;
+    out[0] = '\0';
+    if (sqlite3_open(path, &db) != SQLITE_OK) goto end;
+    if (sqlite3_prepare_v2(db, "SELECT swap_seq||'|'||n||'|'||chain_id||'|'||nonce||'|'||hex(hash)||'|'||"
+                               "hex(raw)||'|'||hex(recipient)||'|'||gross||'|'||net||'|'||fee||'|'||gas_limit||'|'||"
+                               "max_fee||'|'||max_priority||'|'||last_submit_tip||'|'||state FROM eth_attempts "
+                               "ORDER BY swap_seq, n", -1, &st, NULL) != SQLITE_OK) goto end;
+    size_t w = 0;
+    ok = 1;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const char *t = (const char *)sqlite3_column_text(st, 0);
+        int k = snprintf(out + w, cap - w, "%s\n", t ? t : "?");
+        if (k < 0 || (size_t)k >= cap - w) { ok = 0; break; }
+        w += (size_t)k;
+    }
+end:
+    sqlite3_finalize(st);
+    if (db) sqlite3_close(db);
+    return ok;
+}
+
+/* One integer from the file at g_path through a second connection; -1 on any failure. */
+static long long side_int(const char *sql) {
+    sqlite3 *db = NULL;
+    sqlite3_stmt *st = NULL;
+    long long v = -1;
+    if (sqlite3_open(g_path, &db) == SQLITE_OK && sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW)
+        v = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    sqlite3_close(db);
+    return v;
+}
+
+static int fail_migration_hook(void) { return -1; }
+
+/* Build a file in the version 8 layout WITH ROWS: the journal is filled through the API (so every
+ * other table exists and every attempt hashes), closed, and its eth_attempts table is rebuilt
+ * in the version 8 shape (UNIQUE(chain_id, nonce), no `replaced` or `voided`, no partial index)
+ * with `user_version` 8 through a second connection. Three attempts: a signed one, a submitted
+ * one and a failed one, on three swaps. */
+static int make_v8_file(void) {
+    fresh();
+    put_pool(1000000, 5000000, 100);
+    amm_swap_t a, b, c;
+    if (!decided_payout('c', "nodus:m1", 1000, 100, 5, 40, &a) || !decided_payout('d', "nodus:m2", 700, 70, 6, 41, &b) ||
+        !decided_payout('e', "nodus:m3", 400, 40, 7, 42, &c)) return 0;
+    if (amm_journal_eth_attempt_submitted(g_j, b.seq, 1234) != 0 ||
+        amm_journal_eth_attempt_finish(g_j, c.seq, "failed") != 0) return 0;
+    amm_journal_close(g_j);
+    g_j = NULL;
+    sqlite3 *db = NULL;
+    int ok = sqlite3_open(g_path, &db) == SQLITE_OK &&
+        sqlite3_exec(db,
+            "DROP INDEX eth_attempts_live_nonce;"
+            "ALTER TABLE eth_attempts RENAME TO eth_attempts_keep;"
+            "CREATE TABLE eth_attempts("
+            " swap_seq INTEGER NOT NULL, n INTEGER NOT NULL,"
+            " chain_id INTEGER NOT NULL, nonce INTEGER NOT NULL,"
+            " hash BLOB NOT NULL, raw BLOB NOT NULL, recipient BLOB NOT NULL,"
+            " gross INTEGER NOT NULL, net INTEGER NOT NULL, fee INTEGER NOT NULL,"
+            " gas_limit INTEGER NOT NULL, max_fee INTEGER NOT NULL,"
+            " max_priority INTEGER NOT NULL,"
+            " last_submit_tip INTEGER NOT NULL DEFAULT 0,"
+            " state TEXT NOT NULL CHECK(state IN ('signed','submitted','confirmed',"
+            "'failed','orphaned','unknown')),"
+            " PRIMARY KEY(swap_seq, n), UNIQUE(hash), UNIQUE(chain_id, nonce));"
+            "INSERT INTO eth_attempts SELECT * FROM eth_attempts_keep;"
+            "DROP TABLE eth_attempts_keep;"
+            "PRAGMA user_version=8;", NULL, NULL, NULL) == SQLITE_OK;
+    if (db) sqlite3_close(db);
+    return ok;
+}
+
+/* J33: the journal layout version 9 and the migration of a version 8 file (plan 6.12, 7.2).
+ * WHAT IT PROVES: a file in the version 8 layout (written here with a signed, a submitted and
+ * a failed attempt, the other tables filled through the API) is migrated by amm_journal_open
+ * with EVERY attempt row kept byte for byte (hash, raw, recipient, amounts, fee fields,
+ * last_submit_tip, state: compared as a dump before and after), user_version 9, the other
+ * tables untouched and readable through the API; the version 8 layout really refused `replaced`
+ * before and the version 9 table accepts it (the replacement through the API on a MIGRATED row
+ * works), the partial index refuses a second live attempt on a nonce and accepts the settlement
+ * order; a failure in the migration (a test hook between the copy and the drop) leaves the
+ * file at version 8, with the old table and no leftover table, and the open fails; opening
+ * again without the failure migrates; a version 9 file opens again (idempotent); a version 7
+ * and a version 10 file are refused and left as they were.
+ * HOW IT COULD FALSELY PASS: the version 8 file is built by this test, not by a version 8
+ * binary (the DDL is copied from the version 8 source), so it proves the migration of that
+ * layout; the failure is injected by a hook, not by a crash or a full disk; the dump compares
+ * columns as SQLite renders them, so a type change that renders the same is not caught. */
+static void j33_migration(void) {
+    printf("J33 journal layout 9, migration of a version 8 file\n");
+    char before[8192], after[8192];
+    CHECK(make_v8_file(), "setup: a version 8 file with three attempts");
+    CHECK(side_int("PRAGMA user_version") == 8, "  user_version 8");
+    CHECK(!side_sql("UPDATE eth_attempts SET state='replaced' WHERE n=1"),
+          "  the version 8 layout refuses the state `replaced`");
+    CHECK(dump_attempts(g_path, before, sizeof(before)) && strlen(before) > 300, "  the dump of the three rows");
+    int64_t rows8 = (int64_t)side_int("SELECT COUNT(*) FROM eth_attempts");
+    CHECK(rows8 == 3, "  three rows");
+
+    /* a failure between the copy and the drop leaves the file at version 8 */
+    amm_journal_test_migration_hook(fail_migration_hook);
+    amm_journal_t *jx = NULL;
+    CHECK(amm_journal_open(g_path, &jx) != 0 && jx == NULL, "a failure inside the migration: the open fails");
+    amm_journal_test_migration_hook(NULL);
+    CHECK(side_int("PRAGMA user_version") == 8, "  the file is still version 8");
+    CHECK(side_int("SELECT COUNT(*) FROM sqlite_master WHERE name='eth_attempts_v9'") == 0,
+          "  no leftover table of the migration");
+    CHECK(side_int("SELECT COUNT(*) FROM sqlite_master WHERE name='eth_attempts_live_nonce'") == 0 &&
+          !side_sql("UPDATE eth_attempts SET state='replaced' WHERE n=1"), "  the old layout is intact");
+    CHECK(dump_attempts(g_path, after, sizeof(after)) && !strcmp(before, after), "  every row is as it was");
+
+    /* the migration */
+    CHECK(amm_journal_open(g_path, &g_j) == 0 && g_j != NULL, "the open migrates the file");
+    CHECK(side_int("PRAGMA user_version") == 9, "  user_version 9");
+    CHECK(dump_attempts(g_path, after, sizeof(after)) && !strcmp(before, after),
+          "  every row survives byte for byte (hash, raw, recipient, amounts, fee fields, tip, state)");
+    CHECK(side_int("SELECT COUNT(*) FROM sqlite_master WHERE name='eth_attempts_live_nonce'") == 1 &&
+          side_int("SELECT COUNT(*) FROM sqlite_master WHERE name='eth_attempts_v9'") == 0,
+          "  the partial index exists and the temporary table is gone");
+    amm_swap_t s1, s2, s3;
+    amm_eattempt_t got, at;
+    CHECK(side_int("SELECT COUNT(*) FROM swaps") == 3, "  the three swaps are still there (the other tables are untouched)");
+    CHECK(amm_journal_swap_by_seq(g_j, 1, &s1) == 0 && amm_journal_swap_by_seq(g_j, 2, &s2) == 0 &&
+          amm_journal_swap_by_seq(g_j, 3, &s3) == 0 && state_is(&s1, "payout_pending"),
+          "  and read through the API");
+    CHECK(amm_journal_eth_attempt_latest(g_j, s1.seq, &got) == 0 && got.nonce == 5 && got.net == 900 &&
+          !strcmp(got.state, "signed"), "  a migrated attempt reads back through the API (the hash of its bytes checks)");
+    amm_eattempt_free(&got);
+    CHECK(amm_journal_eth_attempt_latest(g_j, s2.seq, &got) == 0 && !strcmp(got.state, "submitted") &&
+          got.last_submit_tip == 1234, "  the submitted attempt keeps its tip");
+    amm_eattempt_free(&got);
+    CHECK(amm_journal_eth_attempt_latest(g_j, s3.seq, &got) == 0 && !strcmp(got.state, "failed"), "  the failed attempt stays failed");
+    amm_eattempt_free(&got);
+    uint64_t nx = 0, pu = 0;
+    CHECK(amm_journal_eth_next_nonce(g_j, 1, &nx) == 0 && nx == 8 && amm_journal_eth_pending_usdt(g_j, &pu) == 0 &&
+          pu == 900 + 630, "  the next nonce (8) and the pending USDT (900 + 630) read the migrated rows");
+
+    /* the version 9 layout works on a migrated row */
+    CHECK(mkeatt(&at, s1.seq, 0xbb, 1000, 150, 5, 50) && (at.max_fee_per_gas = 40000000000ULL, 1) &&
+          (at.max_priority_fee_per_gas = 3000000000ULL, 1) && amm_journal_eth_attempt_replace(g_j, &at) == 0,
+          "a MIGRATED attempt can be replaced (state `replaced` and a second row on one nonce)");
+    amm_eattempt_free(&at);
+    CHECK(state_of_n(s1.seq, 1, "replaced") && state_of_n(s1.seq, 2, "signed"), "  attempt 1 replaced, attempt 2 signed");
+    CHECK(mkeatt(&at, s3.seq, 0xbb, 360, 30, 5, 51) && amm_journal_eth_attempt_sign(g_j, &at) == AMM_J_ILLEGAL,
+          "a re-send of the failed attempt on the nonce another swap holds is still refused");
+    amm_eattempt_free(&at);
+    CHECK(!side_sql("UPDATE eth_attempts SET state='confirmed' WHERE swap_seq=1 AND n=1"),
+          "the partial index refuses a second live attempt on the nonce");
+    CHECK(side_sql("UPDATE eth_attempts SET state='voided' WHERE swap_seq=1 AND n=2") &&
+          side_sql("UPDATE eth_attempts SET state='confirmed' WHERE swap_seq=1 AND n=1"),
+          "  and accepts the settlement order");
+
+    /* a version 9 file opens again; a restart keeps everything */
+    reopen();
+    CHECK(side_int("PRAGMA user_version") == 9 && side_int("SELECT COUNT(*) FROM eth_attempts") == 4,
+          "a version 9 file opens again unchanged (4 rows)");
+
+    /* versions 7 and 10 are refused and left as they were */
+    CHECK(make_v8_file(), "setup: another version 8 file");
+    CHECK(side_sql("PRAGMA user_version=7") && amm_journal_open(g_path, &jx) != 0 && jx == NULL &&
+          side_int("PRAGMA user_version") == 7 && side_int("SELECT COUNT(*) FROM sqlite_master WHERE name='eth_attempts_v9'") == 0,
+          "a version 7 file is refused and left as it was");
+    CHECK(side_sql("PRAGMA user_version=10") && amm_journal_open(g_path, &jx) != 0 && jx == NULL &&
+          side_int("PRAGMA user_version") == 10, "a version 10 file is refused and left as it was");
+    CHECK(side_sql("PRAGMA user_version=8") && amm_journal_open(g_path, &g_j) == 0 && side_int("PRAGMA user_version") == 9,
+          "the version 8 file migrates once the failure is gone");
+}
+
+/* J34: amm_journal_check_copy, the check of a journal copy (evm-fee plan 9.4, `nodus-amm --check-journal`).
+ * WHAT IT PROVES: on a real version 8 file (J33's make_v8_file: signed, submitted and failed attempts, every
+ * table created by the journal) the check returns 0, reports version 8 -> 9 and, for every table, a
+ * count equal before and after (eth_attempts 3, swaps 3, none missing, none new); the same check on the
+ * migrated file reports 9 -> 9 and 0; a file whose migration fails (the test-only hook between copy and
+ * drop) returns 1 with version 8 -> 8, and the file really is version 8; a path that does not exist is -1.
+ * FLAGS: none. LEAVES BEHIND: files in the test's temporary directory (removed at the end).
+ * HOW IT COULD FALSELY PASS: the table list comes from the journal's own schema text, so a table the schema
+ * forgot is not in it (the extra sqlite_master tables are read too, which catches a leftover or new one); the
+ * counts are rows, not contents (J33 compares the rows byte for byte); the failure is injected by a hook. */
+static void j34_check_copy(void) {
+    printf("J34 the check of a journal copy\n");
+    amm_jcheck_t r;
+    CHECK(make_v8_file(), "setup: a version 8 file");
+    CHECK(amm_journal_check_copy(g_path, &r) == 0 && r.ver_before == 8 && r.ver_after == 9, "a version 8 copy: OK, version 8 -> 9");
+    int all = r.n >= 10, att = 0, sw = 0;
+    for (int i = 0; i < r.n; i++) {
+        if (r.t[i].before < 0 || r.t[i].before != r.t[i].after) all = 0;
+        if (!strcmp(r.t[i].name, "eth_attempts") && r.t[i].before == 3) att = 1;
+        if (!strcmp(r.t[i].name, "swaps") && r.t[i].before == 3) sw = 1;
+    }
+    CHECK(all && att && sw, "  every table of the schema is present and its row count is equal before and after (eth_attempts 3, swaps 3)");
+    CHECK(amm_journal_check_copy(g_path, &r) == 0 && r.ver_before == 9 && r.ver_after == 9, "the migrated file: OK, version 9 -> 9");
+    CHECK(make_v8_file(), "setup: another version 8 file");
+    amm_journal_test_migration_hook(fail_migration_hook);
+    CHECK(amm_journal_check_copy(g_path, &r) == 1 && r.ver_before == 8 && r.ver_after == 8,
+          "a copy that cannot be migrated: NOT OK, version 8 -> 8");
+    amm_journal_test_migration_hook(NULL);
+    CHECK(side_int("PRAGMA user_version") == 8, "  and the file is still version 8");
+    CHECK(amm_journal_check_copy("/nonexistent-dir/none.db", &r) == -1, "a path that cannot be read: -1");
+}
+
 int main(void) {
     printf("test_amm_journal\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_jnl_testXXXXXX");
@@ -2959,6 +3640,10 @@ int main(void) {
     j26_unconsumed_and_unmatched();
     j27_revision12();
     j30_withdraw();
+    j31_resend_replace();
+    j32_pool_credit();
+    j33_migration();
+    j34_check_copy();
 
     if (g_j) amm_journal_close(g_j);
     cleanup_dir();
