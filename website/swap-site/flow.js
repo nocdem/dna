@@ -13,7 +13,7 @@
 import {
   parseAmount, minimumToReceive, USDT_DECIMALS, NODUS_DECIMALS,
   readQuoteAnswer, readAddQuoteAnswer, refusalText, describeSwapState,
-  buildWithdrawText, randomRequestNumber, liquidityMinNodusRaw, isTokenAddress,
+  buildWithdrawText, randomRequestNumber, liquidityMinNodusRaw, isTokenAddress, isEthAddress,
 } from './swap-logic.js';
 import { guardLog, errorFields } from './log.js';
 
@@ -31,6 +31,7 @@ const AMOUNT_WORDS = {
   too_large: 'This amount is too large.',
 };
 const NOT_CONNECTED_TEXT = 'Connect the extension first.';
+const BAD_ADDRESS_TEXT = 'The extension gave an Ethereum address this page cannot use. Connect the extension again.';
 // The text of an extension step announced by the adapter (adapter.js, onStep). Numbered only where the site sees the
 // boundary; a call that holds several extension windows says so and does not claim which one is open.
 const WHERE = ' The extension window can open behind this browser window. If you do not see it, click the Nodus extension icon.';
@@ -208,6 +209,10 @@ export function createSwapFlow({
     // A change of the connected account drops a kept signed withdrawal (it is signed by the other account).
     setAccounts(accounts) {
       if (s.pendingWithdraw && s.pendingWithdraw.account !== accounts?.nodus?.address) s.pendingWithdraw = null;
+      // Another Ethereum address drops the kept swap quote and discards one still awaited: the fee estimate is for the
+      // payout to the address it was asked for, and the signed request names the connected one. The first connect has
+      // nothing to drop.
+      if (s.accounts && s.accounts.ethereum !== accounts?.ethereum) { s.quote = null; s.swapGen++; }
       s.accounts = accounts;
     },
     // The add minimum in force, raw NODUS: the status value, else the fallback constant (swap-logic.js).
@@ -243,7 +248,13 @@ export function createSwapFlow({
       const p = parseAmount(amountText, decimals);
       if (!p.ok) return { ok: false, local: true, reason: p.reason, text: amountProblem(p.reason) };
       s.quote = null;
-      const res = await bot.quote(direction, p.raw);
+      // NODUS -> USDT: the price question names the Ethereum address the USDT goes to (the one confirm() signs as the destination).
+      let destination;
+      if (direction === 'nodus_to_usdt') {
+        destination = s.accounts.ethereum;
+        if (!isEthAddress(destination)) return { ok: false, reason: 'not_ready', text: BAD_ADDRESS_TEXT };
+      }
+      const res = await bot.quote(direction, p.raw, destination);
       if (gen !== s.swapGen) return { ok: false, stale: true, reason: 'stale', text: '' };   // inputs changed while waiting
       const r = await jsonOf(res);
       if (r.reason) return { ok: false, reason: r.reason, text: refusalText(r.reason) };

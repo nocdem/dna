@@ -68,10 +68,12 @@ const time = unix => new Date(Number(unix) * 1000).toLocaleTimeString();
 // While an approval sequence runs (the extension windows are open or the request is on its way) the user must not start
 // another one, in either tab: BOTH approve buttons are disabled and both handlers return at once while sequenceBusy is
 // set. So is everything that could bring one back or ask a new price (the amount, the direction, the tolerance and its
-// chips, the ask buttons). setBusy(false) re-enables those and recomputes each approve button from its own readiness
-// (syncApprove): a spent quote leaves it disabled (and the handler hides it), a kept one leaves it enabled.
+// chips, the ask buttons), change the accounts (the connect button; a connect in progress holds the same lock) or sign
+// a withdrawal (the withdrawal button; its signature holds the same lock).
+// setBusy(false) re-enables those and recomputes each approve button from its own readiness (syncApprove): a spent
+// quote leaves it disabled (and the handler hides it), a kept one leaves it enabled.
 let sequenceBusy = false;
-const LOCKED_WHILE_BUSY = ['pay', 'flip', 'tol', 'ask-btn', 'liq-ask', 'liq-amount', 'liq-side'];
+const LOCKED_WHILE_BUSY = ['pay', 'flip', 'tol', 'ask-btn', 'liq-ask', 'liq-amount', 'liq-side', 'connect-btn', 'wd-btn'];
 function setBusy(on) {
   sequenceBusy = on;
   log.info('ui', 'busy', { on });
@@ -157,11 +159,16 @@ renderAskButtons();
 const connectBtn = $('connect-btn');
 connectBtn.addEventListener('click', async () => {
   log.info('ui', 'connect_click', {});
+  if (sequenceBusy) return;   // an approval sequence (or another connect) is running: the accounts must not change under it
   say($('connect-status'), '');
-  connectBtn.disabled = true; connectBtn.textContent = 'Connecting…';
+  // A connect holds the page like an approval sequence: no approval starts while the accounts may still change.
+  setBusy(true); connectBtn.textContent = 'Connecting…';
   try {
     const accounts = await extension.connect();
+    const earlierEthereum = flow.state.accounts?.ethereum;
     flow.setAccounts(accounts);
+    // Another Ethereum address: the flow dropped the kept quote and any answer awaited; the page shows no quote either.
+    if (earlierEthereum !== undefined && earlierEthereum !== accounts.ethereum) resetQuote();
     // The chain name when the account has one, otherwise the two short addresses; the full addresses stay on hover.
     connectBtn.textContent = accounts.nodus.name || `${short(accounts.nodus.address)} · ${short(accounts.ethereum)}`;
     connectBtn.title = `${accounts.nodus.name ? `Name ${accounts.nodus.name}\n` : ''}Nodus ${accounts.nodus.address}\nEthereum ${accounts.ethereum}`;
@@ -172,13 +179,15 @@ connectBtn.addEventListener('click', async () => {
     renderMinimum();
     renderWithdrawButton();   // a different account drops a kept signed withdrawal (flow.setAccounts)
   } catch (error) {
-    connectBtn.disabled = false; connectBtn.textContent = 'Connect extension';
+    connectBtn.textContent = 'Connect extension';
     if (error?.code === 'no_extension') {
       say($('connect-status'), 'The Nodus Connect extension was not found in this browser.');
       connectBtn.textContent = 'Get the extension'; connectBtn.onclick = () => { location.href = EXT_PAGE; };
     } else if (error?.code === 4001) say($('connect-status'), 'You rejected the connection in the extension.');
     else if (error?.code === 4100) say($('connect-status'), 'Open the extension and accept its data notice first, then connect again.');
     else say($('connect-status'), 'The extension did not connect. Unlock it and try again.');
+  } finally {
+    setBusy(false);   // connecting again reads the extension's current accounts; another Ethereum account drops the quote above
   }
 });
 
@@ -212,6 +221,7 @@ for (const chip of document.querySelectorAll('.chip')) {
 $('swap-form').addEventListener('submit', async event => {
   event.preventDefault();
   log.info('ui', 'ask', { tab: 'swap', direction, amountText: $('pay').value });
+  if (sequenceBusy) return;   // an approval, a connect or a withdrawal signature is running
   say($('swap-msg'), '');
   const button = $('ask-btn');
   button.disabled = true;
@@ -232,7 +242,7 @@ $('swap-form').addEventListener('submit', async event => {
     say($('swap-msg'), 'Choose a slippage tolerance, then approve in the extension.');
     await refreshStatus();
     if (flow.state.quote === q) renderMovement(q);   // only while this answer is still the one shown
-  } finally { button.disabled = !connected(); }
+  } finally { button.disabled = !connected() || sequenceBusy; }   // an answer arriving during a connect leaves it locked
 });
 
 // `unit` is the output's unit of the swap being followed (NODUS for USDT -> NODUS, USDT for NODUS -> USDT), fixed
@@ -311,6 +321,7 @@ $('liq-side').addEventListener('change', () => { log.info('ui', 'side_changed', 
 $('liq-form').addEventListener('submit', async event => {
   event.preventDefault();
   log.info('ui', 'ask', { tab: 'liquidity', side: $('liq-side').value, amountText: $('liq-amount').value });
+  if (sequenceBusy) return;   // an approval, a connect or a withdrawal signature is running
   say($('liq-msg'), '');
   $('liq-ask').disabled = true;
   try {
@@ -325,7 +336,7 @@ $('liq-form').addEventListener('submit', async event => {
     $('liq-ask').hidden = true; $('liq-approve').hidden = false; syncApprove();
     say($('liq-msg'), 'These are the exact amounts. Approve in the extension to sign and pay both sides.');
     await refreshStatus();
-  } finally { $('liq-ask').disabled = !connected(); }
+  } finally { $('liq-ask').disabled = !connected() || sequenceBusy; }
 });
 $('liq-approve').addEventListener('click', async () => {
   log.info('ui', 'approve_click', { tab: 'liquidity', busy: sequenceBusy, requestNumber: flow.state.addQuote?.requestNumber });
@@ -350,13 +361,14 @@ $('wd-form').addEventListener('submit', async event => {
   event.preventDefault();
   const bps = /^\d{1,5}$/.test($('wd-bps').value.trim()) ? Number($('wd-bps').value.trim()) : NaN;
   log.info('ui', 'withdraw_submit', { text: $('wd-bps').value, basisPoints: bps });
-  $('wd-btn').disabled = true;
+  if (sequenceBusy) return;   // an approval or a connect is running: the accounts must not change under the signature
+  setBusy(true);
   say($('wd-msg'), flow.pendingWithdrawNumber() ? 'Resending the same signed withdrawal; nothing new is signed.' : 'Approve the signature in the extension.');
   try {
     const r = await flow.withdraw({ basisPoints: bps });
     const received = `The bot received your withdrawal (request ${r.requestNumber}). It pays out after the Ethereum wait; this step itself pays nothing.`;
     say($('wd-msg'), r.ok ? (r.text ?? received) : r.text, !r.ok);
-  } finally { $('wd-btn').disabled = false; renderWithdrawButton(); }
+  } finally { setBusy(false); renderWithdrawButton(); }
 });
 // A signed withdrawal whose answer did not arrive is resent unchanged by the same button; the label says so.
 function renderWithdrawButton() {

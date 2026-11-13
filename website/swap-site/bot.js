@@ -43,7 +43,8 @@ export function createBotClient({ fetch, base = `${BOT_ORIGIN}/amm`, timeoutMs =
   return {
     base,
     status: () => call('GET', '/status'),
-    quote: (direction, rawAmount) => call('POST', '/quote', quoteBody(direction, rawAmount)),
+    // destination: the user's Ethereum address, required for nodus_to_usdt (the price question names the payout's recipient).
+    quote: (direction, rawAmount, destination) => call('POST', '/quote', quoteBody(direction, rawAmount, destination)),
     swapState: requestNumber => call('GET', `/swap/${encodeURIComponent(String(requestNumber))}`),
     liquidityQuote: (side, rawAmount) => call('POST', '/liquidity/quote', liquidityQuoteBody(side, rawAmount)),
     liquidityWithdraw: signed => call('POST', '/liquidity/withdraw', withdrawBody(signed)),
