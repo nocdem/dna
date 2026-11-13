@@ -188,10 +188,15 @@ export function waitText(direction, amountText) {
 
 const hexOfText = text => Array.from(new TextEncoder().encode(text), b => b.toString(16).padStart(2, '0')).join('');
 
-// POST /amm/quote: exactly two keys, both strings (amm_http.c route_quote refuses anything else).
-export function quoteBody(direction, rawAmount) {
+// POST /amm/quote (amm_http.c route_quote refuses any other key set): USDT -> NODUS is exactly two keys, direction and
+// amount; NODUS -> USDT is exactly three, with the Ethereum address that will receive the USDT as `destination`, so the
+// bot estimates the fee of that very payout. Every value is a string. A destination handed to USDT -> NODUS is not
+// sent: the bot refuses one there.
+export function quoteBody(direction, rawAmount, destination) {
   if (direction !== 'usdt_to_nodus' && direction !== 'nodus_to_usdt') throw new RangeError('Unknown direction.');
-  return JSON.stringify({ direction, amount: toBig(rawAmount).toString() });
+  const amount = toBig(rawAmount).toString();
+  if (direction === 'usdt_to_nodus') return JSON.stringify({ direction, amount });
+  return JSON.stringify({ direction, amount, destination: need(RE_ETH, destination, 'The destination') });
 }
 // POST /amm/liquidity/quote: the amount of ONE side (amm_http.h).
 export function liquidityQuoteBody(side, rawAmount) {
@@ -207,6 +212,8 @@ export { hexOfText };
 // ── value forms of the signed texts (plan 6.4.2) ────────────────────────
 
 const RE_ETH = /^0x[0-9a-f]{40}$/;
+// The form of the Ethereum addresses in the signed texts and the price question: 0x and 40 lowercase hex digits.
+export const isEthAddress = v => typeof v === 'string' && RE_ETH.test(v);
 const RE_HEX128 = /^[0-9a-f]{128}$/;
 const RE_HEX64 = /^[0-9a-f]{64}$/;
 const RE_DEC_U64 = /^(0|[1-9]\d*)$/;
@@ -406,6 +413,8 @@ const REFUSALS = {
   approval_expired: 'The price has expired. Get a new price.',
   no_position: 'There is no liquidity position for these two addresses.',
   not_found: 'The bot does not know that page.',
+  // the bot's answer to a NODUS -> USDT question in the old two-key shape: a page script cached from before the bot changed
+  page_out_of_date: 'This page is out of date. Reload it and ask for a price again.',
 };
 
 // `minNodusRaw`: the add minimum in force (from /amm/status); the fallback constant when not given.

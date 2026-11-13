@@ -179,11 +179,23 @@ test('waitText: follows the typed amount and the direction', () => {
   // FALSE PASS: only the text is compared; the page wiring (every input, every flip) is checked in a browser.
 });
 
-test('request bodies: quote bodies are exactly two keys, both strings (amm_http.c route_quote)', () => {
+// PROVES (plan 6.5.3, the price question carries the destination): the USDT -> NODUS question stays exactly two keys
+//   (a destination handed to it is not sent: the bot answers 400 for one); the NODUS -> USDT question is exactly three
+//   keys, in the order direction, amount, destination, all strings, with the address as given (lowercase 0x + 40 hex);
+//   a missing, upper-case, short, long or non-string destination throws before anything is sent.
+// FALSE PASS: the key order and the string are compared with the plan's reading of route_quote, not with the running
+//   bot; the bot's side is tested in nodus/tests/test_amm_http.c.
+test('request bodies: quote bodies are two keys (USDT -> NODUS) or three keys with the destination (NODUS -> USDT)', () => {
   const q = JSON.parse(quoteBody('usdt_to_nodus', 100000000n));
   assert.deepEqual(Object.keys(q), ['direction', 'amount']);
   assert.deepEqual(q, { direction: 'usdt_to_nodus', amount: '100000000' });
-  assert.equal(quoteBody('nodus_to_usdt', 5n), '{"direction":"nodus_to_usdt","amount":"5"}');
+  const DEST = `0x${'4b'.repeat(20)}`;
+  assert.equal(quoteBody('usdt_to_nodus', 100000000n, DEST), quoteBody('usdt_to_nodus', 100000000n));
+  assert.equal(quoteBody('nodus_to_usdt', 5n, DEST), `{"direction":"nodus_to_usdt","amount":"5","destination":"${DEST}"}`);
+  assert.deepEqual(Object.keys(JSON.parse(quoteBody('nodus_to_usdt', 5n, DEST))), ['direction', 'amount', 'destination']);
+  for (const bad of [undefined, null, '', 7, `0x${'4B'.repeat(20)}`, `0x${'4b'.repeat(19)}`, `0x${'4b'.repeat(21)}`, '4b'.repeat(20), `0x${'zz'.repeat(20)}`]) {
+    assert.throws(() => quoteBody('nodus_to_usdt', 5n, bad), TypeError, String(bad));
+  }
   assert.equal(liquidityQuoteBody('nodus', 10n ** 13n), '{"side":"nodus","amount":"10000000000000"}');
   assert.equal(liquidityQuoteBody('usdt', 1n), '{"side":"usdt","amount":"1"}');
   assert.throws(() => quoteBody('sideways', 1n), RangeError);
@@ -329,7 +341,8 @@ test('readAddQuoteAnswer: the exact pair and where to pay each side', () => {
 test('refusalText: every word of amm_http.h has plain words, "busy" included; an unknown word is shown as given', () => {
   const words = ['paused', 'stopped', 'below_minimum', 'above_maximum', 'inflight_full', 'no_liquidity', 'cannot_pay',
     'unavailable', 'busy', 'bad_request', 'internal', 'bad_format', 'bad_chain', 'bad_address', 'bad_signature',
-    'number_reused', 'unknown_number', 'amount_mismatch', 'number_used', 'open_approval', 'approval_expired', 'no_position'];
+    'number_reused', 'unknown_number', 'amount_mismatch', 'number_used', 'open_approval', 'approval_expired', 'no_position',
+    'page_out_of_date'];
   for (const w of words) {
     const t = refusalText(w);
     assert.ok(t.length > 10, w);
@@ -340,6 +353,9 @@ test('refusalText: every word of amm_http.h has plain words, "busy" included; an
   assert.match(refusalText('busy'), /try again later/i);
   assert.equal(refusalText('xyzzy'), 'The bot refused: xyzzy.');
   assert.match(refusalText('below_minimum', 'add'), /100,000 NODUS/);
+  // plan 6.5.3 (K5): the bot's word for a page script cached from before the deploy; the exact sentence is the plan's.
+  // FALSE PASS: the word itself is the bot's (amm_http.h REFUSAL WORDS), checked there, not here.
+  assert.equal(refusalText('page_out_of_date'), 'This page is out of date. Reload it and ask for a price again.');
 });
 
 // PROVES: a state word that names a property every object inherits (constructor, toString, __proto__, hasOwnProperty)

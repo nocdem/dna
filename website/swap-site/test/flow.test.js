@@ -146,7 +146,42 @@ test('an amount that is not a valid number sends nothing to the bot', async () =
 test('NODUS -> USDT question: the NODUS amount has 8 decimals', async () => {
   const { flow, fetch } = makeFlow({ routes: { 'POST /amm/quote': [200, { ...QUOTE, direction: 'nodus_to_usdt', amount: '50000000000000', number: '49500000' }] } });
   await flow.press({ direction: 'nodus_to_usdt', amountText: '500000' });
-  assert.deepEqual(JSON.parse(fetch.calls[0].body), { direction: 'nodus_to_usdt', amount: '50000000000000' });
+  // plan 6.5.3: a NODUS -> USDT question carries the connected Ethereum address as `destination`
+  assert.deepEqual(JSON.parse(fetch.calls[0].body), { direction: 'nodus_to_usdt', amount: '50000000000000', destination: ETH });
+});
+
+// PROVES (plan 6.5.3): press() sends the connected Ethereum address as `destination` for NODUS -> USDT (exactly three
+//   keys, the address byte for byte), keeps the USDT -> NODUS question at two keys, and a connected account whose
+//   Ethereum address is not 0x + 40 lowercase hex sends nothing and answers not_ready in plain words.
+// FALSE PASS: the bot is the recording fetch stub; that the bot accepts the three-key body is tested in test_amm_http.c.
+test('the NODUS -> USDT question carries the destination; USDT -> NODUS stays two keys; a malformed address sends nothing', async () => {
+  const { flow, fetch } = makeFlow({ routes: { 'POST /amm/quote': [200, QUOTE] } });
+  await flow.press({ direction: 'nodus_to_usdt', amountText: '500000' });
+  await flow.press({ direction: 'usdt_to_nodus', amountText: '100' });
+  assert.deepEqual(Object.keys(JSON.parse(fetch.calls[0].body)), ['direction', 'amount', 'destination']);
+  assert.equal(JSON.parse(fetch.calls[0].body).destination, ETH);
+  assert.deepEqual(Object.keys(JSON.parse(fetch.calls[1].body)), ['direction', 'amount']);
+  for (const bad of [undefined, '', ETH.toUpperCase().replace('0X', '0x'), `0x${'4b'.repeat(19)}`]) {
+    const x = makeFlow({ routes: { 'POST /amm/quote': [200, QUOTE] } });
+    x.flow.setAccounts({ ...ACCOUNTS, ethereum: bad });
+    const r = await x.flow.press({ direction: 'nodus_to_usdt', amountText: '500000' });
+    assert.equal(r.ok, false, String(bad));
+    assert.equal(r.reason, 'not_ready');
+    assert.match(r.text, /Ethereum address/);
+    assert.deepEqual(x.fetch.calls.filter(c => c.key === 'POST /amm/quote'), []);
+    assert.equal(x.flow.state.quote, null);
+  }
+});
+
+// PROVES (plan 6.5.3, K5): the bot's 400 answer {"approved":false,"reason":"page_out_of_date"} reaches the user as the
+//   reload sentence, and keeps no quote.
+// FALSE PASS: the answer is the stub's; the bot's real refusal of a two-key question is tested in test_amm_http.c.
+test('the bot\'s page_out_of_date refusal shows the reload text and keeps no quote', async () => {
+  const { flow } = makeFlow({ routes: { 'POST /amm/quote': [400, { approved: false, reason: 'page_out_of_date' }] } });
+  const r = await flow.press({ direction: 'nodus_to_usdt', amountText: '500000' });
+  assert.deepEqual([r.ok, r.reason], [false, 'page_out_of_date']);
+  assert.equal(r.text, 'This page is out of date. Reload it and ask for a price again.');
+  assert.equal(flow.state.quote, null);
 });
 
 test('the bot\'s number and fee are kept as given, even when they match nothing the site could compute', async () => {
@@ -819,6 +854,47 @@ test('a late swap answer after an edit or a flip is discarded; the newer answer 
   assert.equal((await slow).stale, true);
   assert.equal(flow.state.quote.direction, 'nodus_to_usdt');
   assert.equal(flow.state.quote.number, '100000000');
+});
+
+// PROVES (plan 6.5.3, Kurultay row K4): a re-connect with ANOTHER Ethereum address drops the kept quote (state.quote
+//   null, swapGen bumped, so confirm answers not_ready and never reaches the adapter) and discards an answer still being
+//   awaited, in both directions; a re-connect with the SAME Ethereum address (even with another Nodus account) keeps the
+//   quote and the generation; the first connect bumps nothing.
+// FALSE PASS: the page's reset of the displayed quote (swap.js resetQuote after setAccounts) is not exercised here.
+test('an account change with another Ethereum address drops the kept and the awaited swap quote; the same address keeps it', async () => {
+  const OTHER = `0x${'9d'.repeat(20)}`;
+  const first = makeFlow({ routes: { 'POST /amm/quote': [200, { ...QUOTE, direction: 'nodus_to_usdt', amount: '50000000000000', number: '100000000', payTo: 'fd'.repeat(64) }] } });
+  assert.equal(first.flow.state.swapGen, 0);                                    // the first connect bumped nothing
+  await first.flow.loadStatus();
+  await first.flow.press({ direction: 'nodus_to_usdt', amountText: '500000' });
+  const gen = first.flow.state.swapGen;
+  assert.notEqual(first.flow.state.quote, null);
+  first.flow.setAccounts({ ...ACCOUNTS });                                      // the same address: kept
+  assert.notEqual(first.flow.state.quote, null);
+  assert.equal(first.flow.state.swapGen, gen);
+  first.flow.setAccounts({ nodus: { address: 'cd'.repeat(64), publicKey: ACCOUNTS.nodus.publicKey }, ethereum: ETH });   // another Nodus account, same Ethereum address
+  assert.notEqual(first.flow.state.quote, null);
+  first.flow.setAccounts({ ...ACCOUNTS, ethereum: OTHER });                     // another Ethereum address: dropped
+  assert.equal(first.flow.state.quote, null);
+  assert.equal(first.flow.state.swapGen, gen + 1);
+  const c = await first.flow.confirm({ toleranceBps: 100 });
+  assert.equal(c.reason, 'not_ready');
+  assert.equal(first.adapter.calls.length, 0);
+
+  // an answer still being awaited for the earlier address is discarded (both directions)
+  for (const direction of ['nodus_to_usdt', 'usdt_to_nodus']) {
+    const waiting = [];
+    const bot = { status: async () => ({ ok: true, status: 200, json: STATUS }), quote: () => { const x = deferred(); waiting.push(x); return x.promise; } };
+    const flow = createSwapFlow({ bot, adapter: stubAdapter(), botUrl: BOT_ORIGIN, sleep: async () => {} });
+    flow.setAccounts({ ...ACCOUNTS });
+    const p = flow.press({ direction, amountText: direction === 'nodus_to_usdt' ? '500000' : '100' });
+    await flush();
+    flow.setAccounts({ ...ACCOUNTS, ethereum: OTHER });
+    waiting[0].resolve({ ok: true, status: 200, json: QUOTE });
+    const r = await p;
+    assert.deepEqual([r.ok, r.stale], [false, true], direction);
+    assert.equal(flow.state.quote, null, direction);
+  }
 });
 
 test('a late add answer after a side or amount change is discarded', async () => {
