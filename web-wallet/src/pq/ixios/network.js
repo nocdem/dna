@@ -1,9 +1,10 @@
 // Ixios as a wallet network, alongside Cellframe (src/config.js CELLFRAME) and
 // its unpriced asset (src/portfolio.js CPUNK_ASSET), but kept in this module.
 //
-// Not part of CHAINS: src/wallet.js has no 'ixios' adapter, so nothing can be
-// sent here. `receiveOnly` gives it the single Receive action and hides the send
-// fields, exactly as for Cellframe. Its balance is read like Cellframe's, by
+// Not part of CHAINS: src/wallet.js reaches Ixios through its own branch
+// (src/pq/ixios-transfer.js), not an adapter. Whether Send is offered is
+// `receiveOnly`, set per network from the shared send gate (the table in
+// src/pq/send-gates.js). Its balance is read like Cellframe's, by
 // src/pq/ixios/balance.js against `endpoint` (or the RPC the user picks from
 // `rpcOptions` or enters as a custom HTTPS endpoint).
 //
@@ -15,9 +16,8 @@ export const IXIOS_NETWORK = {
   networkGroup: 'pq',
   name: 'Ixios', symbol: 'IXIOS', decimals: 18, icon: 'ixios.png', tokens: [], receiveOnly: true,
   endpoint: IXIOS_RPC, rpcOptions: [{ url: IXIOS_RPC, label: 'Ixios public RPC' }],
-  // Shown under the hidden send fields when Ixios is the selected network, in
-  // the style of Cellframe's (index.html's default #send-disabled-note text).
-  sendNote: 'Send IXIOS from the extension.',
+  // Fail-closed base: no send and no send note of its own. Each surface sets receiveOnly and the note from the shared send
+  // gate (src/pq/wallet-capabilities.js walletIxiosNetwork; the extension's extensionNetworkConfig).
 };
 // Unpriced like CPUNK_ASSET: no priceId, so it never enters PRICE_URL and never
 // counts toward the USD total or its completeness.

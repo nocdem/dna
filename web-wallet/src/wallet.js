@@ -12,6 +12,8 @@ import { prepareAlgorandTransfer } from './pq/algorand-transfer.js';
 import { prepareSplendorReview } from './pq/splendor-transfer.js';
 import { prepareSplendorTransfer } from './pq/splendor-prepare.js';
 import { prepareCkbTransfer } from './pq/ckb-transfer.js';
+import { prepareIxiosTransfer } from './pq/ixios-transfer.js';
+import { ixiosNetwork } from './pq/ixios/network.js';
 import { formatUnits } from './core.js';
 // `nodus` is reached only through the NODUS send module's client
 // (wallet.nodusClient, set by src/app.js while the module reports 'ready');
@@ -33,7 +35,7 @@ function reviewed(prepared, fields) {
 // chain must be the chain being sent on: no hop defaults to native, so a
 // missing or malformed tokenId refuses here, before any module call. The
 // other networks still take their asset by `symbol`.
-export async function prepareTransfer({ wallet, chain, symbol, asset: identity, to, amount, endpoint, nodusLocked, networkId = 'mainnet', maxFeePerGas, ckbUnresolved, signal }, implementations = adapters) {
+export async function prepareTransfer({ wallet, chain, symbol, asset: identity, to, amount, endpoint, nodusLocked, networkId = 'mainnet', maxFeePerGas, ckbUnresolved, maxGasPrice, ixiosUnresolved, ixiosCurrent, signal }, implementations = adapters) {
   if (chain === 'asentum') {
     if(symbol!=='ASE'||networkId!=='testnet')throw new Error('Choose Asentum testnet ASE.');
     const units=amountUnits(amount,18),recipient=typeof to==='string'?to.trim():to;
@@ -79,6 +81,14 @@ export async function prepareTransfer({ wallet, chain, symbol, asset: identity, 
     if (symbol !== 'CKB' || networkId !== 'mainnet') throw new Error('Choose CKB mainnet.');
     // Same controller, limits and order as the extension (src/pq/ckb-transfer.js).
     return prepareCkbTransfer({ wallet, to: typeof to === 'string' ? to.trim() : to, amountAtoms: amountUnits(amount, 8), networkId, unresolved: ckbUnresolved, signal });
+  }
+  if (chain === 'ixios') {
+    if (!wallet?.addresses?.ixios) throw new Error('Open a wallet first.');
+    if (symbol !== 'IXIOS') throw new Error('Only native IXIOS is supported.');
+    // An unlisted network id is refused here, before any request (the extension's network table, src/pq/ixios/network.js).
+    ixiosNetwork(networkId);
+    // Same review, signing, recovery and submit modules and the same order as the extension (src/pq/ixios-transfer.js).
+    return prepareIxiosTransfer({ wallet, to: typeof to === 'string' ? to.trim() : to, amount, maxGasPrice, networkId, unresolved: ixiosUnresolved, assertCurrent: ixiosCurrent, signal });
   }
   if (!wallet || !implementations[chain]) throw new Error('Open a wallet first.');
   if (chain === NODUS_ASSET.chain) {

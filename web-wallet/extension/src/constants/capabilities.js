@@ -1,11 +1,10 @@
 import { CKB_FULL_RECIPIENT_SEND_ENABLED } from '../../../src/pq/ckb-recipient-policy.js';
 import { capabilitiesFor, pageSupported } from '../../../src/capabilities.js';
 import { pqSendGate, PQ_PAGE_HISTORY_CHAINS } from '../../../src/pq/send-gates.js';
-import { IXIOS_NETWORKS } from '../../../src/pq/ixios/network.js';
 
 // Trusted extension wallet UI only. This does not enable site-provider signing,
 // assets, rekeyed accounts or testnet sends. The send / history flags of the
-// post-quantum networks other than Ixios come from src/pq/send-gates.js, the table
+// post-quantum networks, Ixios included, come from src/pq/send-gates.js, the table
 // the web wallet and Connect read too (operator 2026-11-03: the surfaces must match;
 // the web wallet keeps its own override list for XION, Splendor and QTC).
 // The background still independently enforces mainnet + v42 + direct-account
@@ -16,8 +15,8 @@ const onEvmTestNetwork = (chain, networkId) => (chain === 'ethereum' || chain ==
 export function extensionCapabilitiesFor(chain, networkId) {
   const shared = capabilitiesFor(chain);
   if (onEvmTestNetwork(chain, networkId)) return { ...shared, history: false };
-  // Send and history are on for every listed Ixios network (mainnet and the test network); an unlisted id gets neither.
-  if (chain === 'ixios') { const listed = typeof networkId === 'string' && Object.hasOwn(IXIOS_NETWORKS, networkId); return { ...shared, send: listed, history: listed }; } // Trusted code candidate; live RPC availability remains qualified.
+  // Ixios: send and history are on for every listed network (mainnet and the test network) and off for an unlisted id; that row
+  // now lives in the shared table (src/pq/send-gates.js), read by the web wallet and Connect too. Live RPC availability remains qualified.
   const gate = pqSendGate(chain, networkId);
   return gate ? { ...shared, ...gate } : shared;
 }

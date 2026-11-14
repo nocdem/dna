@@ -41,12 +41,13 @@ test('the main entry equals the literal copy of the constants the wallet had bef
   assert.equal(ixiosNetwork('mainnet'), IXIOS_NETWORKS.mainnet);
 });
 
-test('IXIOS_NETWORK (display config) is unchanged: same fields, same values, no new field', () => {
+// Changed 2026-11-14 (operator, decisions/2026-09-23-ixios-send-mainnet-first.md "Değişiklik 3"): the base no longer carries the
+// "Send IXIOS from the extension." note; each surface sets receiveOnly and the note from the shared send gate.
+test('IXIOS_NETWORK (display config): same fields and values, fail-closed receiveOnly, no send note of its own', () => {
   assert.deepEqual(IXIOS_NETWORK, {
     networkGroup: 'pq',
     name: 'Ixios', symbol: 'IXIOS', decimals: 18, icon: 'ixios.png', tokens: [], receiveOnly: true,
     endpoint: 'https://ixios-rpc.innova.limited', rpcOptions: [{ url: 'https://ixios-rpc.innova.limited', label: 'Ixios public RPC' }],
-    sendNote: 'Send IXIOS from the extension.',
   });
 });
 

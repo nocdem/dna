@@ -30,3 +30,11 @@ export function walletPqNetwork(chain, config, networkId) {
       sendNote: CKB_FULL_RECIPIENT_SEND_ENABLED ? 'Native CKB to full-format Bech32m recipients; quantum inputs only. Address validity does not prove recipient control. Signed simulation is disclosed to the configured node.' : 'Native CKB only; quantum-lock recipients and empty-data, non-cellbase inputs. Signed simulation is disclosed to the configured node.' } : {}),
     ...(Object.hasOwn(SEND_FROM_EXTENSION, chain) && networkId === 'mainnet' ? { sendNote: `Send ${SEND_FROM_EXTENSION[chain]} from the extension.` } : {}) };
 }
+// The Ixios network config the wallet shows for a network id of IXIOS_NETWORKS: send follows the shared gate, the notes are the
+// extension's wording (extension/src/constants/capabilities.js, extensionNetworkConfig; test/pq-send-gate-parity.test.js compares them).
+// An id outside the table gets no send and the extension's refusal note.
+const IXIOS_SEND_NOTE = 'Native IXIOS only, 1,000 gas and an explicit gas-price cap. Fresh identity/fee checks must pass; live RPC availability is not guaranteed. No contracts, tokens or automatic replacement.';
+export function walletIxiosNetwork(config, networkId) {
+  return { ...config, receiveOnly: !walletCapabilities('ixios', networkId).send,
+    sendNote: networkId === 'mainnet' ? IXIOS_SEND_NOTE : networkId === 'testnet' ? `Ixios test network: test IXIOS only. ${IXIOS_SEND_NOTE}` : 'IXIOS sends are available only on the mainnet code candidate.' };
+}

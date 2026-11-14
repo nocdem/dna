@@ -6,14 +6,18 @@ import {ckbRecoveryTransfer} from './pq/ckb-transfer.js';
 import { prepareSoquResubmission } from './pq/soqu-transfer.js';
 import { createSubmissionProof, commitSubmissionProof, recoverSubmissionProofs, clearSubmissionProofs } from './pq/submission-proof.js';
 import { soquScript } from './pq/soqu-transaction.js';
-import { walletCapabilities, walletPageSupported, walletPqNetwork } from './pq/wallet-capabilities.js';
+import { walletCapabilities, walletPageSupported, walletPqNetwork, walletIxiosNetwork } from './pq/wallet-capabilities.js';
+import { ixiosRecoveryTransfer } from './pq/ixios-transfer.js';
+import { prepareIxiosExactRecovery } from './pq/ixios/recovery.js';
 import { algorandAddressBytes } from './pq/algorand-prepare.js';
-function capabilitiesFor(chain) { return walletCapabilities(chain, pqSelections[chain]); }
+// The network id a chain's gates are read for: Ixios has its own selection (ixiosSelection), the PQ chains theirs.
+const gateNetwork = chain => chain === 'ixios' ? ixiosSelection : pqSelections[chain];
+function capabilitiesFor(chain) { return walletCapabilities(chain, gateNetwork(chain)); }
 // Send is offered only where the network can send now: capability AND not receive-only (UI pack 2026-11-03,
 // operator "send tusunu kaldir gecsin"). networkFor is a hoisted function over a table built at load; this runs after load.
 function pageSupported(chain, page) {
   if (page === 'send' && networkFor(chain)?.receiveOnly) return false;
-  return walletPageSupported(chain, page, pqSelections[chain]);
+  return walletPageSupported(chain, page, gateNetwork(chain));
 }
 import { getAddress } from 'ethers';
 import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
@@ -243,7 +247,9 @@ function refuseOpen(flow) {
   lock(); message('');
   sessionConflictFlow = flow; $('session-conflict').hidden = false; $('session-takeover').focus();
 }
-function visibleActivity() { return wallet ? history.filter(row => row.chain === $('chain').value && row.address === wallet.addresses[row.chain]) : []; }
+// Ixios has one address for both networks but a nonce space and an Activity list per network (the extension keeps one bucket each).
+const ixiosOnSelection = row => row.chain !== 'ixios' || row.networkId === ixiosSelection;
+function visibleActivity() { return wallet ? history.filter(row => row.chain === $('chain').value && row.address === wallet.addresses[row.chain] && ixiosOnSelection(row)) : []; }
 const submissionProofStorage = {
   async get(keys) { return Object.fromEntries(keys.map(key => [key, localStorage.getItem(key) ?? undefined])); },
   async set(entries) { for (const [key, value] of Object.entries(entries)) localStorage.setItem(key, value); }
@@ -265,15 +271,17 @@ function persistActivity({ required = false, expectedPreviousSubmissionId, expec
     if (required) {
       // Serialize the reservation across tabs, not merely each tab's UI. An
       // authenticated unresolved hash from another tab must win before POST.
-      const freshAlgo = rows.filter(row => ['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb'].includes(row.chain) && !terminal(row.status));
+      const freshAlgo = rows.filter(row => ['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb', 'ixios'].includes(row.chain) && !terminal(row.status));
       for (const candidate of freshAlgo) {
-        if (['soqucoin', 'splendor', 'asentum', 'ckb'].includes(candidate.chain) && candidate.chain===expectedPreviousChain && candidate.hash===expectedPreviousHash && expectedPreviousSubmissionId !== undefined) {
+        if (['soqucoin', 'splendor', 'asentum', 'ckb', 'ixios'].includes(candidate.chain) && candidate.chain===expectedPreviousChain && candidate.hash===expectedPreviousHash && expectedPreviousSubmissionId !== undefined) {
           const prior = saved.find(row => row.chain === candidate.chain && row.address === candidate.address && row.hash === candidate.hash);
           if (!prior || prior.submissionId !== expectedPreviousSubmissionId || prior.notSubmitted || terminal(prior.savedStatus ?? prior.status)) throw new Error('Recovery attempt changed in another tab. Check Activity.');
         }
         const other = saved.find(row => row.chain === candidate.chain && row.address === candidate.address
           && !terminal(row.savedStatus ?? row.status)
-          && (row.hash !== candidate.hash || (['soqucoin', 'splendor', 'asentum', 'ckb'].includes(candidate.chain) && row.submissionId !== candidate.submissionId && !(candidate.chain===expectedPreviousChain && candidate.hash===expectedPreviousHash && row.submissionId===expectedPreviousSubmissionId)))
+          // Ixios: an unresolved row of the other network does not hold this network's nonce (the extension's one bucket per network).
+          && (candidate.chain !== 'ixios' || row.networkId === candidate.networkId)
+          && (row.hash !== candidate.hash || (['soqucoin', 'splendor', 'asentum', 'ckb', 'ixios'].includes(candidate.chain) && row.submissionId !== candidate.submissionId && !(candidate.chain===expectedPreviousChain && candidate.hash===expectedPreviousHash && row.submissionId===expectedPreviousSubmissionId)))
           && !rows.some(local => local.chain === row.chain && local.hash === row.hash && terminal(local.status)));
         if (other) throw new Error(`Another ${candidate.chain} submission is unresolved. Check Activity before sending.`);
       }
@@ -282,7 +290,7 @@ function persistActivity({ required = false, expectedPreviousSubmissionId, expec
     // must respect attempt identity. Only the required write of an explicitly
     // reviewed replay may replace the exact prior durable attempt.
     for (const local of rows) {
-      if (!['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb'].includes(local.chain)) continue;
+      if (!['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb', 'ixios'].includes(local.chain)) continue;
       const prior=saved.find(row=>row.chain===local.chain && row.address===local.address && row.hash===local.hash);
       if (prior && prior.submissionId!==local.submissionId && !(local.chain !== 'algorand' && required && local.chain===expectedPreviousChain && local.hash===expectedPreviousHash && expectedPreviousSubmissionId!==undefined && prior.submissionId===expectedPreviousSubmissionId && !prior.notSubmitted && !terminal(prior.savedStatus ?? prior.status)))
         throw new Error('Activity attempt changed in another tab. Refresh Activity before continuing.');
@@ -612,14 +620,15 @@ function renderActivity(save = true) {
       link.href = CHAINS[row.chain].explorer + encodeURIComponent(row.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; footer.append(link);
     } else footer.append(el('span', 'activity-id', `${claim ? 'Claim ID' : row.kind ? 'Transaction ID' : 'Transfer ID'} ${row.hash}`));
     if (ready) footer.append(tryAgainButton(row));
-    if (['soqucoin','splendor','asentum','ckb'].includes(row.chain) && capabilitiesFor(row.chain).send && row.signedPayload && !row.notSubmitted && ['pending', 'unknown'].includes(row.status)) {
+    if ((['soqucoin','splendor','asentum','ckb'].includes(row.chain) || row.chain === 'ixios') && capabilitiesFor(row.chain).send && row.signedPayload && !row.notSubmitted && ['pending', 'unknown'].includes(row.status)) {
       const recover = document.createElement('button'); recover.type = 'button'; recover.className = 'secondary small';
-      recover.textContent = 'Review same-transaction recovery'; recover.onclick = () => void (row.chain === 'asentum' ? reviewAsentumRecovery(row) : row.chain === 'splendor' ? reviewSplendorRecovery(row) : row.chain === 'ckb' ? reviewCkbRecovery(row) : reviewSoquRecovery(row)); footer.append(recover);
+      recover.textContent = 'Review same-transaction recovery'; recover.onclick = () => void (row.chain === 'asentum' ? reviewAsentumRecovery(row) : row.chain === 'splendor' ? reviewSplendorRecovery(row) : row.chain === 'ckb' ? reviewCkbRecovery(row) : row.chain === 'ixios' ? reviewIxiosRecovery(row) : reviewSoquRecovery(row)); footer.append(recover);
     }
     // A NODUS send always resolves: included, or 'expired' once the chain passes
     // its expiry block. Its coins stay held until then (src/adapters/nodus.js
     // lockedInputs), so it is never marked abandoned by hand.
-    if (!terminal(row.status) && row.chain !== NODUS_ASSET.chain && !['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb'].includes(row.chain)) {
+    // An Ixios row is never marked abandoned by hand either: only its recovery or a terminal observation ends it.
+    if (!terminal(row.status) && row.chain !== 'ixios' && row.chain !== NODUS_ASSET.chain && !['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb'].includes(row.chain)) {
       const abandon = document.createElement('button'); abandon.type = 'button'; abandon.className = 'secondary small';
       abandon.textContent = row._abandonArmed ? 'Confirm abandon' : 'Mark as abandoned';
       abandon.onclick = () => {
@@ -685,10 +694,17 @@ const NODUS_HAS_MODULE = nodusSendModuleFactory !== null;
 const leadingNetworks = [{ network: nodusNetworkFor(false, { module: NODUS_HAS_MODULE }), asset: NODUS_ASSET }];
 const extraNetworks = [];
 if (CPUNK_ENABLED) { endpoints.cellframe = CELLFRAME.endpoint; extraNetworks.push({ network: CELLFRAME, asset: CPUNK_ASSET }); }
-// Ixios: receive-only, like Cellframe (see src/pq/ixios/network.js).
+// Ixios: balance, receive and, on both listed networks, send (src/pq/ixios-transfer.js; the shared gate in src/pq/send-gates.js).
+// The network config of each id, built once: the mainnet one is the object the portfolio is created with (see selectIxiosNetwork).
+const ixiosConfigs = {};
+function ixiosConfig(id) {
+  const entry = ixiosNetwork(id);
+  return ixiosConfigs[entry.id] ??= entry.id === 'mainnet' ? walletIxiosNetwork(IXIOS_NETWORK, 'mainnet')
+    : { ...walletIxiosNetwork(IXIOS_NETWORK, entry.id), endpoint: entry.endpoint, rpcOptions: entry.rpcOptions, stage: entry.label, testnet: true, networkId: entry.id };
+}
 {
   ixiosChain = IXIOS_ASSET.chain;
-  endpoints[ixiosChain] = IXIOS_NETWORK.endpoint; extraNetworks.push({ network: IXIOS_NETWORK, asset: IXIOS_ASSET });
+  endpoints[ixiosChain] = IXIOS_NETWORK.endpoint; extraNetworks.push({ network: ixiosConfig('mainnet'), asset: IXIOS_ASSET });
 }
 extraNetworks.push(...PQ_ENTRIES.map(entry => ({ ...entry, network: walletPqNetwork(entry.asset.chain, entry.network, pqSelections[entry.asset.chain]) })));
 // The NODUS entry is swapped for its sendable variant only while a send module
@@ -1018,15 +1034,15 @@ function syncPqAddress(chain) {
     if (isPqChain(chain) && historySupported(chain)) { renderHistory(); void loadHistory(chain); }
   }
 }
-// Chooses the Ixios network (an id of IXIOS_NETWORKS). Mainnet is the same IXIOS_NETWORK object the portfolio was
-// created with; the test network gets a copy with its endpoint, option list and stage label, marked testnet (with its network id) so
+// Chooses the Ixios network (an id of IXIOS_NETWORKS). Mainnet is the same ixiosConfig object the portfolio was
+// created with (Send follows the shared gate); the test network gets its own with its endpoint, option list and stage label, marked testnet (with its network id) so
 // the kept balances carry that network's own identity (src/portfolio.js networkIdOf). The kept balances of Ixios
 // are forgotten (one key serves both networks) and a read in flight is aborted by setNetwork.
 function selectIxiosNetwork(id) {
   const entry = ixiosNetwork(id);
   if (ixiosSelection === entry.id) return;
   ixiosSelection = entry.id; endpoints[ixiosChain] = entry.endpoint; syncNetworkChoices();
-  receiveOnlyNetworks[ixiosChain] = entry.id === 'mainnet' ? IXIOS_NETWORK : { ...IXIOS_NETWORK, endpoint: entry.endpoint, rpcOptions: entry.rpcOptions, stage: entry.label, testnet: true, networkId: entry.id };
+  receiveOnlyNetworks[ixiosChain] = ixiosConfig(entry.id);
   portfolio.setNetwork(ixiosChain, receiveOnlyNetworks[ixiosChain], { forgetKept: true });
   if (!wallet || wallet.locked) return;
   const address = wallet.addresses[ixiosChain];
@@ -2344,6 +2360,8 @@ function selectChain() {
   applyAssetGate();
   $('solana-send-hint').hidden = chain !== 'solana';
   $('asentum-fee-fields').hidden = chain !== 'asentum'; $('asentum-max-fee').disabled = chain !== 'asentum'; $('asentum-max-fee').required = chain === 'asentum';
+  // The Ixios gas-price cap field, as the extension (extension/src/ui/wallet-screen.js): only where Ixios can send on the selected network.
+  const ixiosSends = chain === ixiosChain && capabilitiesFor(chain).send; $('ixios-fee-fields').hidden = !ixiosSends; $('ixios-max-gas-price').disabled = !ixiosSends; $('ixios-max-gas-price').required = ixiosSends; $('ixios-max-gas-price').value = '';
   const explorers = { ethereum: 'https://etherscan.io/address/', bsc: 'https://bscscan.com/address/', solana: 'https://solscan.io/account/', tron: 'https://tronscan.org/#/address/' };
   if (explorers[chain]) { $('account-explorer').href = explorers[chain] + encodeURIComponent(address); $('account-explorer').hidden = false; }
   else { $('account-explorer').removeAttribute('href'); $('account-explorer').hidden = true; }
@@ -2646,9 +2664,14 @@ $('send-form').onsubmit = async event => {
   const selected = networkFor($('chain').value);
   if (selected?.receiveOnly) { message(selected.sendNote || DEFAULT_SEND_DISABLED_NOTE); return; }
   if (['algorand', 'soqucoin', 'splendor', 'asentum', 'ckb'].includes($('chain').value) && !activitySession) { message('Save this wallet encrypted before sending on this network, so an uncertain submission survives reload.'); return; }
+  if ($('chain').value === 'ixios' && !activitySession) { message('Save this wallet encrypted before sending on this network, so an uncertain submission survives reload.'); return; }
   if (['ethereum', 'bsc', 'algorand', 'soqucoin', 'splendor', 'asentum', 'ckb'].includes($('chain').value)) {
     const address = wallet.addresses[$('chain').value];
     const blocking = history.find(row => row.chain === $('chain').value && row.address === address && !terminal(row.status));
+    if (blocking) { message(`A previous send on this network has no final result yet (tx ${blocking.hash}). Wait for it to resolve in Activity.`); return; }
+  }
+  if ($('chain').value === 'ixios') {
+    const blocking = history.find(row => row.chain === 'ixios' && row.address === wallet.addresses.ixios && ixiosOnSelection(row) && !terminal(row.status));
     if (blocking) { message(`A previous send on this network has no final result yet (tx ${blocking.hash}). Wait for it to resolve in Activity.`); return; }
   }
   // An unavailable selected asset is never prepared (retry included); the
@@ -2664,8 +2687,13 @@ $('send-form').onsubmit = async event => {
     // NODUS: the asset travels as its token id (the option's value), required
     // by prepareTransfer — never defaulted to native on the way.
     const asset = chain === NODUS_ASSET.chain ? { chain, tokenId: $('asset').value } : undefined;
-    const transfer = await prepareTransfer({ wallet, chain, symbol: $('asset').value, asset, to: $('recipient').value, amount: $('amount').value, endpoint: endpoints[chain], nodusLocked, networkId: isPqChain(chain) ? pqSelections[chain] : undefined, ...(chain === 'asentum' ? { maxFeePerGas: $('asentum-max-fee').value } : {}),
-      ...(chain === 'ckb' ? { ckbUnresolved: () => history.some(row => row.chain === 'ckb' && row.address === wallet?.addresses?.ckb && !terminal(row.status)) } : {}) });
+    // Ixios: the wallet guard the review and signing modules call before and after every step (the extension's current(s)):
+    // same page state, same unlocked wallet object, Ixios and the chosen network still selected, same account.
+    const ixiosSource = wallet, ixiosNetworkId = ixiosSelection, ixiosAddress = wallet?.addresses?.ixios;
+    const ixiosCurrent = () => { if (current !== revision || ixiosSource !== wallet || ixiosSource.locked || $('chain').value !== 'ixios' || ixiosSelection !== ixiosNetworkId || ixiosSource.addresses.ixios !== ixiosAddress) throw new Error('Ixios account, wallet or network changed.'); };
+    const transfer = await prepareTransfer({ wallet, chain, symbol: $('asset').value, asset, to: $('recipient').value, amount: $('amount').value, endpoint: endpoints[chain], nodusLocked, networkId: isPqChain(chain) ? pqSelections[chain] : chain === 'ixios' ? ixiosSelection : undefined, ...(chain === 'asentum' ? { maxFeePerGas: $('asentum-max-fee').value } : {}),
+      ...(chain === 'ckb' ? { ckbUnresolved: () => history.some(row => row.chain === 'ckb' && row.address === wallet?.addresses?.ckb && !terminal(row.status)) } : {}),
+      ...(chain === 'ixios' ? { maxGasPrice: $('ixios-max-gas-price').value, ixiosCurrent, ixiosUnresolved: () => history.some(row => row.chain === 'ixios' && row.address === ixiosAddress && row.networkId === ixiosNetworkId && !terminal(row.status)) } : {}) });
     if (current !== revision || !wallet) { transfer.cancel(); return; }
     let entries;
     if (transfer.review) {
@@ -2706,7 +2734,7 @@ $('confirm-send').onclick = async () => {
     const hash = await transfer.confirm(async details => {
       sentWire = typeof details?.wire === 'string' ? details.wire : undefined;
       record = recordActivity(transfer, details);
-      if (!transfer.isResubmission && ['soqucoin', 'splendor', 'asentum', 'ckb'].includes(transfer.chain)) {
+      if (!transfer.isResubmission && (['soqucoin', 'splendor', 'asentum', 'ckb'].includes(transfer.chain) || transfer.chain === 'ixios')) {
         const session = activitySession, source = wallet;
         if (!session || !source || source.locked) throw new Error('Save and unlock the wallet before sending.');
         submissionProof = await createSubmissionProof({ id: session.id, row: record, key: session.key });
@@ -2716,9 +2744,9 @@ $('confirm-send').onclick = async () => {
       if (previous >= 0) history.splice(previous, 1, record); else history.push(record);
       if (current === revision) renderActivity(false);
       // The signed hash must be durable before the first network submission.
-      await persistActivity({ required: true, ...(['soqucoin', 'splendor', 'asentum', 'ckb'].includes(transfer.chain) && transfer.isResubmission ? { expectedPreviousSubmissionId: transfer.previousSubmissionId, expectedPreviousChain: transfer.chain, expectedPreviousHash: transfer.hash } : {}) });
-      // The CKB controller and recovery module require the fresh durable attempt identity on an initial send too.
-      if ((['splendor', 'asentum'].includes(transfer.chain) && transfer.isResubmission) || transfer.chain === 'ckb') return { submissionId: record.submissionId };
+      await persistActivity({ required: true, ...((['soqucoin', 'splendor', 'asentum', 'ckb'].includes(transfer.chain) || transfer.chain === 'ixios') && transfer.isResubmission ? { expectedPreviousSubmissionId: transfer.previousSubmissionId, expectedPreviousChain: transfer.chain, expectedPreviousHash: transfer.hash } : {}) });
+      // The CKB and Ixios controllers and recovery modules require the fresh durable attempt identity on an initial send too.
+      if ((['splendor', 'asentum'].includes(transfer.chain) && transfer.isResubmission) || transfer.chain === 'ckb' || transfer.chain === 'ixios') return { submissionId: record.submissionId };
     });
     if (record) { record.note = 'Broadcast submitted; awaiting confirmation.'; if (current === revision) trackActivity(); }
     // A plain NODUS transfer the network accepted: Nodus Connect's Messages
@@ -2734,7 +2762,7 @@ $('confirm-send').onclick = async () => {
     if (current !== revision) return;
     // A staking row and its amount fields were closed by closeStakeRow above.
     if (transfer.kind === 'name') { $('name-input').value = ''; clearNameQuote(); }
-    else if (!STAKE_KINDS.includes(transfer.kind)) { $('recipient').value = ''; $('amount').value = ''; }
+    else if (!STAKE_KINDS.includes(transfer.kind)) { $('recipient').value = ''; $('amount').value = ''; if (transfer.chain === 'ixios') $('ixios-max-gas-price').value = ''; }
     // A plain transfer: offer to save its recipient (a chain name it was
     // sent to is the suggested name).
     if (!transfer.kind) offerSaveRecipient(transfer.chain, transfer.to, transfer.named?.name || transfer.recipientName);
@@ -2746,7 +2774,7 @@ $('confirm-send').onclick = async () => {
     }
     follow();
   } catch (error) {
-    if (submissionProof && ((transfer.chain === 'soqucoin' && error.soquNotSubmitted === true) || (transfer.chain === 'splendor' && error.splendorNotSubmitted === true) || (transfer.chain === 'asentum' && error.asentumNotSubmitted === true) || (transfer.chain === 'ckb' && !transfer.isResubmission && error.ckbNotExposed === true))) {
+    if (submissionProof && ((transfer.chain === 'soqucoin' && error.soquNotSubmitted === true) || (transfer.chain === 'splendor' && error.splendorNotSubmitted === true) || (transfer.chain === 'asentum' && error.asentumNotSubmitted === true) || (transfer.chain === 'ckb' && !transfer.isResubmission && error.ckbNotExposed === true) || (transfer.chain === 'ixios' && !transfer.isResubmission && error.ixiosNotExposed === true))) {
       // This capability contains ciphertext only. No key is consulted after
       // lock, and the separate attempt-bound journal cannot overwrite a vault.
       try { await commitSubmissionProof(submissionProofStorage, submissionProof); }
@@ -2763,7 +2791,7 @@ $('confirm-send').onclick = async () => {
       return;
     }
     if (record) {
-      if ((transfer.chain === 'algorand' && error.algorandNotSubmitted === true) || (transfer.chain === 'soqucoin' && error.soquNotSubmitted === true) || (transfer.chain === 'splendor' && error.splendorNotSubmitted === true) || (transfer.chain === 'asentum' && error.asentumNotSubmitted === true) || (transfer.chain === 'ckb' && !transfer.isResubmission && error.ckbNotExposed === true)) {
+      if ((transfer.chain === 'algorand' && error.algorandNotSubmitted === true) || (transfer.chain === 'soqucoin' && error.soquNotSubmitted === true) || (transfer.chain === 'splendor' && error.splendorNotSubmitted === true) || (transfer.chain === 'asentum' && error.asentumNotSubmitted === true) || (transfer.chain === 'ckb' && !transfer.isResubmission && error.ckbNotExposed === true) || (transfer.chain === 'ixios' && !transfer.isResubmission && error.ixiosNotExposed === true)) {
         record.status = 'failed'; record.notSubmitted = true;
         record.note = 'Cancelled before network submission. Nothing was broadcast.';
         await persistActivity().catch(() => { record.status='unknown'; delete record.notSubmitted; record.note='Another activity attempt may exist; check Activity before sending.'; });
@@ -2822,6 +2850,20 @@ async function reviewCkbRecovery(row) {
   try {
     const prepared=await prepareCkbExactRecovery(row,{assertCurrent:guard});guard();
     const transfer=ckbRecoveryTransfer(prepared,row);
+    showReview(transfer,[...transfer.review,['Review expires',new Date(prepared.expiresAt).toLocaleTimeString()]],'Review same-transaction recovery');
+  } catch(error) { if(current===revision) message(error.message,{category:'send',error:true}); } finally {busy=false;}
+}
+// Ixios recovery review: the extension's prepareResubmit (extension/src/background/ixios.js) in the page. The guard tests the
+// account and the row's own network (the extension's current(s)); the transfer is marked isResubmission so a failed replay stays
+// unresolved with its signed bytes and hold (design D5).
+async function reviewIxiosRecovery(row) {
+  if (busy || !wallet || wallet.locked || $('chain').value !== 'ixios' || !capabilitiesFor('ixios').send || ixiosSelection !== row.networkId || !activitySession || row.address !== wallet.addresses.ixios) return;
+  const current=revision, source=wallet; busy=true;
+  const guard=()=>{if(current!==revision || source!==wallet || source.locked || $('chain').value!=='ixios' || ixiosSelection!==row.networkId || row.address!==source.addresses.ixios)throw new Error('Wallet or network changed.');};
+  try {
+    if (history.some(other => other !== row && other.chain === 'ixios' && other.address === row.address && other.networkId === row.networkId && !terminal(other.status))) throw new Error('Choose one unresolved Ixios submission.');
+    const prepared=await prepareIxiosExactRecovery(row,{assertCurrent:guard});guard();
+    const transfer=ixiosRecoveryTransfer(prepared,row);
     showReview(transfer,[...transfer.review,['Review expires',new Date(prepared.expiresAt).toLocaleTimeString()]],'Review same-transaction recovery');
   } catch(error) { if(current===revision) message(error.message,{category:'send',error:true}); } finally {busy=false;}
 }

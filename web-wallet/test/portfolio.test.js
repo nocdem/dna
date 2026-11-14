@@ -87,7 +87,8 @@ test('IXIOS is an unpriced, receive-only row like CPUNK: no priceId, no PRICE_UR
   assert.equal(IXIOS_NETWORK.receiveOnly, true); assert.equal(Object.hasOwn(IXIOS_NETWORK, 'notActive'), false);
   assert.equal(IXIOS_NETWORK.endpoint, 'https://ixios-rpc.innova.limited');
   assert.deepEqual(IXIOS_NETWORK.rpcOptions, [{ url: IXIOS_NETWORK.endpoint, label: 'Ixios public RPC' }]); assert.deepEqual(IXIOS_NETWORK.tokens, []);
-  assert.equal(IXIOS_NETWORK.sendNote, 'Send IXIOS from the extension.');
+  // 2026-11-14: Ixios sends on the web wallet and Connect; the base config carries no note (each surface sets it from the shared gate).
+  assert.equal(Object.hasOwn(IXIOS_NETWORK, 'sendNote'), false);
   assert.ok(!/ixios/i.test(PRICE_URL));
   const withBoth = [...ASSETS, CPUNK_ASSET, IXIOS_ASSET];
   const result = chainBalances('ixios', [{ symbol: 'IXIOS', balance: '7.25' }], now, withBoth);

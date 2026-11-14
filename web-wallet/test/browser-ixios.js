@@ -2,15 +2,15 @@ import { portfolioRead, cellframeRead, historyRead, PQ_HOST } from './portfolio-
 import { pastePhrase } from './browser-phrase.js';
 import { PQ_ENTRIES } from '../src/pq/networks.js';
 import { BALANCES_KEY } from '../src/vault.js';
-// Proves, on a web build made for this script: Ixios (a receive-only wallet network handled
-// exactly like Cellframe; the Ixios build switch is gone, every build carries it) is listed and
+// Proves, on a web build made for this script: Ixios (balance, receive and, since 2026-11-14, send on both
+// networks; the Ixios build switch is gone, every build carries it) is listed and
 // selectable (network selector, network badge, its own group in the coin list); its IXIOS row is
 // read like the CPUNK row (balance, no USD value, outside the total) after a genesis-block
 // identity check (a wrong genesis makes no balance read and keeps only the amount read earlier,
 // marked "Last read"); selecting it shows the checksummed receive address and a QR that decodes
-// to exactly that address, hides the send fields and shows the Ixios note while Cellframe keeps
-// its own; lock clears it; the page never fetches the signing module at runtime (web send stays off) and
-// the build has no Ixios markup; every Ixios request goes to the mocked public RPC.
+// to exactly that address, offers the send fields and the gas-price cap field (no note) while Cellframe keeps
+// its own note; lock clears it; the page never fetches the signing module at runtime (this script confirms no send) and
+// the build's only Ixios markup is the gas-price cap field; every Ixios request goes to the mocked public RPC.
 // Public test phrase only; every external request is intercepted (the Ixios RPC included:
 // mocked below; the PQ networks' providers are refused, as in test/browser-portfolio.js, and counted
 // apart from `unexpected`). Unlike the other browser scripts this one builds its own bundle
@@ -30,7 +30,7 @@ import { BALANCES_KEY } from '../src/vault.js';
 // into its own temporary directory and previewed with --outDir on port 4194, --strictPort, so a busy port fails):
 // the Ixios list in Device & settings (#network-ixios; the wallet screen has no chooser and only shows the network) offers Mainnet and Testnet and starts on Mainnet; choosing Testnet
 // makes only ixios_ calls to nx-rpc.ixoflow.io (block 1's parentHash = the test genesis, then ixios_getBalance for
-// the same checksummed address), shows the stage "Testnet", keeps the Ixios note, keeps the send fields hidden and
+// the same checksummed address), shows the stage "Testnet", offers the send fields and the gas-price cap field (no note) and
 // makes no call to the main node; a wrong genesis (Ethereum's, and the main Ixios genesis) makes no balance call;
 // back to Mainnet gives today's eth_ calls and no test call; choosing Testnet, selecting another chain (Ethereum) and
 // then Ixios again still shows Testnet (the settings list and the stage; selecting a chain no longer resets its network, only a new opening
@@ -79,8 +79,6 @@ const app = fileURLToPath(new URL('..', import.meta.url));
 const vite = join(app, 'node_modules/vite/bin/vite.js');
 const { Phrase: phrase, Checksummed: expected } = JSON.parse(readFileSync(new URL('./fixtures/ixios-checksum.json', import.meta.url))).vectors[0];
 assert.equal(phrase, Array(23).fill('abandon').concat('art').join(' '));
-// Web wallet 0.1.18, Package R3 item 3, verbatim (the Cellframe-style note).
-const IXIOS_NOTE = 'Send IXIOS from the extension.';
 const IXIOS_RPC = 'https://ixios-rpc.innova.limited';
 // Ixios mainnet genesis block hash (ixiosSpark params/config.go:27) and, for
 // the wrong-network case, Ethereum mainnet's: both chains report chain id 1.
@@ -352,9 +350,11 @@ async function siteChecks(url, connect) {
     assert.deepEqual(await stageLabels(page), ['Testnet']);
     assert.equal(await page.locator('#network-ixios').inputValue(), 'testnet');
     assert.match(await shownNetwork(page), /Ixios · Testnet/);
-    assert.equal(await page.locator('#send-fields').evaluate(node => node.hidden), true);
-    assert.equal(await page.locator('#send-disabled-note').evaluate(node => node.hidden), false);
-    assert.equal(await page.locator('#send-disabled-note').textContent(), IXIOS_NOTE);
+    // Ixios sends on the test network too (operator 2026-11-14): the send fields and the gas-price cap field are offered, no note.
+    assert.equal(await page.locator('#send-fields').evaluate(node => node.hidden), false);
+    assert.equal(await page.locator('#send-disabled-note').evaluate(node => node.hidden), true);
+    assert.equal(await page.locator('#ixios-fee-fields').evaluate(node => node.hidden), false);
+    assert.equal(await page.locator('#ixios-max-gas-price').evaluate(node => node.disabled), false);
     // A wrong genesis on the test entry (Ethereum's, and the main Ixios one): no balance call.
     for (const wrong of [ETHEREUM_GENESIS, IXIOS_GENESIS]) {
       testCalls.length = 0; testGenesis = wrong;
@@ -440,11 +440,14 @@ try {
   const outDir = build();
   const files = inspect(outDir);
   assert.ok(files.ixiosJs.length > 0, 'the build must contain the Ixios code');
-  // The old top-of-page panel is gone: Ixios is created only by JavaScript.
-  assert.deepEqual(files.ixiosHtml, []);
+  // The old top-of-page panel is gone: the Ixios address area is created only by JavaScript. The page carries one Ixios element
+  // in its markup, the gas-price cap field of the Send form (decisions/2026-09-23-ixios-send-mainnet-first.md "Değişiklik 3").
+  assert.equal(files.ixiosHtml.length, 1);
+  assert.match(readFileSync(join(outDir, files.ixiosHtml[0]), 'utf8'), /id="ixios-max-gas-price"/);
+  assert.doesNotMatch(readFileSync(join(outDir, files.ixiosHtml[0]), 'utf8'), /ixios-address|ixios-panel/);
   // The signing module ships in the build (src/pq/ixios/transaction.js imports src/pq/sign.js); the released 0.1.160
   // web and Connect builds already carry it (deployment0160 SHA256SUMS: dist/assets/mldsa87-sign-Dd8Y3xVG.wasm).
-  // Web send stays off (decisions/2026-09-23-ixios-send-mainnet-first.md "Değişiklik 2"); the page never fetches it (below).
+  // Web send is on (decisions/2026-09-23-ixios-send-mainnet-first.md "Değişiklik 3"); the page fetches it only when a send is confirmed (below).
   assert.equal(files.signWasm.length, 1);
   assert.equal(files.keygenWasm.length, 1, 'Ixios reuses the Nodus keygen module, not a new one');
   browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined });
@@ -509,15 +512,15 @@ try {
   // Selecting the IXIOS row (a 'choose' selection, src/app.js selectAsset) selects the Ixios network: the rail offers Receive, not Send.
   await row.locator('.holding-select').click();
   assert.equal(await page.locator('#chain').inputValue(), 'ixios');
-  assert.equal(await rail(page, 'send').isVisible(), false, 'IXIOS: no Send');
+  assert.equal(await rail(page, 'send').isVisible(), true, 'IXIOS: Send (operator 2026-11-14)');
   assert.equal(await rail(page, 'receive').isVisible(), true, 'IXIOS: Receive');
   await openPage(page, 'receive');
-  // Checksummed address, send fields hidden, Ixios note. The Send page is never displayed for a receive-only network,
-  // so the state is read from `hidden` (src/app.js: send-fields hidden = receiveOnly, send-disabled-note hidden = !receiveOnly).
+  // Checksummed address; Ixios sends (operator 2026-11-14), so the send fields and the gas-price cap field are shown and the note
+  // is hidden. Read from `hidden` while the Receive page is open (src/app.js: send-fields hidden = receiveOnly, send-disabled-note hidden = !receiveOnly).
   await page.waitForFunction(address => document.querySelector('#receive-address').textContent === address, expected);
-  assert.equal(await page.locator('#send-fields').evaluate(node => node.hidden), true);
-  assert.equal(await page.locator('#send-disabled-note').evaluate(node => node.hidden), false);
-  assert.equal(await page.locator('#send-disabled-note').textContent(), IXIOS_NOTE);
+  assert.equal(await page.locator('#send-fields').evaluate(node => node.hidden), false);
+  assert.equal(await page.locator('#send-disabled-note').evaluate(node => node.hidden), true);
+  assert.equal(await page.locator('#ixios-fee-fields').evaluate(node => node.hidden), false);
   // UI pack 2026-11-03 (operator "2"): the "Derived locally…" status line is gone; the empty line takes no space.
   assert.equal(await page.locator('#ixios-address-status').isVisible(), false);
   assert.equal(await page.locator('#ixios-address-status').textContent(), '');
@@ -536,7 +539,7 @@ try {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.locator('#copy-address').click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), expected);
-  // Cellframe keeps its own note; switching back to Ixios restores the Ixios one.
+  // Cellframe keeps its own note; switching back to Ixios shows the Send fields again (no note).
   // #chain is hidden since 0.1.145 (src/app.js `$('chain').hidden = true`): the network is chosen by its badge in the network disclosure.
   await selectNetwork(page, 'cellframe');
   assert.equal(await page.locator('#chain').inputValue(), 'cellframe');
@@ -548,7 +551,8 @@ try {
   await selectNetwork(page, 'ixios');
   assert.equal(await page.locator('#chain').inputValue(), 'ixios');
   assert.equal(await page.locator('#receive-address').innerText(), expected);
-  assert.equal(await page.locator('#send-disabled-note').textContent(), IXIOS_NOTE);
+  assert.equal(await page.locator('#send-fields').evaluate(node => node.hidden), false);
+  assert.equal(await page.locator('#send-disabled-note').evaluate(node => node.hidden), true);
   // Wrong network (an RPC whose genesis is Ethereum's, same chain id 1): the
   // balance is never read; the row keeps the amount read earlier from the
   // right network, marked "Read failed · last read" (0.1.41, the app's
@@ -595,8 +599,8 @@ try {
   const webUrl = servers[0].url;
   await siteChecks(webUrl, false);
   await siteChecks(await serveConnect(buildConnect(), 4194), true);
-  console.log('Ixios test network browser checks passed on the web build and on the Connect build: the Ixios list in Device & settings offers Mainnet and Testnet and starts on Mainnet; Testnet makes only ixios_ calls to nx-rpc.ixoflow.io after the test genesis check, shows the stage "Testnet" and the unchanged note with the send fields hidden, makes no balance call after a wrong genesis and no call to the main node; back to Mainnet gives the eth_ calls and none to the test node; a saved wallet locked after a Testnet read shows no Testnet balance (and no "Last read") when reopened, and reopens on Mainnet.');
-  console.log('Ixios browser checks passed: the build lists Ixios in the network selector, network badges and coin list (IXIOS row: no row buttons, receive only through the rail, balance read like CPUNK after a genesis-block identity check, outside the USD total; a wrong genesis makes no balance read and keeps only the amount read earlier from the right network, marked "Last read"); selecting it shows the checksummed receive address (its QR decodes to exactly that address; lock clears the QR), hides the send fields and shows the Ixios note while Cellframe keeps its own; Ixios requests go only to the configured RPC; lock clears it; loads only the keygen module (?ixios). The build ships neither mldsa87-sign.wasm nor Ixios markup; no unmocked external requests or storage.');
+  console.log('Ixios test network browser checks passed on the web build and on the Connect build: the Ixios list in Device & settings offers Mainnet and Testnet and starts on Mainnet; Testnet makes only ixios_ calls to nx-rpc.ixoflow.io after the test genesis check, shows the stage "Testnet" and the send fields with the gas-price cap field (no note), makes no balance call after a wrong genesis and no call to the main node; back to Mainnet gives the eth_ calls and none to the test node; a saved wallet locked after a Testnet read shows no Testnet balance (and no "Last read") when reopened, and reopens on Mainnet.');
+  console.log('Ixios browser checks passed: the build lists Ixios in the network selector, network badges and coin list (IXIOS row: no row buttons, Send and Receive through the rail, balance read like CPUNK after a genesis-block identity check, outside the USD total; a wrong genesis makes no balance read and keeps only the amount read earlier from the right network, marked "Last read"); selecting it shows the checksummed receive address (its QR decodes to exactly that address; lock clears the QR), shows the send fields and the gas-price cap field with no note while Cellframe keeps its own; Ixios requests go only to the configured RPC; lock clears it; loads only the keygen module (?ixios) and fetches no signing module without a confirmed send. The build ships mldsa87-sign.wasm once and one page with the Ixios gas-price cap field; no unmocked external requests or storage.');
 } finally {
   await browser?.close();
   for (const server of servers) server.stop();

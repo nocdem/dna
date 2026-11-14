@@ -163,15 +163,20 @@ async function ckbSendFlow(mode, directory) {
   await page.locator('#vault-password').fill(password); await page.locator('#vault-confirm-password').fill(password);
   await page.locator('#vault-risk-confirm').check(); await page.locator('#vault-save').click();
   await page.waitForFunction(() => document.querySelector('#vault-save-status').textContent.includes('Encrypted wallet saved'));
-  // Operator decision 2026-11-03 (plan D2): on this page XION, Splendor, QTC and Ixios mainnet
+  // Operator decision 2026-11-03 (plan D2): on this page XION, Splendor and QTC mainnet
   // show "Send <SYMBOL> from the extension." and no send fields; the extension sends there.
-  for (const [chain, symbol] of [['xion', 'XION'], ['splendor', 'SPLD'], ['qtc', 'QTC'], ['ixios', 'IXIOS']]) {
+  // Ixios left that list on 2026-11-14 (decisions/2026-09-23-ixios-send-mainnet-first.md "Değişiklik 3"): it sends here too.
+  for (const [chain, symbol] of [['xion', 'XION'], ['splendor', 'SPLD'], ['qtc', 'QTC']]) {
     await choose(page, chain);
-    if (chain !== 'ixios') await environment(page, chain, 'mainnet');
+    await environment(page, chain, 'mainnet');
     assert.equal(await page.locator('#quick-send').isDisabled(), true, `${mode}:${chain} send gate`);
     assert.equal(await page.locator('#send-disabled-note').textContent(), `Send ${symbol} from the extension.`, `${mode}:${chain} note`);
     assert.equal(await page.locator('#send-fields').isVisible(), false, `${mode}:${chain} has no send fields`);
   }
+  await choose(page, 'ixios');
+  assert.equal(await page.locator('#quick-send').isDisabled(), false, `${mode}: Ixios mainnet send is open`);
+  assert.equal(await page.locator('#send-disabled-note').evaluate(node => node.hidden), true, `${mode}: Ixios has no send note`);
+  assert.equal(await page.locator('#ixios-fee-fields').evaluate(node => node.hidden), false, `${mode}: Ixios gas-price cap field`);
   await choose(page, 'ckb'); await environment(page, 'ckb', 'mainnet');
   assert.equal(await page.locator('#quick-send').isDisabled(), false, `${mode}: CKB mainnet send is open`);
   // First send: the simulation request is refused after the signed transaction was handed

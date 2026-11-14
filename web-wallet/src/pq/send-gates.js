@@ -5,8 +5,10 @@
 // table from its own capability file (extension/src/constants/capabilities.js,
 // src/pq/wallet-capabilities.js) and keeps its own notes and exceptions there.
 // A chain or network missing here keeps the flags of the shared base table
-// (src/capabilities.js). The one network outside this table keeps its gate in the
-// extension file, so that no web bundle carries its text.
+// (src/capabilities.js). Ixios is in the table too (operator 2026-11-14, decisions/
+// 2026-09-23-ixios-send-mainnet-first.md "Değişiklik 3"): send and history on for
+// both listed networks, off for any other id. Its network ids are pinned to
+// IXIOS_NETWORKS by test/pq-send-gate-parity.test.js (this file imports nothing).
 const gate = (send, history) => Object.freeze(history === undefined ? { send } : { send, history });
 export const PQ_SEND_GATES = Object.freeze({
   qtc: Object.freeze({ networks: Object.freeze({ mainnet: gate(true, true) }), otherwise: gate(false, true) }),
@@ -15,7 +17,8 @@ export const PQ_SEND_GATES = Object.freeze({
   splendor: Object.freeze({ networks: Object.freeze({ mainnet: gate(true) }), otherwise: gate(false) }),
   asentum: Object.freeze({ networks: Object.freeze({ testnet: gate(true, true) }) }),
   soqucoin: Object.freeze({ networks: Object.freeze({ mainnet: gate(true, true) }) }),
-  algorand: Object.freeze({ networks: Object.freeze({ mainnet: gate(true) }) })
+  algorand: Object.freeze({ networks: Object.freeze({ mainnet: gate(true) }) }),
+  ixios: Object.freeze({ networks: Object.freeze({ mainnet: gate(true, true), testnet: gate(true, true) }), otherwise: gate(false, false) })
 });
 // Chains whose local submissions the wallet-activity page lists (history flag above).
 export const PQ_PAGE_HISTORY_CHAINS = Object.freeze(['asentum', 'ckb', 'qtc']);
