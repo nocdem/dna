@@ -1,65 +1,49 @@
-# Ixios recent native history — trusted extension candidate
+# Ixios account history and send status
 
-`src/pq/ixios/history.js` is a read-only helper now wired through the trusted
-extension holder (`extension/src/background/ixios.js` `getHistory`), which reads
-the history of the selected Ixios network (`networkId` and `endpoint` of the
-selected entry of `IXIOS_NETWORKS`); Web Wallet does not use it. The separately
-reviewed trusted-extension send code candidate is enabled, but live provider
-availability and admission are not established.
+## Account history: the network's explorer indexer
 
-Per network (`src/pq/ixios/network.js`): the Aegis start height is 32,400,000
-on the main network and 300 on the test network (300 is the reference's value
-for chain id 3; the height the running test node uses is not established). The
-helper fails with "Ixios post-Aegis history is unavailable." when the head is
-below that height. The account-code check around each candidate differs: the
-main network uses `eth_getCode` at height−1 and at height; the test network,
-which has no `getCode`, uses `ixios_getProof` at height−1 and at height and
-treats the account as empty when the answer's `codeHash` is the zero hash or
-the hash of empty code. A `getProof` answer is the provider's; its
-`accountProof` is not checked against a state root. Provider history errors are
-surfaced as unavailable while authenticated local submissions remain visible.
-`readIxiosRecentNativeHistory`
-accepts a 48-byte address, optional existing HTTPS endpoint, optional explicit
-start/end block heights or a recent-window limit, an abort signal, and an
-injectable RPC caller for offline tests. It scans at most 50 post-Aegis blocks,
-500 transactions per block and 25 matching candidates. An exceeded bound or
-malformed response is an error, never a silently complete result.
+`src/pq/ixios/indexer-history.js` reads the account history of the selected Ixios network from the indexer its public
+explorer uses (`indexer` in `src/pq/ixios/network.js` `IXIOS_NETWORKS`): `https://ixios-api.ixoflow.io` on the main
+network (explorer `ixoflow.io`) and `https://nx-api.ixoflow.io` on the test network (explorer `nx.ixoflow.io`), as each
+explorer's `js/config.js` (`ixiosIndexer`) named them on 2026-11-14. One request per read: `GET /v1/address/<address>`,
+the first page of that address's transactions. No key or account is needed (public, `access-control-allow-origin: *`).
 
-The helper checks Ixios genesis via block 1's parent, reads an initial head,
-checks consecutive parent hashes and transaction positions, validates receipt
-hash/block/index/sender/recipient/status, and re-reads both the scanned end
-and original head. It uses exact integer arithmetic with 18 decimal places and
-interprets block timestamps as milliseconds. Success is labeled `included`, not
-final. Failed direct transactions report zero transferred and retain a separate
-`attemptedAmount`. It performs no live address probing in its tests.
+It is wired through the shared reader (`src/history.js` `readHistory('ixios', …)`, `HISTORY_SOURCES.ixios`) into the
+web wallet and Connect Activity (`src/app.js` `loadHistory`, read for the selected Ixios network) and into the
+extension (`extension/src/background/ixios.js` `getHistory`), with the same limits as the other networks: after a successful
+read, the next one comes at most once per 5 minutes by itself and once per 30 seconds on "Refresh history"; a failed read
+is not counted, so the next request reads again (as for the other networks).
 
-Only positive-value, empty-calldata direct transactions are candidates. The
-helper checks recipient code immediately before and after the block to omit
-ordinary calls to persistent contracts; it does not parse token logs or trace
-internal transfers. **Limitation:** two state snapshots cannot exclude a
-contract created and destroyed within a single block, so the result must not
-be presented as a complete or categorical contract-free history. It is a
-bounded provider report, not a light-client proof, and may be stale or omit
-transactions outside the scanned range. The unchanged RPC transport still
-applies its HTTPS, timeout and response-size limits. A failed or rate-limited
-provider must be surfaced as unavailable.
+**Untrusted data.** An answer that describes another address is refused whole. A row is kept only with a 32-byte hash,
+96-hex sender and receiver of which one is this address, a millisecond timestamp, a positive decimal amount read with
+18 decimals, and the status `success` (shown as confirmed) or `failed` (shown as failed); the explorer's other statuses
+(`pending`, `unknown`; ixoflow.io `js/pages/transaction.js` `STATUS_PRESENTATION`) are left out, because this wallet's
+own sends are tracked in its activity. Rows are drawn with `textContent`. The history is provider-reported: not a
+light-client inclusion proof, direct transfers only.
 
-Source: ixiosSpark v1.1.1 (`ccd1345eed8873a6d0174b3e9a076da67ceb7750`) [`params/config.go`](https://github.com/ixios-io/ixiosSpark/blob/v1.1.1/params/config.go)
-sets the Aegis height, [`internal/ethapi/api.go`](https://github.com/ixios-io/ixiosSpark/blob/v1.1.1/internal/ethapi/api.go)
-defines full-block and receipt fields, and
-[`consensus/fastClique/fastClique.go`](https://github.com/ixios-io/ixiosSpark/blob/v1.1.1/consensus/fastClique/fastClique.go)
-uses millisecond clock values. `node --test test/ixios-history.test.js` exercises
-synthetic provider responses, exact values, failure status, contract filtering,
-identity/range/continuity/reorg checks, bounds and cancellation. No signed
-transaction, wallet credential or live wallet address was used.
+**Kept.** In memory for the session; with a saved wallet also encrypted with the other networks' history (decision
+`2026-10-02-device-cache-only-when-saved.md`; `src/activity-storage.js` serializeHistory / parseHistory). The web
+record keeps the Ixios network id, so a record of the other network is not shown; the extension keeps one record per
+network under its own key. Saved rows are checked again when loaded (`src/history.js` checkHistoryRows).
 
-## Provider access chronology
+This replaces the bounded block scan of the node (`src/pq/ixios/history.js`, at most 50 recent blocks, about one minute
+of the test network), which is removed.
 
-The integration team observed an HTTP 403 for a batch request to the configured
-Ixios RPC at 10:07 UTC on 2026-11-02. A separate single gas-quote request
-succeeded at 10:12 UTC, before the stop instruction reached that worker; it
-does not explain or reverse the batch denial, or establish access to this
-history scan. No further Ixios RPC retries or alternate-route probes were made
-by this helper. Availability must be established only through an authorized
-provider or a future explicit change in access; do not treat the synthetic tests
-as evidence that the live endpoint permits these calls.
+## Send status: the selected node
+
+`src/pq/ixios/observe.js` reads a send's status from the selected network's node: the receipt, the block holding it at
+its height, the signed bytes the node holds and their signature, and the tip. Confirmed at 60 blocks (decision
+`2026-09-23-ixios-send-mainnet-first.md`: "60 blok derinlik = confirmed"); below that the row says "In a block; N of 60
+confirmations" (about one minute on the test network, about 2.6 minutes on the main network at the block times measured
+on 2026-11-14). The tip moves while the status is read: the closing reads require the block that holds the transfer to
+be the same block at its height and the chain to be no lower than the first tip, and the depth is counted from that
+first tip. (Before, any new block during the read failed it with "Ixios tip changed while checking status.", seen live
+on the test network on 2026-11-14.)
+
+## Gas price cap
+
+The send form's maximum gas price starts with the protocol minimum for the selected network's checked tip
+(`src/pq/ixios/preflight.js` `readIxiosGasCap`, the ixiosSpark v1.1.1 `zeta/zeta.go` floor already used by the
+preflight). Both networks quoted exactly that floor on 2026-11-14 (main 93000000000000000 at height 32794185, test
+100000000000000000 at 258815). The node's own quote is not used for the cap, so the review still refuses a quote above
+it; a user can raise the cap by hand.

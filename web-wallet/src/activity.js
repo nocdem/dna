@@ -164,7 +164,7 @@ export function evmActivityText({ evmOp, evmMoved, evmFee, evmTo, evmTitle, amou
   return { amount: `${evmMoved} ${symbol}`, what: `Smart contracts · ${action} · fee ${evmFee} ${symbol}` };
 }
 export async function checkActivity(row, { signal, call = rpc, post = request, fetcher } = {}) {
-  if(row.chain==='ixios') {if(!validIxiosPending(row))throw Error('Invalid Ixios activity.');if(row.notSubmitted===true)return {status:'failed',note:'Authenticated cancellation before network submission.'};const result=await observeIxiosSubmission(row,{signal,fetcher});return {status:result.state,note:result.state==='confirmed'?'Ixios node reports at least 60 confirmations; reorganization remains possible.':result.state==='failed'?'Ixios node reports a failed transaction at least 60 blocks deep.':'Ixios outcome unresolved; nonce remains held.'};}
+  if(row.chain==='ixios') {if(!validIxiosPending(row))throw Error('Invalid Ixios activity.');if(row.notSubmitted===true)return {status:'failed',note:'Authenticated cancellation before network submission.'};const result=await observeIxiosSubmission(row,{signal,fetcher});return {status:result.state,note:result.state==='confirmed'?'Ixios node reports at least 60 confirmations; reorganization remains possible.':result.state==='failed'?'Ixios node reports a failed transaction at least 60 blocks deep.':result.confirmations!==undefined?`In a block; ${result.confirmations} of 60 confirmations. Nonce remains held.`:'Ixios outcome unresolved; nonce remains held.'};}
   if(row.chain==='qtc') {
     if(!validQtcPending(row))throw new Error('Invalid QTC activity record.');
     if(row.notSubmitted===true)return {status:'failed',note:'Authenticated proof: this attempt was not exposed.'};

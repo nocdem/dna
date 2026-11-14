@@ -29,13 +29,16 @@ export const IXIOS_ASSET = { chain: 'ixios', symbol: 'IXIOS', decimals: 18, key:
 // there), chain id 3, the genesis hash, and no `getCode`, which is why `getProof` is the account-code query. Not
 // observed: Aegis height 300 is the reference's value for chain id 3; the height the running node uses is not
 // established. Nothing is detected or chosen from a node answer: a network's method names are fixed here.
-const network = (id, label, endpoint, rpcLabel, genesisHash, chainId, aegisHeight, rpcNamespace, codeQuery) => Object.freeze({
+// `indexer`: the account-history API the network's public explorer reads (its js/config.js `ixiosIndexer`, observed
+// 2026-11-14 on ixoflow.io and nx.ixoflow.io; src/pq/ixios/indexer-history.js). `explorer`: that explorer's transaction
+// page, followed by the hash.
+const network = (id, label, endpoint, rpcLabel, genesisHash, chainId, aegisHeight, rpcNamespace, codeQuery, indexer, explorer) => Object.freeze({
   id, label, endpoint, rpcOptions: Object.freeze([Object.freeze({ url: endpoint, label: rpcLabel })]),
-  genesisHash, chainId, aegisHeight, rpcNamespace, codeQuery,
+  genesisHash, chainId, aegisHeight, rpcNamespace, codeQuery, indexer, explorer,
 });
 export const IXIOS_NETWORKS = Object.freeze({
-  mainnet: network('mainnet', 'Mainnet', IXIOS_RPC, 'Ixios public RPC', '0xa19acef59b3b84f192a69407981c50695fd105988d9311dd2e1c60332b629f2f', 1, 32400000, 'eth', 'getCode'),
-  testnet: network('testnet', 'Testnet', 'https://nx-rpc.ixoflow.io', 'Ixios test network RPC', '0x33177fd0b2fb50907e5f6e17af05b3812881ab2d3effbf0a3493d9b665dfa5fe', 3, 300, 'ixios', 'getProof'),
+  mainnet: network('mainnet', 'Mainnet', IXIOS_RPC, 'Ixios public RPC', '0xa19acef59b3b84f192a69407981c50695fd105988d9311dd2e1c60332b629f2f', 1, 32400000, 'eth', 'getCode', 'https://ixios-api.ixoflow.io', 'https://ixoflow.io/tx/'),
+  testnet: network('testnet', 'Testnet', 'https://nx-rpc.ixoflow.io', 'Ixios test network RPC', '0x33177fd0b2fb50907e5f6e17af05b3812881ab2d3effbf0a3493d9b665dfa5fe', 3, 300, 'ixios', 'getProof', 'https://nx-api.ixoflow.io', 'https://nx.ixoflow.io/tx/'),
 });
 // Fails closed: an id that is not in the table is never mapped to a default network.
 export function ixiosNetwork(id) {

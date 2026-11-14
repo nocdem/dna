@@ -27,6 +27,8 @@ import { EVM_NETWORKS, EVM_FAMILIES, evmKey } from '../constants/evm-networks.js
 import { renderSites, renderSettings } from './views.js';
 import { renderNodusHistory } from './nodus-screens.js';
 import { renderSolanaTronHistory } from './solana-tron-screens.js';
+// The Ixios gas cap hint, as in the web wallet's index.html (#ixios-gas-hint); restored before each read of the cap.
+const IXIOS_GAS_HINT = 'Filled in with the Ixios protocol minimum for the current block, the price the network quotes. Native transfers use 1,000 gas. Review the quoted price and exact fee; your cap is not a network acceptance guarantee.';
 
 // index.html:18-77 is the screen. This adapter passes only public form fields
 // to wallet-ui.js; no wallet, derived key or signing implementation enters it.
@@ -73,6 +75,7 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   rail.querySelector('a[href="#settings"]').remove();
   let historyController;
   let selected = 'nodus', shownPage = null, disposed = false, readGeneration = 0, review, reviewTimer;
+  let ixiosCapFill = null;
   let previousNetwork, previousTokens, previousAddress, walletScroll = 0, backgroundLog = { entries: [], running: [] };
   const networkVersions = new Map(), endpointVersions = new Map(), logSubscriptions = [];
   let book, earn, names, claim, contracts, vaults;
@@ -263,6 +266,18 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     $('send-disabled-note').textContent = config.sendNote || 'Sending CPUNK is not available in this release. You can receive to the address above.';
     $('solana-send-hint').hidden = selected !== 'solana' || network.id !== 'mainnet';
     const ixiosEnabled = selected === 'ixios' && capabilitiesFor('ixios').send; $('ixios-fee-fields').hidden = !ixiosEnabled; $('ixios-max-gas-price').disabled = !ixiosEnabled; $('ixios-max-gas-price').required = ixiosEnabled; if(reset) $('ixios-max-gas-price').value = '';
+    // The send form starts with the Ixios protocol minimum of the selected network's checked tip (background getIxiosGasCap,
+    // src/pq/ixios/preflight.js readIxiosGasCap), as the web wallet does. Read again when Ixios is chosen or its network
+    // changes; a value the user typed is kept, a filled-in one is replaced. Applied only by the latest fill (its own identity:
+    // the read generation also moves when a history read starts), for the network it asked, while Ixios and an empty field are
+    // still shown; the background answers only for that network.
+    if (ixiosEnabled && (reset || ixiosCapFill?.networkId !== network.id)) {
+      const field = $('ixios-max-gas-price'), hint = $('ixios-gas-hint'), fill = { networkId: network.id, value: null };
+      if (ixiosCapFill?.value && field.value === ixiosCapFill.value) field.value = '';
+      ixiosCapFill = fill; hint.textContent = IXIOS_GAS_HINT;
+      const still = () => ixiosCapFill === fill && selected === 'ixios' && selectedNetwork('ixios').id === fill.networkId && !field.disabled && field.value === '';
+      if (field.value === '') void ui.request('getIxiosGasCap', [fill.networkId]).then(cap => { if (still() && typeof cap === 'string' && /^[1-9][0-9]{0,77}$/.test(cap)) field.value = fill.value = cap; }, error => { if (still()) hint.textContent = `The Ixios protocol minimum could not be read (${error.message}). Enter a cap.`; });
+    }
     const xionEnabled = selected === 'xion' && capabilitiesFor('xion').send; $('xion-fee-fields').hidden = !xionEnabled; for (const id of ['xion-fee-atoms','xion-gas-limit']) { $(id).disabled = !xionEnabled; $(id).required = xionEnabled; if (reset) $(id).value = ''; }
     $('asentum-fee-fields').hidden = selected !== 'asentum'; $('asentum-max-fee').disabled = selected !== 'asentum'; $('asentum-max-fee').required = selected === 'asentum'; if(reset) $('asentum-max-fee').value = '';
     const tokens = config.tokens.filter(() => !isSolanaTron(selected) || network.id === 'mainnet');
@@ -295,6 +310,8 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
   setNetworkSelectOptions($('chain'), Object.entries(networks));
   $('chain').value = selected;
   $('chain').onchange = () => { cancelReview(); selected = $('chain').value; selectChain(true); };
+  // A gas cap the user edits is the user's: it is kept on a network change (selectChain clears only an untouched fill).
+  $('ixios-max-gas-price').addEventListener('input', () => { if (ixiosCapFill) ixiosCapFill.value = null; });
   $('copy-address').onclick = () => run(async () => { await window.navigator.clipboard.writeText($('receive-address').textContent); message('Address copied.'); });
 
   // index.html:116 and src/app.js:1615-1627: the same dialog and decoded rows,

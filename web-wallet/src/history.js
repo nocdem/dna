@@ -1,6 +1,7 @@
 import {readSoquHistory} from './pq/soqu-history.js';
 import { readXionHistory } from './pq/xion-history.js';
 import { readSplendorHistory } from './pq/splendor-history.js';
+import { readIxiosHistory } from './pq/ixios/indexer-history.js';
 // Account history per network — incoming and outgoing transfers of this
 // wallet's addresses, read from the same sources the DNA Connect app uses
 // (messenger/src/api/engine/dna_engine_wallet.c dna_handle_get_transactions):
@@ -9,6 +10,7 @@ import { readSplendorHistory } from './pq/splendor-history.js';
 //   solana    getSignaturesForAddress + getTransaction, known signatures skipped (dna_engine_wallet.c:942-963)
 //   cellframe tx_history (messenger/blockchain/cellframe/cellframe_rpc.c:371-387), CPUNK rows only
 //   bsc       none — the app has it switched off too (dna_engine_wallet.c:887: no working explorer API)
+//   ixios     the selected network's explorer indexer, /v1/address (src/pq/ixios/indexer-history.js)
 //
 // Everything a provider returns is UNTRUSTED DATA: every field is checked
 // here, amounts are integers formatted with the decimals of the wallet's own
@@ -30,7 +32,7 @@ import { CPUNK_ENDPOINT, validateCellframeAddress, boundedJson } from './cpunk-p
 
 export const HISTORY_LIMIT = 50;           // rows per network kept and shown (the app's offset/limit 50)
 export const SOLANA_SIGNATURES = 20;       // newest signatures looked at per read
-export const HISTORY_SOURCES = { soqucoin: 'SOQ index + genesis-bound node: partial native net flows, outgoing fees included; mixed/confidential/unconfirmed/missing-prevout entries omitted', ethereum: 'Blockscout', tron: 'TronGrid', solana: 'Solana RPC', cellframe: 'Cellframe RPC', algorand: 'Algorand Indexer', qtc: 'QTC Explorer (net flows, including outgoing fees)', xion: 'XION indexed single-message native MsgSend only; excludes contracts, internal and multi-message transfers', splendor: 'Splendor indexed native transfers only; excludes contracts and tokens' };
+export const HISTORY_SOURCES = { soqucoin: 'SOQ index + genesis-bound node: partial native net flows, outgoing fees included; mixed/confidential/unconfirmed/missing-prevout entries omitted', ethereum: 'Blockscout', tron: 'TronGrid', solana: 'Solana RPC', cellframe: 'Cellframe RPC', algorand: 'Algorand Indexer', qtc: 'QTC Explorer (net flows, including outgoing fees)', xion: 'XION indexed single-message native MsgSend only; excludes contracts, internal and multi-message transfers', splendor: 'Splendor indexed native transfers only; excludes contracts and tokens', ixios: 'IXOFlow indexer' };
 const BLOCKSCOUT = 'https://eth.blockscout.com/api';
 // Dispatch 2026-10-30 allows a bound: two minutes including queue/network
 // time, and three retries across the whole read. Zero reset cannot loop.
@@ -288,6 +290,7 @@ export async function readHistory(chain, address, { endpoint, signal, known = ne
     if (chain === 'soqucoin') return await readSoquHistory(address, { signal, networkId });
     if (chain === 'xion') return await readXionHistory(address, { signal, networkId });
     if (chain === 'splendor') return await readSplendorHistory(address, { signal, networkId });
+    if (chain === 'ixios') return await readIxiosHistory(address, { signal, networkId });
     if (chain === 'qtc') return await readQtcHistory(address, { signal, networkId });
     if (chain === 'algorand') return await readAlgorandHistory(address, { signal, networkId });
     if (chain === 'ethereum') return await ethereumHistory(address, options);
@@ -301,14 +304,14 @@ export const historySupported = chain => Object.hasOwn(HISTORY_SOURCES, chain);
 
 // Rows kept from an earlier read (saved encrypted, src/activity-storage.js)
 // are checked again before they are shown; anything else throws.
-const HASHES = { ethereum: /^0x[0-9a-f]{64}$/, tron: /^[0-9a-f]{64}$/, solana: /^[1-9A-HJ-NP-Za-km-z]{64,88}$/, cellframe: /^0x[0-9a-f]{64}$/ };
-const symbolsOf = chain => chain === 'cellframe' ? ['CPUNK'] : [CHAINS[chain].symbol, ...CHAINS[chain].tokens.map(t => t.symbol)];
+const HASHES = { ethereum: /^0x[0-9a-f]{64}$/, tron: /^[0-9a-f]{64}$/, solana: /^[1-9A-HJ-NP-Za-km-z]{64,88}$/, cellframe: /^0x[0-9a-f]{64}$/, ixios: /^0x[0-9a-f]{64}$/ };
+const symbolsOf = chain => chain === 'cellframe' ? ['CPUNK'] : chain === 'ixios' ? ['IXIOS'] : [CHAINS[chain].symbol, ...CHAINS[chain].tokens.map(t => t.symbol)];
 export function checkHistoryRows(chain, rows) {
   if (chain === 'soqucoin' || chain === 'algorand' || chain === 'qtc' || chain === 'xion' || chain === 'splendor' || !historySupported(chain) || !Array.isArray(rows) || rows.length > HISTORY_LIMIT) throw new Error('Invalid saved history.');
   return rows.map(r => {
     if (!r || r.chain !== chain || typeof r.hash !== 'string' || !HASHES[chain].test(r.hash) || !Number.isSafeInteger(r.time) || r.time <= 0 ||
         !['in', 'out', 'self'].includes(r.dir) || !symbolsOf(chain).includes(r.symbol) || typeof r.amount !== 'string' || !/^\d{1,78}(\.\d{1,18})?$/.test(r.amount) ||
-        typeof r.peer !== 'string' || !/^[0-9A-Za-z]{0,128}$/.test(r.peer) || !['confirmed', 'failed'].includes(r.status)) throw new Error('Invalid saved history.');
+        typeof r.peer !== 'string' || !(chain === 'ixios' ? /^(0x[0-9a-fA-F]{96})?$/ : /^[0-9A-Za-z]{0,128}$/).test(r.peer) || !['confirmed', 'failed'].includes(r.status)) throw new Error('Invalid saved history.');
     return { chain, hash: r.hash, time: r.time, dir: r.dir, symbol: r.symbol, amount: r.amount, peer: r.peer, status: r.status };
   });
 }

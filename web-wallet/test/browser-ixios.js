@@ -10,7 +10,10 @@ import { BALANCES_KEY } from '../src/vault.js';
 // marked "Last read"); selecting it shows the checksummed receive address and a QR that decodes
 // to exactly that address, offers the send fields and the gas-price cap field (no note) while Cellframe keeps
 // its own note; lock clears it; the page never fetches the signing module at runtime (this script confirms no send) and
-// the build's only Ixios markup is the gas-price cap field; every Ixios request goes to the mocked public RPC.
+// the build's only Ixios markup is the gas-price cap field; every Ixios request goes to the mocked public RPC or the mocked
+// account-history indexer of the selected network. Since 2026-11-14 the cap field starts at the protocol minimum of the
+// mocked tip (93000000000000000 on the main network, 100000000000000000 on the test network) and the Activity's account
+// history shows the indexer's row with a link to that network's explorer.
 // Public test phrase only; every external request is intercepted (the Ixios RPC included:
 // mocked below; the PQ networks' providers are refused, as in test/browser-portfolio.js, and counted
 // apart from `unexpected`). Unlike the other browser scripts this one builds its own bundle
@@ -94,6 +97,30 @@ const dirs = [], servers = [];
 let browser, ixiosGenesis = IXIOS_GENESIS;
 // Every JSON-RPC call answered by the Ixios mock, in arrival order.
 const ixiosCalls = [];
+// The tips the mocks report (the heights of 2026-11-14) and the gas cap the send form must start with there: the protocol
+// minimum (src/pq/ixios/preflight.js readIxiosGasCap reads block 1, the chain id and the latest block).
+const MAIN_TIP = 32794185n, TEST_TIP = 258815n, MAIN_CAP = '93000000000000000', TEST_CAP = '100000000000000000';
+const tipBlock = height => ({ number: '0x' + height.toString(16), hash: '0x' + 'ab'.repeat(32), parentHash: '0x' + 'ac'.repeat(32), timestamp: '0x' + Date.now().toString(16) });
+// The gas-cap read's three calls, in the shape the mocks record them; a check that compares calls sorts both sides,
+// because the cap read and the balance read run at the same time.
+const capCalls = prefix => [{ method: `${prefix}_getBlockByNumber`, params: ['0x1', false] }, { method: `${prefix}_chainId`, params: [] }, { method: `${prefix}_getBlockByNumber`, params: ['latest', false] }];
+const sortedCalls = calls => calls.map(call => JSON.stringify(call)).sort();
+// The cap field holds `value`: the cap read has answered (it fills the field only after its three calls returned).
+const capFilled = (page, value) => page.waitForFunction(v => document.querySelector('#ixios-max-gas-price').value === v, value);
+// The account-history indexers (src/pq/ixios/network.js `indexer`): one incoming row for the asked address, recorded by
+// origin. The explorer link of a shown row names the network's explorer.
+const MAIN_INDEXER = 'https://ixios-api.ixoflow.io', TEST_INDEXER = 'https://nx-api.ixoflow.io', indexerCalls = [];
+const INDEXER_PEER = 'f6ae0153d1646da75e19e2fa85d3cb4aa93f8714f9c4547d2577bdcd52684400fedb03322b7e5f335fd5d429c3b903f2';
+async function indexerRead(route) {
+  const req = route.request(), url = new URL(req.url());
+  if (![MAIN_INDEXER, TEST_INDEXER].includes(url.origin)) return false;
+  assert.equal(req.method(), 'GET');
+  const own = /^\/v1\/address\/0x([0-9a-f]{96})$/.exec(url.pathname)?.[1];
+  assert.ok(own, url.pathname); indexerCalls.push(url.origin);
+  await route.fulfill({ json: { address: own, transactions: { page: 0, totalPages: 1, totalCount: 1, data: [{ hash: 'cd'.repeat(32), from: INDEXER_PEER, to: own, amount: '2.5', txfee: '100', block: 258000, timestamp: Date.now() - 60000, status: 'success' }] } } });
+  return true;
+}
+const historyLinked = (page, explorer) => page.waitForFunction(prefix => [...document.querySelectorAll('#history a')].some(a => a.href.startsWith(prefix)), explorer);
 
 function build() {
   const outDir = mkdtempSync(join(tmpdir(), 'nodus-wallet-ixios-')); dirs.push(outDir);
@@ -130,7 +157,8 @@ async function ixiosRead(route) {
   const call = req.postDataJSON();
   ixiosCalls.push({ method: call.method, params: call.params });
   let result;
-  if (call.method === 'eth_getBlockByNumber') result = { number: '0x1', parentHash: ixiosGenesis };
+  if (call.method === 'eth_getBlockByNumber') result = call.params[0] === 'latest' ? tipBlock(MAIN_TIP) : { number: '0x1', parentHash: ixiosGenesis };
+  else if (call.method === 'eth_chainId') result = '0x1';
   else if (call.method === 'eth_getBalance') result = IXIOS_BALANCE;
   else { await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, error: { code: -32601, message: 'Fixture: method not mocked' } } }); return true; }
   await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, result } });
@@ -145,6 +173,7 @@ async function openWallet(url) {
     const req = route.request();
     if (await ixiosRead(route)) return;
     if (await historyRead(route)) return;
+    if (await indexerRead(route)) return;
     if (await cellframeRead(route)) return;
     if (await portfolioRead(route)) return;
     if (PQ_HOST.test(new URL(req.url()).hostname)) { pqRefused.push(req.url()); return route.abort('blockedbyclient'); }
@@ -223,7 +252,8 @@ async function testnetRead(route) {
   const call = req.postDataJSON();
   testCalls.push({ method: call.method, params: call.params });
   let result;
-  if (call.method === 'ixios_getBlockByNumber') result = { number: '0x1', parentHash: testGenesis };
+  if (call.method === 'ixios_getBlockByNumber') result = call.params[0] === 'latest' ? tipBlock(TEST_TIP) : { number: '0x1', parentHash: testGenesis };
+  else if (call.method === 'ixios_chainId') result = '0x3';
   else if (call.method === 'ixios_getBalance') { if (testHold) await testHold.promise; result = TEST_BALANCE; }
   else { await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, error: { code: -32601, message: `Fixture: the method ${call.method} does not exist/is not available` } } }); return true; }
   await route.fulfill({ json: { jsonrpc: '2.0', id: call.id, result } });
@@ -258,6 +288,7 @@ async function openSite(url, connect) {
     if (await ixiosRead(route)) return;
     if (await testnetRead(route)) return;
     if (await historyRead(route)) return;
+    if (await indexerRead(route)) return;
     if (await cellframeRead(route)) return;
     if (await portfolioRead(route)) return;
     if (PQ_HOST.test(new URL(req.url()).hostname)) return route.abort('blockedbyclient');
@@ -327,7 +358,7 @@ async function siteChecks(url, connect) {
     assert.deepEqual(testCalls, [], `${label}: no test node request while the wallet is on Mainnet`);
     // The choice lives in Device & settings: Mainnet and Testnet, starting on Mainnet; the wallet screen has no chooser and
     // shows the network as text; Ixios keeps its own address line (no PQ status or note).
-    await selectNetwork(page, 'ixios');
+    await selectNetwork(page, 'ixios'); await capFilled(page, MAIN_CAP);
     assert.equal(await noChooser(page), 0, `${label}: no network chooser on the wallet screen`);
     assert.deepEqual(await environments(page), [['mainnet', 'Mainnet'], ['testnet', 'Testnet']], `${label}: settings list options`);
     assert.equal(await page.locator('#network-ixios').inputValue(), 'mainnet');
@@ -343,10 +374,11 @@ async function siteChecks(url, connect) {
     let mark = site.ixiosRequests.length;
     await chooseEnvironment(page, 'testnet');
     await waitHolding(page, TEST_BALANCE_TEXT);
-    assert.deepEqual(testCalls, [{ method: 'ixios_getBlockByNumber', params: ['0x1', false] }, { method: 'ixios_getBalance', params: [expected, 'latest'] }], `${label}: test node calls`);
+    await capFilled(page, TEST_CAP); await historyLinked(page, 'https://nx.ixoflow.io/tx/');
+    assert.deepEqual(sortedCalls(testCalls), sortedCalls([{ method: 'ixios_getBlockByNumber', params: ['0x1', false] }, { method: 'ixios_getBalance', params: [expected, 'latest'] }, ...capCalls('ixios')]), `${label}: test node calls`);
     assert.deepEqual(ixiosCalls, [], `${label}: no main node call on Testnet`);
     let fresh = site.ixiosRequests.slice(mark);
-    assert.ok(fresh.length > 0 && fresh.every(requestUrl => new URL(requestUrl).origin === testOrigin), fresh.join());
+    assert.ok(fresh.length > 0 && fresh.every(requestUrl => [testOrigin, TEST_INDEXER].includes(new URL(requestUrl).origin)), fresh.join());
     assert.deepEqual(await stageLabels(page), ['Testnet']);
     assert.equal(await page.locator('#network-ixios').inputValue(), 'testnet');
     assert.match(await shownNetwork(page), /Ixios · Testnet/);
@@ -366,15 +398,16 @@ async function siteChecks(url, connect) {
     ixiosCalls.length = 0; testCalls.length = 0; mark = site.ixiosRequests.length;
     await chooseEnvironment(page, 'mainnet');
     await waitHolding(page, MAIN_BALANCE_TEXT);
-    assert.deepEqual(ixiosCalls, [{ method: 'eth_getBlockByNumber', params: ['0x1', false] }, { method: 'eth_getBalance', params: [expected, 'latest'] }], `${label}: main node calls`);
+    await capFilled(page, MAIN_CAP); await historyLinked(page, 'https://ixoflow.io/tx/');
+    assert.deepEqual(sortedCalls(ixiosCalls), sortedCalls([{ method: 'eth_getBlockByNumber', params: ['0x1', false] }, { method: 'eth_getBalance', params: [expected, 'latest'] }, ...capCalls('eth')]), `${label}: main node calls`);
     assert.deepEqual(testCalls, [], `${label}: no test node call on Mainnet`);
     fresh = site.ixiosRequests.slice(mark);
-    assert.ok(fresh.length > 0 && fresh.every(requestUrl => new URL(requestUrl).origin === mainOrigin), fresh.join());
+    assert.ok(fresh.length > 0 && fresh.every(requestUrl => [mainOrigin, MAIN_INDEXER].includes(new URL(requestUrl).origin)), fresh.join());
     assert.deepEqual(await stageLabels(page), ['Mainnet']);
     // What Settings chose is what the wallet screen shows: Testnet chosen there, another chain selected and Ixios selected
     // again stays on Testnet (selecting a chain no longer resets its network; only a new opening starts on Mainnet).
     await chooseEnvironment(page, 'testnet');
-    await waitHolding(page, TEST_BALANCE_TEXT);
+    await waitHolding(page, TEST_BALANCE_TEXT); await capFilled(page, TEST_CAP);
     await selectNetwork(page, 'ethereum');
     assert.equal(await page.locator('#chain').inputValue(), 'ethereum');
     ixiosCalls.length = 0;
@@ -385,20 +418,22 @@ async function siteChecks(url, connect) {
     assert.match(await shownNetwork(page), /Ixios · Testnet/);
     assert.deepEqual(await stageLabels(page), ['Testnet']);
     assert.deepEqual(ixiosCalls, [], `${label}: no main node call after selecting Ixios again on Testnet`);
+    await capFilled(page, TEST_CAP);
     // Back to Mainnet in Settings for the checks below.
     ixiosCalls.length = 0; testCalls.length = 0; mark = site.ixiosRequests.length;
     await chooseEnvironment(page, 'mainnet');
     await waitHolding(page, MAIN_BALANCE_TEXT);
-    assert.deepEqual(ixiosCalls, [{ method: 'eth_getBlockByNumber', params: ['0x1', false] }, { method: 'eth_getBalance', params: [expected, 'latest'] }], `${label}: main node calls after choosing Mainnet again`);
+    await capFilled(page, MAIN_CAP);
+    assert.deepEqual(sortedCalls(ixiosCalls), sortedCalls([{ method: 'eth_getBlockByNumber', params: ['0x1', false] }, { method: 'eth_getBalance', params: [expected, 'latest'] }, ...capCalls('eth')]), `${label}: main node calls after choosing Mainnet again`);
     assert.deepEqual(testCalls, [], `${label}: no test node call after choosing Mainnet again`);
     fresh = site.ixiosRequests.slice(mark);
-    assert.ok(fresh.length > 0 && fresh.every(requestUrl => new URL(requestUrl).origin === mainOrigin), fresh.join());
+    assert.ok(fresh.length > 0 && fresh.every(requestUrl => [mainOrigin, MAIN_INDEXER].includes(new URL(requestUrl).origin)), fresh.join());
     // A test read still in flight when the network changes back (red-team note 2 of the plan review): its answer is held
     // at the test node, the page switches to Mainnet, the mainnet balance is shown, and the released test answer
     // (the page aborted that request) leaves no test value behind, shown now or after one more full read.
     let release; testHold = { promise: new Promise(resolve => { release = resolve; }) };
     const asked = page.waitForRequest(request => request.url().startsWith(TEST_RPC) && (request.postData() ?? '').includes('ixios_getBalance'));
-    await chooseEnvironment(page, 'testnet'); await asked;
+    await chooseEnvironment(page, 'testnet'); await asked; await capFilled(page, TEST_CAP);
     ixiosCalls.length = 0;
     await chooseEnvironment(page, 'mainnet');
     await waitHolding(page, MAIN_BALANCE_TEXT);
@@ -413,7 +448,7 @@ async function siteChecks(url, connect) {
     await writesSettled(page);
     const writesBefore = await page.evaluate(() => window.__balanceWrites);
     await chooseEnvironment(page, 'testnet');
-    await waitHolding(page, TEST_BALANCE_TEXT);
+    await waitHolding(page, TEST_BALANCE_TEXT); await capFilled(page, TEST_CAP);
     await page.waitForFunction(before => window.__balanceWrites > before, writesBefore);
     await writesSettled(page);
     await lockWallet(page, connect);
@@ -431,7 +466,7 @@ async function siteChecks(url, connect) {
     assert.equal(await page.locator('#network-ixios').inputValue(), 'mainnet', `${label}: reopened on Mainnet`);
     assert.match(await shownNetwork(page), /Ixios · Mainnet/);
     assert.deepEqual(await stageLabels(page), ['Mainnet']);
-    assert.ok(site.ixiosRequests.every(requestUrl => [mainOrigin, testOrigin].includes(new URL(requestUrl).origin)), site.ixiosRequests.join());
+    assert.ok(site.ixiosRequests.every(requestUrl => [mainOrigin, testOrigin, MAIN_INDEXER, TEST_INDEXER].includes(new URL(requestUrl).origin)), site.ixiosRequests.join());
     assert.deepEqual(site.unexpected, [], `${label}: unexpected requests`); assert.deepEqual(site.errors, [], `${label}: page errors`);
   } finally { await site.context.close(); }
 }
@@ -551,6 +586,8 @@ try {
   await selectNetwork(page, 'ixios');
   assert.equal(await page.locator('#chain').inputValue(), 'ixios');
   assert.equal(await page.locator('#receive-address').innerText(), expected);
+  // The gas cap starts at the main network's protocol minimum; the account history row links to the main explorer.
+  await capFilled(page, MAIN_CAP); await historyLinked(page, 'https://ixoflow.io/tx/');
   assert.equal(await page.locator('#send-fields').evaluate(node => node.hidden), false);
   assert.equal(await page.locator('#send-disabled-note').evaluate(node => node.hidden), true);
   // Wrong network (an RPC whose genesis is Ethereum's, same chain id 1): the
@@ -593,7 +630,8 @@ try {
   assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
   // Every Ixios-host request went to the configured public RPC (and was mocked).
   assert.ok(on.ixiosRequests.length > 0);
-  assert.ok(on.ixiosRequests.every(requestUrl => new URL(requestUrl).origin === new URL(IXIOS_RPC).origin), on.ixiosRequests.join());
+  assert.ok(on.ixiosRequests.every(requestUrl => [new URL(IXIOS_RPC).origin, MAIN_INDEXER].includes(new URL(requestUrl).origin)), on.ixiosRequests.join());
+  assert.ok(indexerCalls.includes(MAIN_INDEXER) && !indexerCalls.includes(TEST_INDEXER), indexerCalls.join());
   assert.deepEqual(on.unexpected, []); assert.deepEqual(on.errors, []);
   // Second part (header): the Ixios test network on this web build, then on a Connect build.
   const webUrl = servers[0].url;

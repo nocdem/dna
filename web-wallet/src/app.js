@@ -9,6 +9,7 @@ import { soquScript } from './pq/soqu-transaction.js';
 import { walletCapabilities, walletPageSupported, walletPqNetwork, walletIxiosNetwork } from './pq/wallet-capabilities.js';
 import { ixiosRecoveryTransfer } from './pq/ixios-transfer.js';
 import { prepareIxiosExactRecovery } from './pq/ixios/recovery.js';
+import { readIxiosGasCap } from './pq/ixios/preflight.js';
 import { algorandAddressBytes } from './pq/algorand-prepare.js';
 // The network id a chain's gates are read for: Ixios has its own selection (ixiosSelection), the PQ chains theirs.
 const gateNetwork = chain => chain === 'ixios' ? ixiosSelection : pqSelections[chain];
@@ -382,7 +383,11 @@ function deriveOwnAddresses() {
 // 2026-10-02-device-cache-only-when-saved).
 const HISTORY_AUTO_MS = { ethereum: 30 * 60 * 1000 }, HISTORY_AUTO_DEFAULT_MS = 5 * 60 * 1000, HISTORY_MANUAL_MS = 30 * 1000;
 let historyByChain = {}, historyJob = null, historyNote = {}, accountHistoryWrites = Promise.resolve();
-const historyFor = chain => { const h = historyByChain[chain]; return h && wallet && h.address === wallet.addresses[chain] && (!isPqChain(chain) || h.networkId === pqSelections[chain]) ? h : null; };
+let ixiosCapRead = 0;   // the gas-cap read of the latest selectChain; an earlier one never writes the field
+const IXIOS_GAS_HINT = 'Filled in with the Ixios protocol minimum for the current block, the price the network quotes. Native transfers use 1,000 gas. Review the quoted price and exact fee; your cap is not a network acceptance guarantee.';
+// The network a history is read for: a PQ chain's selection, Ixios its own (ixiosSelection); other networks none.
+const historyNetwork = chain => chain === ixiosChain ? ixiosSelection : isPqChain(chain) ? pqSelections[chain] : undefined;
+const historyFor = chain => { const h = historyByChain[chain]; return h && wallet && h.address === wallet.addresses[chain] && h.networkId === historyNetwork(chain) ? h : null; };
 const historyTime = ms => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const shortPeer = peer => peer.length > 18 ? `${peer.slice(0, 8)}…${peer.slice(-6)}` : peer;
 function renderHistory() {
@@ -405,9 +410,10 @@ function renderHistory() {
     const when = el('time', '', historyTime(r.time)); when.dateTime = new Date(r.time).toISOString();
     side.append(badge, when);
     const footer = el('div', 'activity-footer');
-    if (CHAINS[r.chain]) {
+    const explorer = CHAINS[r.chain]?.explorer ?? (r.chain === ixiosChain ? ixiosNetwork(h.networkId).explorer : undefined);
+    if (explorer) {
       const link = document.createElement('a');
-      link.href = CHAINS[r.chain].explorer + encodeURIComponent(r.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; footer.append(link);
+      link.href = explorer + encodeURIComponent(r.hash); link.textContent = 'View transaction'; link.target = '_blank'; link.rel = 'noopener noreferrer'; footer.append(link);
     } else footer.append(el('span', 'activity-id', `Transaction ID ${r.hash}`));
     div.append(main, side, footer);
     return div;
@@ -425,7 +431,7 @@ async function loadHistory(chain, { manual = false } = {}) {
     if (manual) { historyNote[chain] = `Read ${historyTime(kept.readAt)}. Try again in a minute — the provider limits requests.`; renderHistory(); }
     return;
   }
-  const source = wallet, job = { chain, networkId: isPqChain(chain) ? pqSelections[chain] : undefined, controller: new AbortController() };
+  const source = wallet, job = { chain, networkId: historyNetwork(chain), controller: new AbortController() };
   historyJob = job; delete historyNote[chain]; renderHistory();
   try {
     // Solana: signatures already read are not fetched again.
@@ -436,7 +442,7 @@ async function loadHistory(chain, { manual = false } = {}) {
         if (historyJob !== job || wallet !== source) return;
         job.status = text; renderHistory();
       } });
-    if (historyJob !== job || wallet !== source || source.locked || job.controller.signal.aborted || (isPqChain(chain) && job.networkId !== pqSelections[chain])) return;
+    if (historyJob !== job || wallet !== source || source.locked || job.controller.signal.aborted || job.networkId !== historyNetwork(chain)) return;
     historyByChain[chain] = { address, networkId: job.networkId, readAt: Date.now(), rows: chain === 'soqucoin' ? rows : mergeHistory(kept?.rows, rows) };
     persistHistory();
   } catch (error) { if (historyJob === job) historyNote[chain] = error.message; }
@@ -1041,6 +1047,10 @@ function syncPqAddress(chain) {
 function selectIxiosNetwork(id) {
   const entry = ixiosNetwork(id);
   if (ixiosSelection === entry.id) return;
+  // A history read of the other network still in flight is stopped, as chooseNetwork does for the PQ chains: otherwise
+  // loadHistory would skip this network's read while it runs, and its answer is discarded.
+  if (historyJob?.chain === ixiosChain) { historyJob.controller.abort(); historyJob = null; }
+  delete historyNote[ixiosChain];
   ixiosSelection = entry.id; endpoints[ixiosChain] = entry.endpoint; syncNetworkChoices();
   receiveOnlyNetworks[ixiosChain] = ixiosConfig(entry.id);
   portfolio.setNetwork(ixiosChain, receiveOnlyNetworks[ixiosChain], { forgetKept: true });
@@ -2034,6 +2044,9 @@ function lock(event) {
   stopPqAddresses();
   revision++; vaultOperation++; activitySession = null; activityBlocked = false; latestKept = null; clearHistory(); clearAddressBook(); idleDeadline = 0; stopTracking(); closeReview(); disposeWallet(wallet); wallet = undefined; generatedPhrase = undefined;
   releaseSession(); $('session-conflict').hidden = true;
+  // Ixios is back on mainnet before the next opening's first selectChain (focusOpenWallet sets it again, as a no-op), so
+  // an unlock reads neither the gas cap nor the history of the network chosen before locking.
+  selectIxiosNetwork('mainnet');
   $('discard-activity').hidden = true;
   $('skip-verify-dialog').close(); $('skip-verify').checked = false;
   $('phrase-form').hidden = true; $('wallet-open').hidden = true; $('welcome').hidden = false;
@@ -2362,6 +2375,15 @@ function selectChain() {
   $('asentum-fee-fields').hidden = chain !== 'asentum'; $('asentum-max-fee').disabled = chain !== 'asentum'; $('asentum-max-fee').required = chain === 'asentum';
   // The Ixios gas-price cap field, as the extension (extension/src/ui/wallet-screen.js): only where Ixios can send on the selected network.
   const ixiosSends = chain === ixiosChain && capabilitiesFor(chain).send; $('ixios-fee-fields').hidden = !ixiosSends; $('ixios-max-gas-price').disabled = !ixiosSends; $('ixios-max-gas-price').required = ixiosSends; $('ixios-max-gas-price').value = '';
+  // Filled in with the protocol minimum of the selected network's checked tip (src/pq/ixios/preflight.js readIxiosGasCap), as
+  // the extension does; only by the latest selectChain's read, while the same wallet, Ixios, its network and an untouched
+  // empty field are still shown.
+  const capRead = ++ixiosCapRead;
+  if (ixiosSends) {
+    const opened = wallet, networkId = ixiosSelection, field = $('ixios-max-gas-price'), hint = $('ixios-gas-hint'), still = () => capRead === ixiosCapRead && wallet === opened && $('chain').value === ixiosChain && ixiosSelection === networkId && !field.disabled && field.value === '';
+    hint.textContent = IXIOS_GAS_HINT;
+    void readIxiosGasCap({ networkId }).then(cap => { if (still()) field.value = cap; }, error => { if (still()) hint.textContent = `The Ixios protocol minimum could not be read (${error.message}). Enter a cap.`; });
+  }
   const explorers = { ethereum: 'https://etherscan.io/address/', bsc: 'https://bscscan.com/address/', solana: 'https://solscan.io/account/', tron: 'https://tronscan.org/#/address/' };
   if (explorers[chain]) { $('account-explorer').href = explorers[chain] + encodeURIComponent(address); $('account-explorer').hidden = false; }
   else { $('account-explorer').removeAttribute('href'); $('account-explorer').hidden = true; }

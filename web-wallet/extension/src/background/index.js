@@ -334,6 +334,7 @@ export async function createBackground({ storage = chrome.storage.local, alarms 
     confirmCkbSend: id => { if (!extensionCapabilitiesFor('ckb', networks.get('ckb').id).send) throw new Error('CKB sending is not enabled.'); return ckb.confirmOperation(id); },
     cancelCkbSend: id => ckb.cancelOperation(id),
     getIxiosBalances: () => ixios.getBalances(),
+    getIxiosGasCap: networkId => ixios.getGasCap(networkId),
     getIxiosHistory: async options => { const h=await ixios.getHistory(options);return {...h,local:(h.local??[]).map(row=>({...row,canResubmit:row.canResubmit&&extensionCapabilitiesFor('ixios',networks.get('ixios').id).send}))}; },
     prepareIxiosSend: fields => { if(!extensionCapabilitiesFor('ixios',networks.get('ixios').id).send)throw new Error('IXIOS sending is not enabled.');return ixios.prepareSend(fields); },
     prepareIxiosResubmit: hash => { if(!extensionCapabilitiesFor('ixios',networks.get('ixios').id).send)throw new Error('IXIOS recovery is not enabled.');return ixios.prepareResubmit(hash); },

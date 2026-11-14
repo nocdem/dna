@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 test('PQ history environment is selected, checked, and excluded from legacy persistence', () => {
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
-  assert.match(app, /networkId: isPqChain\(chain\) \? pqSelections\[chain\] : undefined/);
-  assert.match(app, /isPqChain\(chain\) && job.networkId !== pqSelections\[chain\]/);
+  // The read's network: a PQ chain's selection, Ixios its own selection (2026-11-14), other networks none.
+  assert.match(app, /const historyNetwork = chain => chain === ixiosChain \? ixiosSelection : isPqChain\(chain\) \? pqSelections\[chain\] : undefined;/);
+  assert.match(app, /job = \{ chain, networkId: historyNetwork\(chain\),/);
+  assert.match(app, /job.networkId !== historyNetwork\(chain\)\) return;/);
+  assert.match(app, /h.networkId === historyNetwork\(chain\) \? h : null/);
   assert.match(app, /!isPqChain\(chain\) && h.address === source.addresses\[chain\]/);
   assert.match(app, /outgoing amounts include fees/);
 });

@@ -1,5 +1,5 @@
 import {validIxiosPending,validateIxiosSignedPayload} from './pq/ixios/pending.js';
-import {ixiosNetwork} from './pq/ixios/network.js';
+import {ixiosNetwork,IXIOS_NETWORKS} from './pq/ixios/network.js';
 import {validateTidecoinFundingEvidence,validateTidecoinSignedPayload} from './pq/tidecoin-recovery.js';
 import {validateCkbSignedPayload} from './pq/ckb-signed-payload.js';
 import {validateQtcSignedPayload} from './pq/qtc-signed-payload.js';
@@ -76,12 +76,13 @@ async function openRecord(context, text, id, key, maxPlain, what) {
 }
 
 // The account history per network (src/history.js), saved only with a saved
-// wallet, under its own key: { chain: { address, readAt, rows } }.
+// wallet, under its own key: { chain: { address, readAt, rows } }. Ixios, read per selected network, also keeps
+// `networkId` (a record without it is the network its storage key belongs to, as in the extension's per-network keys).
 export const HISTORY_CONTEXT = 'nodus.wallet.history.v1';
 const HISTORY_MAX_PLAIN = 400000;
 export const historyKeyFor = (phrase, id) => activityKeyFor(phrase, id, HISTORY_CONTEXT);
 export async function serializeHistory(id, byChain, key) {
-  const value = Object.fromEntries(Object.entries(byChain).map(([chain, h]) => [chain, { address: h.address, readAt: h.readAt, rows: h.rows }]));
+  const value = Object.fromEntries(Object.entries(byChain).map(([chain, h]) => [chain, { address: h.address, readAt: h.readAt, rows: h.rows, ...(chain === 'ixios' && h.networkId !== undefined ? { networkId: h.networkId } : {}) }]));
   return sealRecord(HISTORY_CONTEXT, id, value, key, HISTORY_MAX_PLAIN, 'history');
 }
 export async function parseHistory(text, id, key, now = Date.now()) {
@@ -91,8 +92,8 @@ export async function parseHistory(text, id, key, now = Date.now()) {
   const out = {};
   for (const [chain, h] of Object.entries(value)) {
     if (!historySupported(chain) || !h || typeof h.address !== 'string' || h.address.length === 0 || h.address.length > 128 ||
-        !Number.isSafeInteger(h.readAt) || h.readAt <= 0 || h.readAt > now + 60000) throw new Error('Invalid saved history.');
-    out[chain] = { address: h.address, readAt: h.readAt, rows: checkHistoryRows(chain, h.rows) };
+        !Number.isSafeInteger(h.readAt) || h.readAt <= 0 || h.readAt > now + 60000 || (h.networkId !== undefined && (chain !== 'ixios' || !Object.hasOwn(IXIOS_NETWORKS, h.networkId)))) throw new Error('Invalid saved history.');
+    out[chain] = { address: h.address, readAt: h.readAt, rows: checkHistoryRows(chain, h.rows), ...(h.networkId !== undefined ? { networkId: h.networkId } : {}) };
   }
   return out;
 }

@@ -21,6 +21,9 @@ const MAIN = {
   rpcOptions: [{ url: 'https://ixios-rpc.innova.limited', label: 'Ixios public RPC' }],
   genesisHash: '0xa19acef59b3b84f192a69407981c50695fd105988d9311dd2e1c60332b629f2f',
   chainId: 1, aegisHeight: 32400000, rpcNamespace: 'eth', codeQuery: 'getCode',
+  // Added 2026-11-14: the account-history indexer and transaction page of each network's explorer, as each explorer's
+  // js/config.js (ixiosIndexer) named them that day (ixoflow.io, nx.ixoflow.io).
+  indexer: 'https://ixios-api.ixoflow.io', explorer: 'https://ixoflow.io/tx/',
 };
 // The test entry: values observed on https://nx-rpc.ixoflow.io on 2026-11-12, recorded in
 // docs/research-evidence/2026-11-12-ixios-testnet-rpc/probes.txt (ixios_chainId = 0x3,
@@ -31,6 +34,7 @@ const TEST = {
   rpcOptions: [{ url: 'https://nx-rpc.ixoflow.io', label: 'Ixios test network RPC' }],
   genesisHash: '0x33177fd0b2fb50907e5f6e17af05b3812881ab2d3effbf0a3493d9b665dfa5fe',
   chainId: 3, aegisHeight: 300, rpcNamespace: 'ixios', codeQuery: 'getProof',
+  indexer: 'https://nx-api.ixoflow.io', explorer: 'https://nx.ixoflow.io/tx/',
 };
 const EMPTY = '0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470';
 const ZERO = '0x' + '00'.repeat(32);
