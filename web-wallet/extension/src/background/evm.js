@@ -17,7 +17,7 @@ import { assertSwapUsdtToken } from '../constants/swap.js';
 // The USDT payment of a swap (plan section 7 step 5): the call data is encoded
 // here, in the extension (the plan leaves the place to this package). The same
 // function signature as the wallet's own token send, src/adapters/evm.js:6.
-const erc20Transfer = new Interface(['function transfer(address,uint256) returns (bool)']);
+const erc20Transfer = new Interface(['function transfer(address,uint256) returns (bool)', 'function balanceOf(address) view returns (uint256)']);
 // A swap's USDT is paid on Ethereum or on Ethereum Sepolia, the two networks the
 // bot's `eth_chain_id` setting can name (plan section 15; givens item 77).
 const SWAP_CHAINS = ['ethereum', 'sepolia'];
@@ -344,7 +344,24 @@ export function createEvm({ messenger, store, approvals, permissions, lockCoordi
       async checkUsdtPayment({ token, to, amount }) {
         assertSwapUsdtToken(session.chain, token);
         assertSendable(session.chain);
-        await prepareUsdt(token, to, amount);
+        try { await prepareUsdt(token, to, amount); }
+        catch (error) {
+          // A transfer above the address's USDT balance reverts inside the token contract, so the estimate fails
+          // with no reason ("missing revert data"). Only after such a failure the balance is read on the checked
+          // network and, when it is too low, the refusal names both amounts; any other failure stands as it was.
+          if (error?.nativeShort === true) throw error;
+          let held;
+          try {
+            await checkNetwork(session.chain, session.endpoint); session.assertCurrent();
+            held = erc20Transfer.decodeFunctionResult('balanceOf',
+              await rpc(session.endpoint, 'eth_call', [{ to: getAddress(token), data: erc20Transfer.encodeFunctionData('balanceOf', [account]) }, 'latest']))[0];
+            session.assertCurrent();
+          } catch { throw error; }
+          if (held < BigInt(amount)) {
+            throw Object.assign(new Error(`Your Ethereum address holds ${formatUnits(held, 6)} USDT on ${config.name}; this payment needs ${formatUnits(BigInt(amount), 6)} USDT.`), { tokenShort: true });
+          }
+          throw error;
+        }
       },
       // Prepares the USDT `transfer(to, amount)` of `token`, shows it for approval (exact amount and destinations)
       // and returns `send()`, which signs, records and broadcasts exactly that prepared transaction.

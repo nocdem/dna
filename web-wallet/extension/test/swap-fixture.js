@@ -85,7 +85,8 @@ export async function setup(t) {
       case 'net_version': result = String(parseInt(chainId, 16)); break;
       case 'eth_blockNumber': result = '0x10'; break;
       case 'eth_getBalance': result = state.balance; break;
-      case 'eth_call': result = '0x' + (123000000n).toString(16).padStart(64, '0'); break;
+      // `tokenBalance`: the USDT balanceOf answer (raw units, 6 decimals); 123 USDT unless a test sets it.
+      case 'eth_call': result = '0x' + (state.tokenBalance ?? 123000000n).toString(16).padStart(64, '0'); break;
       case 'eth_estimateGas':
         // `estimateError`: the node refuses the estimate, as for a transfer the chain would revert.
         if (state.estimateError) return new Response(JSON.stringify({ id: req.id, jsonrpc: '2.0', error: { code: 3, message: 'execution reverted', data: '0x' } }), { headers: { 'content-type': 'application/json' } });

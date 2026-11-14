@@ -93,7 +93,8 @@ dropped. The data object also carries the `cause` field the JSON-RPC error libra
 (fee estimate, fee, nonce and balance, as the payment window will) before anything is signed or
 posted; when that fails the call rejects with `{ delivered: false, paid: false, answered: false,
 reason }` and a message that names the cause: `reason` is `native_fee_short` when the address has
-too little of the network's own coin for the fee, `payment_not_ready` for any other failure. After
+too little of the network's own coin for the fee, `payment_not_ready` for any other failure (when
+the address holds less USDT than the payment, the message names both amounts). After
 a delivered request that was not paid the data is `{ delivered: true, paid: false | "unknown",
 cause: null }`, plus `failure` (the payment step's own reason, a string) unless the user rejected
 the payment (code 4001). `paid` is `"unknown"` whenever the

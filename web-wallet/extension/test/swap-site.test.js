@@ -112,6 +112,9 @@ test('USDT -> NODUS: a rejected signature posts nothing; a rejected payment is r
 for (const [label, set, reason, text] of [
   ['no native coin for the fee', f => { f.state.balance = '0x0'; }, 'native_fee_short', /too little ETH on Ethereum for the network fee of the USDT payment; ETH on another network does not count\. Nothing was signed, sent to the bot or paid\./],
   ['a fee estimate that fails', f => { f.state.estimateError = true; }, 'payment_not_ready', /^The USDT payment cannot be prepared: .*Nothing was signed, sent to the bot or paid\.$/],
+  // Too little USDT: the token contract reverts the estimate; the refusal names both amounts (live 2026-11-14: an address
+  // with 1.809105 USDT read "missing revert data" for a 3 USDT swap).
+  ['too little USDT', f => { f.state.estimateError = true; f.state.tokenBalance = 1809105n; }, 'payment_not_ready', /^Your Ethereum address holds 1\.809105 USDT on Ethereum; this payment needs 25\.0 USDT\. Nothing was signed, sent to the bot or paid\.$/],
   // A fee quote that cannot be read is its own failure with the fee message, not the balance sentence (plan 4.4, 4.8); the balance is full here.
   ['a network fee that cannot be read', f => { f.state.tipError = true; }, 'payment_not_ready', /^The USDT payment cannot be prepared: Network fee could not be read from the RPC endpoint\. Nothing was signed, sent to the bot or paid\.$/],
 ]) {
