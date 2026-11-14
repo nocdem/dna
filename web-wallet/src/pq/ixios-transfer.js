@@ -93,7 +93,9 @@ export async function prepareIxiosTransfer({ wallet, to, amount, maxGasPrice, ne
         return await submit({ raw: signed.raw, hash: signed.hash, expiresAt: r.expiresAt, signal, fetcher, networkId });
       } catch (error) {
         if (!entered) await r.cancel();
-        if (!submitStarted && error instanceof Error) error.ixiosNotExposed = true;
+        // The extension decides "not exposed" from !submitStarted itself; here the page reads the mark, so a thrown
+        // non-Error value is wrapped first and every pre-post failure carries it.
+        if (!submitStarted) { const marked = error instanceof Error ? error : new Error(String(error?.message ?? error)); marked.ixiosNotExposed = true; throw marked; }
         throw error;
       } finally { seed?.fill(0); }
     }

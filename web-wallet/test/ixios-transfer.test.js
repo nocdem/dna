@@ -259,6 +259,13 @@ test('(6) failures before the post carry ixiosNotExposed and post nothing', asyn
   assert.match(r.error?.message ?? '', /Wallet storage changed/);
   assert.equal(r.error.ixiosNotExposed, true);
   assert.equal(n.state.posted.length, 0);
+  // (e') a durable write that rejects with a non-Error value: still marked not exposed, nothing posted
+  n = node(); transfer = await prepare(n);
+  r = await transfer.confirm(async () => { throw { message: 'write failed' }; }).then(() => ({}), error => ({ error }));
+  assert.ok(r.error instanceof Error);
+  assert.match(r.error.message, /write failed/);
+  assert.equal(r.error.ixiosNotExposed, true);
+  assert.equal(n.state.posted.length, 0);
   // (f) no durable callback: refused, nothing signed or posted
   n = node(); transfer = await prepare(n);
   await assert.rejects(transfer.confirm(undefined), error => /Durable Ixios pending record is required/.test(error.message) && error.ixiosNotExposed === true);
