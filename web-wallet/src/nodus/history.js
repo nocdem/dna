@@ -86,6 +86,15 @@ export function parseAddrHistory(page, { limit = NODUS_HISTORY_LIMIT } = {}) {
   return { enabled: page.enabled, fromHeight, entries };
 }
 
+// The saved form of a kept page (src/activity-storage.js, a saved wallet only): the node's own wire shape, every number
+// a decimal string (JSON cannot hold the bigints). Loading runs parseAddrHistory on it again, the same check the node's
+// answer passes, so a saved page is untrusted data exactly as a fresh one is.
+export function nodusPageToSaved(page) {
+  return { enabled: page.enabled, from_height: String(page.fromHeight), entries: page.entries.map(e =>
+    ({ h: String(e.h), i: String(e.i), q: String(e.q), kind: e.kind, amount: String(e.amount), token: e.token, fee: String(e.fee), peer: e.peer, wire: e.wire, ts: String(e.ts) })) };
+}
+export const nodusPageFromSaved = saved => parseAddrHistory(saved, { limit: NODUS_HISTORY_LIMIT });
+
 // Raw units -> decimal text with the NODUS decimals: "1.0", "0.00019388"
 // (the same form as ethers formatUnits, which the rest of the wallet shows).
 export function nodusUnits(units, decimals = DECIMALS) {

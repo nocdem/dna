@@ -51,15 +51,17 @@ export function createSoqucoin({ lockCoordinator, getWalletKeys, getActivity, ge
   }
   async function ready(s) {await guarded(s,()=>Promise.resolve(s.activity.ready));await guarded(s,()=>s.activity.recoverSubmissionProofs());track(s);}
   function snapshot(s) {
-    current(s); const page=s.page, unresolvedHashes=new Set(s.activity.rows().filter(row=>!terminal(row.status)).map(row=>row.hash));
+    // The page is the kept one (s.activity.history(): this session's last read, or the encrypted one saved with the wallet, src/background/network-activity.js);
+    // the counts of a read (s.counts) are not saved, so a page that opened with the wallet says only when it was read.
+    current(s); const page=s.activity.history(), counts=s.counts&&page&&s.counts.readAt===page.readAt?s.counts:null, unresolvedHashes=new Set(s.activity.rows().filter(row=>!terminal(row.status)).map(row=>row.hash));
     return {network:s.network.id,rows:structuredClone((page?.rows??[]).filter(row=>!unresolvedHashes.has(row.hash))),local:sentRowsToShow(s.activity.rows(),{historyRows:page?.rows??[]}).map(({hash,to,amount,symbol,status,note,createdAt,signedPayload,notSubmitted})=>({hash,to,amount,symbol,status,note,createdAt,network:s.network.id,canResubmit:Boolean(signedPayload)&&!notSubmitted&&['pending','unknown'].includes(status)})),
-      status:page ? `${page.status} Listed ${page.totalListed}; examined ${page.examined}; omitted ${page.omitted}. Local submissions are labelled separately.` : 'Local SOQ submissions only; partial account history is unavailable.',error:s.historyError??'',activityError:s.activityError||s.activity.error()};
+      status:counts ? `${counts.status} Listed ${counts.totalListed}; examined ${counts.examined}; omitted ${counts.omitted}. Local submissions are labelled separately.` : page ? `Partial native SOQ net flows kept from the read of ${new Date(page.readAt).toLocaleString()}; outgoing amounts include fees. Local submissions are labelled separately.` : 'Local SOQ submissions only; partial account history is unavailable.',error:s.historyError??'',activityError:s.activityError||s.activity.error()};
   }
   return {
     networkChanged:close,
     async getBalances(){const s=active();await ready(s);return guarded(s,()=>readBalances(s.address,{networkId:s.network.id,signal:s.abort.signal}));},
-    async getHistory({manual=false}={}) { const s=active(); await ready(s); if(s.historyJob)return s.historyJob;if(s.page&&Date.now()-s.page.readAt<(manual?30000:300000))return snapshot(s);
-      const job=guarded(s,async()=>{try{const page=await readHistory(s.address,{networkId:s.network.id,signal:s.abort.signal});current(s);s.page={...page,readAt:Date.now()};s.historyError='';}catch(error){current(s);s.page=null;s.historyError=error.message;}return snapshot(s);});s.historyJob=job;try{return await job;}finally{if(s.historyJob===job)s.historyJob=null;} },
+    async getHistory({manual=false}={}) { const s=active(); await ready(s); if(s.historyJob)return s.historyJob;const kept=s.activity.history();if(kept&&Date.now()-kept.readAt<(manual?30000:300000))return snapshot(s);
+      const job=guarded(s,async()=>{try{const page=await readHistory(s.address,{networkId:s.network.id,signal:s.abort.signal}),readAt=Date.now();current(s);s.counts={status:page.status,totalListed:page.totalListed,examined:page.examined,omitted:page.omitted,readAt};await s.activity.saveHistory({address:s.address,rows:page.rows,readAt});current(s);s.historyError='';}catch(error){current(s);s.historyError=error.message;}return snapshot(s);});s.historyJob=job;try{return await job;}finally{if(s.historyJob===job)s.historyJob=null;} },
     async prepareSend({symbol,to,amount}={}) {
       const s=active();await ready(s);s.activity.assertSendable();
       if(s.network.id!=='mainnet'||symbol!=='SOQ')throw new Error('Only verified Soqucoin mainnet SOQ sends are available.');

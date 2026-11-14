@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { deriveNodusAddress, nodusSigningSeed } from '../../src/nodus/derive.js';
-import { activityKeyFor, parseActivity, serializeActivity } from '../../src/activity-storage.js';
+import { activityKeyFor, parseActivity, serializeActivity, historyKeyFor, parseHistory, serializeHistory } from '../../src/activity-storage.js';
 import { NODUS_SUBMITTED_NOTE } from '../../src/nodus/resubmit.js';
 import { serializeError } from '@metamask/rpc-errors';
-import { ACTIVITY_KEY, VAULT_KEY, parseVault } from '../../src/vault.js';
+import { ACTIVITY_KEY, HISTORY_KEY, VAULT_KEY, parseVault } from '../../src/vault.js';
 import { NODUS_TOKEN_ID } from '../../src/nodus/network.js';
 import { AUTO_LOCK_TIMEOUT_ALARM } from '../src/background/auto-lock-alarm.js';
 import { chainNetwork } from '../src/constants/networks.js';
@@ -981,3 +981,44 @@ test('an RPC call aborted by lock writes nothing into the cleared session log', 
   assert.ok(lines.some(line => line.includes('rpc call host=rpc.after-lock.example') && line.includes('name=AbortError')), 'the debug line was written');
   assert.deepEqual(background.nodus.getSessionLog().entries, []);
 });
+
+// Proves: the NODUS account-history page a node answers is kept for the saved wallet, encrypted inside the saved account-history
+// record (HISTORY_KEY, src/activity-storage.js) under `nodus`, and comes back through parseHistory as the same bigint page; after
+// lock and unlock a read that fails shows that kept page with the failure named, and a failure with nothing kept still rejects (the
+// test above). Environment: none; leaves nothing behind (in-memory storage). Could falsely pass if the record were read back from
+// the holder's memory: it is read from the fixture storage after a lock, and the second session never saw a successful read.
+test('a NODUS account-history page is kept encrypted and a failed read after unlock shows it', async t => {
+  let fail = false;
+  const { background, values } = await setup(t, {
+    async addrHistory() { if (fail) throw new Error('fixture history unavailable'); return pageAt('9'); },
+  });
+  await unlockConnected(background);
+  const first = await background.nodus.getHistory();
+  assert.equal(first.rows.length, 1); assert.equal(first.error, undefined);
+  const id = parseVault(values[VAULT_KEY]).id, historyKey = await historyKeyFor(phrase, id);
+  const saved = await parseHistory(values[HISTORY_KEY], id, historyKey);
+  assert.equal(saved.nodus.address, address);
+  assert.deepEqual(saved.nodus.page, { enabled: true, fromHeight: 1n, entries: [{ h: 9n, i: 0n, q: 0n, kind: 'spend_in', amount: 100000000n, token: NODUS_TOKEN_ID, fee: 0n, peer: recipient, wire: 'aa'.repeat(64), ts: 1n }] });
+  assert.ok(!JSON.stringify(values[HISTORY_KEY]).includes('spend_in'), 'the record is encrypted');
+  await background.lock(); fail = true;
+  await unlockConnected(background);
+  const kept = await background.nodus.getHistory();
+  assert.equal(kept.rows.length, 1); assert.equal(kept.rows[0].amount, '1.0 NODUS');
+  assert.match(kept.error, /unavailable/);
+});
+
+// Proves: a saved NODUS page with an unknown kind is refused by parseHistory (so the whole saved record is not shown), and a valid
+// saved page of another address is not shown after unlock: the read that fails then rejects as it does with nothing kept.
+// Could falsely pass if the record were refused for another reason (a wrong key): the same kind of record is accepted in the test above.
+test('a NODUS page saved with an unknown kind or for another address is not shown', async t => {
+  const { background, values, state } = await setup(t);
+  const id = parseVault(values[VAULT_KEY]).id, historyKey = await historyKeyFor(phrase, id);
+  const entry = { h: 9n, i: 0n, q: 0n, kind: 'spend_in', amount: 1n, token: NODUS_TOKEN_ID, fee: 0n, peer: recipient, wire: 'aa'.repeat(64), ts: 1n };
+  const record = (over, page) => serializeHistory(id, { nodus: { address, readAt: Date.now(), page: { enabled: true, fromHeight: 1n, entries: [{ ...entry, ...page }] }, ...over } }, historyKey);
+  await assert.rejects(parseHistory(await record({}, { kind: 'invented' }), id, historyKey), /Invalid saved history/);
+  values[HISTORY_KEY] = await record({ address: recipient }, {});
+  await unlockConnected(background);
+  state.historyBad = true;
+  await assert.rejects(background.nodus.getHistory(), /invalid account history/);
+});
+

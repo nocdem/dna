@@ -49,7 +49,11 @@ requests reannouncement with `eip6963:requestProvider`, then calls
 `nodus_requestAccounts` and returns the first account object: `address`,
 `publicKey` and, when the wallet has confirmed one for that address, the
 account's chain name `name` (3 to 36 of a-z and 0-9; the field is absent
-otherwise). Chain names are public on chain. Discovery waits
+otherwise). When the wallet has not confirmed its name yet and its Nodus
+connection is ready, the answer starts one name read and waits for it, so a
+first connect carries the name; without a ready connection, or when the read
+fails, the answer comes without `name`. Chain names are
+public on chain. Discovery waits
 for a matching announcement. The browser extension is named Nodus Connect.
 For compatibility, its provider discovery retains the legacy identity
 `name: "Nodus Wallet"`, `rdns: "io.nodusnetwork.wallet"`

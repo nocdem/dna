@@ -22,7 +22,7 @@ const options = { nodusWasmBytes: readFileSync(new URL('../../src/nodus/mldsa87.
   cpunkWasmBytes: readFileSync(new URL('../../src/cpunk/legacy-dilithium.wasm', import.meta.url)) };
 const account = { address, publicKey: `0x${publicKey}` };
 function event() { const listeners = new Set(); return { addListener(fn) { listeners.add(fn); }, removeListener(fn) { listeners.delete(fn); } }; }
-function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
+function deferred() { let resolve, reject; const promise = new Promise((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; }
 let backgroundModule, nextId = 0;
 async function setup(t, { names } = {}) {
   const values = {}, calls = [], logs = [], windows = [], state = {};
@@ -91,10 +91,12 @@ async function setup(t, { names } = {}) {
     try { return await Promise.race([ready.promise, request.then(result => assert.fail(`Completed before approval: ${JSON.stringify(result)}`))]); }
     finally { controller.messenger.unsubscribe('ApprovalController:stateChange', changed); }
   }
-  async function connect(remote) {
+  // `name`: the chain name the first account answer carries (the own-name read started when the connection became
+  // ready has answered it), or '' for none.
+  async function connect(remote, name = '') {
     const request = remote.request('nodus_requestAccounts'), pending = await nextApproval(request);
     await background.permissions.acceptPermissionsRequest(structuredClone(pending.requestData));
-    assert.deepEqual((await request).result, [account]);
+    assert.deepEqual((await request).result, [name ? { ...account, name } : account]);
   }
   t.after(async () => { engines.forEach(engine => engine.destroy()); await background.destroy(); });
   return { background, site, senderSite, nextApproval, connect, calls, logs, windows, values, state };
@@ -448,7 +450,7 @@ test('notification shows the Nodus origin and full message with working approval
 // accountName were filled from anything but the lookup; the fallback tests below cover the opposite case.
 test('Nodus signature approval carries the confirmed own chain name and the unchanged signed data', async t => {
   const f = await setup(t, { names: { nameOf: async () => ({ found: true, name: 'alice', committedHeight: '5' }) } }), remote = f.site();
-  await f.connect(remote);
+  await f.connect(remote, 'alice');
   assert.deepEqual(await f.background.nodus.getOwnName(), { found: true, name: 'alice' });
   const request = remote.request('nodus_signMessage', ['hello', address]), pending = await f.nextApproval(request);
   assert.equal(pending.requestData.accountName, 'alice');
@@ -458,56 +460,67 @@ test('Nodus signature approval carries the confirmed own chain name and the unch
   f.background.approvals.reject(pending.id); assert.equal((await request).error.code, 4001);
 });
 
-// Proves: with no confirmed name held, the window opens at once (nameOf never answers during this test's approval)
-// with an empty accountName, so the screen shows the address; the background read is started, and a later window
-// gets the name once the answer arrived. Can falsely pass if nextApproval resolved only after nameOf answered: the
-// answer is released only after the first approval was seen.
+// Proves: with no confirmed name held, the signature window opens at once (the second nameOf never answers during
+// this test's approval) with an empty accountName, so the screen shows the address; the window's read is started, and
+// a later window gets the name once the answer arrived. The site's connect read fails first, so the connect answers
+// without a name. Can falsely pass if nextApproval resolved only after nameOf answered: the second answer is released
+// only after the first approval was seen.
 test('Nodus signature approval does not wait for a chain-name read and shows the name in the next window', async t => {
-  const answer = deferred(), asked = [];
-  const f = await setup(t, { names: { nameOf: async args => { asked.push(args); return answer.promise; } } }), remote = f.site();
+  const answers = [deferred(), deferred()], asked = [];
+  answers[0].promise.catch(() => {}); answers[0].reject(new Error('read failed'));
+  const f = await setup(t, { names: { nameOf: async args => { asked.push(args); return answers[asked.length - 1].promise; } } }), remote = f.site();
+  assert.equal(asked.length, 0, 'no name read before a site asks');
   await f.connect(remote);
+  assert.equal(asked.length, 1, 'the connect asked once; that read failed, so no name');
   const first = remote.request('nodus_signMessage', ['one', address]), pendingFirst = await f.nextApproval(first);
   assert.equal(pendingFirst.requestData.accountName, '');
-  assert.equal(asked.length, 1); assert.deepEqual(asked[0], { owner: address });
+  assert.equal(asked.length, 2); assert.deepEqual(asked[1], { owner: address });
   f.background.approvals.reject(pendingFirst.id); assert.equal((await first).error.code, 4001);
-  answer.resolve({ found: true, name: 'alice', committedHeight: '5' });
+  answers[1].resolve({ found: true, name: 'alice', committedHeight: '5' });
   for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
   const second = remote.request('nodus_signMessage', ['two', address]), pendingSecond = await f.nextApproval(second);
-  assert.equal(pendingSecond.requestData.accountName, 'alice'); assert.equal(asked.length, 1);
+  assert.equal(pendingSecond.requestData.accountName, 'alice'); assert.equal(asked.length, 2);
   f.background.approvals.reject(pendingSecond.id); assert.equal((await second).error.code, 4001);
 });
 
-// Proves the site account answer (nodus_requestAccounts) carries the chain name once the background has confirmed it,
-// and not before: the connect answer has no name, the later call after the confirmed lookup has { name: 'alice' }, and
-// no extra name lookup is made for the account answer. Can falsely pass if the name came from elsewhere than the
-// confirmed lookup; the only lookup in this test answers 'alice' and is counted.
-test('the site account answer carries the confirmed chain name', async t => {
+// Proves the site's FIRST account answer (nodus_requestAccounts) carries the chain name (operator 2026-11-14: the
+// swap site showed the ID on the first connect and the name only after a reload): with the connection ready, the answer
+// starts one own-name read, waits for it and carries { name: 'alice' }; a later answer uses the confirmed name without
+// another lookup. Can falsely pass if the answer were read after the lookup by chance: the lookup answers only after the
+// connect request is pending, and the count of lookups is checked.
+test('the site\'s first account answer waits for the own-name read and carries the chain name', async t => {
   const answer = deferred(), asked = [];
   const f = await setup(t, { names: { nameOf: async args => { asked.push(args); return answer.promise; } } }), remote = f.site();
-  await f.connect(remote);
-  const first = remote.request('nodus_signMessage', ['one', address]), pendingFirst = await f.nextApproval(first);
-  f.background.approvals.reject(pendingFirst.id); await first;
-  answer.resolve({ found: true, name: 'alice', committedHeight: '5' });
+  const request = remote.request('nodus_requestAccounts'), pending = await f.nextApproval(request);
+  await f.background.permissions.acceptPermissionsRequest(structuredClone(pending.requestData));
+  let settled = false; void request.then(() => { settled = true; });
   for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
-  const accounts = (await remote.request('nodus_requestAccounts')).result;
+  assert.equal(asked.length, 1, 'the answer started one own-name read');
+  assert.equal(settled, false, 'the answer waits for the read in flight');
+  answer.resolve({ found: true, name: 'alice', committedHeight: '5' });
+  const accounts = (await request).result;
   assert.equal(accounts.length, 1); assert.equal(accounts[0].address, address); assert.equal(accounts[0].name, 'alice');
+  assert.deepEqual((await remote.request('nodus_requestAccounts')).result, accounts);
   assert.equal(asked.length, 1);
 });
 
 // Proves: an answer "no name" or a failed read never produces a name (empty accountName), and a failed read is asked
 // again at the next window. Can falsely pass if the test never reached the request; the asked counts check that.
 test('Nodus signature approval shows no name when none is confirmed', async t => {
-  let mode = 'none', asked = 0;
+  let mode = 'fail', asked = 0;
   const f = await setup(t, { names: { nameOf: async () => { asked++; if (mode === 'fail') throw new Error('read failed'); return { found: false, committedHeight: '5' }; } } }), remote = f.site();
   await f.connect(remote);
-  mode = 'fail';
+  assert.equal(asked, 1, 'the connect\'s read failed: no name, the address is shown');
   const first = remote.request('nodus_signMessage', ['one', address]), pendingFirst = await f.nextApproval(first);
   assert.equal(pendingFirst.requestData.accountName, ''); f.background.approvals.reject(pendingFirst.id); await first;
   for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
   mode = 'none';
   const second = remote.request('nodus_signMessage', ['two', address]), pendingSecond = await f.nextApproval(second);
-  assert.equal(pendingSecond.requestData.accountName, ''); assert.equal(asked, 2);
+  assert.equal(pendingSecond.requestData.accountName, ''); assert.equal(asked, 3);
   f.background.approvals.reject(pendingSecond.id); await second;
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual((await remote.request('nodus_requestAccounts')).result, [account], 'an answer of no name: no name field, no new read');
+  assert.equal(asked, 3);
 });
 
 // Proves the signature window: confirmed name -> "Account" shows the name and "Address" the address; no name ->

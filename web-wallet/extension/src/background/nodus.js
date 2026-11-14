@@ -120,11 +120,14 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     return name && (!s.identity.addresses?.nodus || s.identity.addresses.nodus === s.addresses?.nodus) ? name : '';
   }
   function confirmedOwnName(s, account) { return s.ownName?.address === account ? s.ownName.name : ''; }
+  // Starts this session's own-name read once; returns the read in flight (or a settled promise), which never rejects.
+  // The confirmed name is set when the answer arrives (keepOwnName), before its record is saved.
   function warmOwnName(s) {
-    if (s.ownName || s.ownNameAsked || !s.client?.nameable) return;
-    s.ownNameAsked = true;
-    adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal })
-      .then(own => { void keepOwnName(s, own); }, () => { s.ownNameAsked = false; });
+    if (s.ownName || !s.client?.nameable) return Promise.resolve();
+    if (s.ownNameAsked) return s.ownNameAsked;
+    s.ownNameAsked = adapter.ownChainName({ client: s.client, from: s.addresses.nodus, signal: s.abort.signal })
+      .then(own => { void keepOwnName(s, own); }, () => { s.ownNameAsked = undefined; });
+    return s.ownNameAsked;
   }
   // Re-reads the kept name from the network without making the caller wait; one read at a time, and a failed read
   // leaves the kept name as it is (an answer of not-found removes it). The one-at-a-time flag covers the network read
@@ -363,6 +366,20 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     return { shown, changed: rows.some(row => row.listed === true && !before.has(row)) };
   }
   function localRows(s, page) { return rowsOf(markListed(s, page).shown); }
+  // The main bucket's account history (one encrypted record, HISTORY_KEY, every chain of it under its own name) and its one write queue:
+  // an Ethereum / Cellframe page (chainActivity) and the NODUS page (getHistory) go through here.
+  function saveHistory(s, chain, page, check) {
+    check(); s.history[chain] = page;
+    const operation = writes.catch(() => {}).then(async () => {
+      check();
+      const saved = await storage.get(VAULT_KEY); check();
+      if (saved[VAULT_KEY] !== s.vault) throw new Error('Wallet storage changed.');
+      const encrypted = await serializeHistory(s.id, s.history, s.historyKey); check();
+      await storage.set({ [HISTORY_KEY]: encrypted }); check();
+    });
+    writes = operation; return operation;
+  }
+  const keptNodusHistory = s => s.history.nodus?.address === s.addresses.nodus ? s.history.nodus : null;
   function rowsOf(shown) {
     return shown
       .map(row => ({ hash: row.hash, to: row.to, amount: row.amount, symbol: row.symbol, status: row.status, note: row.note,
@@ -505,17 +522,7 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
         },
         persist() { check(); return persist(s); },
         history() { check(); const page = s.history[chain]; return page?.address === s.addresses[chain] ? page : null; },
-        saveHistory(page) {
-          check(); s.history[chain] = page;
-          const operation = writes.catch(() => {}).then(async () => {
-            check();
-            const saved = await storage.get(VAULT_KEY); check();
-            if (saved[VAULT_KEY] !== s.vault) throw new Error('Wallet storage changed.');
-            const encrypted = await serializeHistory(s.id, s.history, s.historyKey); check();
-            await storage.set({ [HISTORY_KEY]: encrypted }); check();
-          });
-          writes = operation; return operation;
-        },
+        saveHistory(page) { return saveHistory(s, chain, page, check); },
       };
     },
     consumeNodusSeed,
@@ -550,10 +557,18 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       await releaseExpiredHolds(s);
       return rememberReview(s, await adapter.prepareStake({ ...params, kind, client: s.client, from: s.addresses.nodus, locked: heldInputs(s) }));
     },
-    // The chain name this unlocked session has confirmed for `address` (a lookup answered it), or ''. Reads only what is
-    // kept, never the network; used by the site account answer.
-    accountName(address) {
-      return session && session.addresses?.nodus === address ? confirmedOwnName(session, address) : '';
+    // The chain name this unlocked session has confirmed for `address` (a lookup answered it), or '', for the site
+    // account answer. Without a confirmed name and with the connection ready, it starts this session's own-name read (or
+    // joins the one in flight) and waits for it, so a site's first connect carries the name; the read is one module
+    // call, bounded by the module's request timeout. A connection that is not ready, a failed read or an answer of no
+    // name gives '' (the site shows the address); a confirmed name is answered at once.
+    async accountName(address) {
+      const s = session;
+      if (!s || s.addresses?.nodus !== address) return '';
+      const kept = confirmedOwnName(s, address);
+      if (kept || s.client?.state !== 'ready') return kept;
+      await warmOwnName(s);
+      return session === s ? confirmedOwnName(s, address) : '';
     },
     async getOwnName() {
       // A name this session already confirmed for this address is answered at once; the network read runs in the
@@ -955,13 +970,29 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
     },
     async getHistory() {
       const s = active(); track(s);
-      const page = await s.client.addrHistory({ limit: NODUS_HISTORY_LIMIT }, { signal: s.abort.signal }); current(s);
+      let page, readAt, failure;
+      try { page = await s.client.addrHistory({ limit: NODUS_HISTORY_LIMIT }, { signal: s.abort.signal }); current(s); readAt = Date.now(); }
+      catch (error) {
+        // A failed read shows the page kept from an earlier read (a saved wallet keeps it encrypted, activity-storage.js parseHistory)
+        // with the failure named; with none kept the failure goes to the caller as before.
+        current(s);
+        const kept = keptNodusHistory(s);
+        if (!kept) throw error;
+        ({ page, readAt } = kept); failure = error;
+      }
       const { shown, changed } = markListed(s, page);
       // rows the page now lists leave the saved activity (src/app.js:559 then the save)
       if (changed) await persist(s).catch(error => { if (session === s) s.activityError = error.message; });
       current(s);
+      // The page just read is kept for the next opening; a failed keep is said, the page still shows.
+      let keepError = '';
+      if (!failure) {
+        try { await saveHistory(s, 'nodus', { address: s.addresses.nodus, readAt, page }, () => { lockCoordinator.assertUnlocked(); current(s); s.assertReady?.(); }); current(s); }
+        catch (error) { current(s); keepError = `The history read could not be kept on this device: ${error.message}`; }
+      }
       return { rows: page.entries.map(entry => nodusHistoryRow(entry, { tokens: nodusTokens(s.client.tokenPins()) })),
-        status: nodusHistoryStatus({ page, readAt: new Date().toLocaleString() }), local: rowsOf(shown), activityError: s.activityError ?? '' };
+        status: nodusHistoryStatus({ page, readAt: new Date(readAt).toLocaleString() }), local: rowsOf(shown), activityError: s.activityError ?? '',
+        ...(failure ? { error: failure.message } : keepError ? { error: keepError } : {}) };
     },
     getLocalHistory() { const s = active(); return localRows(s); },
   };

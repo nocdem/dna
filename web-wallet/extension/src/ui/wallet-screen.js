@@ -391,7 +391,10 @@ export function mountReferenceWallet({ document, window, root, status, ui, run, 
     let history;
     if (chain === 'nodus') { await ui.loadNodusHistory(); history = ui.state.nodusHistory; }
     else if (isSolanaTron(chain)) { await ui.loadSolanaTronHistory(chain, { manual }); history = ui.state.solanaTronHistory[chain]; }
-    else if (['qtc', 'xion', 'splendor'].includes(chain)) {
+    // XION on every network (the receive-only test network included) is read by the background holder, which keeps the page
+    // encrypted for the saved wallet (src/background/xion.js getHistory); this window has no storage of its own.
+    else if (chain === 'xion') { await ui.loadSolanaTronHistory(chain, { manual }); history = ui.state.solanaTronHistory[chain]; }
+    else if (['qtc', 'splendor'].includes(chain)) {
       $('history').replaceChildren(); $('history-status').textContent = 'Reading native account history…';
       const address = ui.state.pqAddresses?.[chain]?.[networkId];
       if (!address) throw new Error('Receive address is unavailable.');

@@ -2,6 +2,7 @@ import {readSoquHistory} from './pq/soqu-history.js';
 import { readXionHistory } from './pq/xion-history.js';
 import { readSplendorHistory } from './pq/splendor-history.js';
 import { readIxiosHistory } from './pq/ixios/indexer-history.js';
+import { bech32 } from '@scure/base';
 // Account history per network — incoming and outgoing transfers of this
 // wallet's addresses, read from the same sources the DNA Connect app uses
 // (messenger/src/api/engine/dna_engine_wallet.c dna_handle_get_transactions):
@@ -306,8 +307,55 @@ export const historySupported = chain => Object.hasOwn(HISTORY_SOURCES, chain);
 // are checked again before they are shown; anything else throws.
 const HASHES = { ethereum: /^0x[0-9a-f]{64}$/, tron: /^[0-9a-f]{64}$/, solana: /^[1-9A-HJ-NP-Za-km-z]{64,88}$/, cellframe: /^0x[0-9a-f]{64}$/, ixios: /^0x[0-9a-f]{64}$/ };
 const symbolsOf = chain => chain === 'cellframe' ? ['CPUNK'] : chain === 'ixios' ? ['IXIOS'] : [CHAINS[chain].symbol, ...CHAINS[chain].tokens.map(t => t.symbol)];
+// The PQ networks' rows, each checked against exactly what its reader writes (the reader's row line is named). Reads
+// of these chains are per network (src/app.js historyNetwork), so a saved page also names its network (activity-storage.js).
+//   soqucoin  src/pq/soqu-history.js:36      64 hex, in | out, SOQ (8 decimals), no peer, confirmed; at most SOQU_HISTORY_LIMIT (20) rows
+//   qtc       src/pq/qtc.js:86               64 hex, in | out, QTC (8 decimals), no peer, confirmed
+//   algorand  src/pq/algorand.js:84-85       52 base32, in | out | self, ALGO (6 decimals), no peer or one account, confirmed
+//   xion      src/pq/xion-history.js:25      64 hex, in | out | self, XION (6 decimals), a bech32 xion account, confirmed | failed
+//   splendor  src/pq/splendor-history.js:14  64 hex, in | out | self, SPLD (18 decimals), an SQ: account, confirmed | failed
+const xionAccount = peer => {
+  try { const d = bech32.decode(peer); return peer === peer.toLowerCase() && d.prefix === 'xion' && bech32.fromWords(d.words).length === 20 && bech32.encode('xion', d.words) === peer; } catch { return false; }
+};
+const PQ_SAVED = Object.freeze({
+  soqucoin: { hash: /^[0-9a-f]{64}$/, dirs: ['in', 'out'], symbol: 'SOQ', decimals: 8, peer: p => p === '', statuses: ['confirmed'], max: 20 },
+  qtc: { hash: /^[0-9a-f]{64}$/, dirs: ['in', 'out'], symbol: 'QTC', decimals: 8, peer: p => p === '', statuses: ['confirmed'], max: HISTORY_LIMIT },
+  algorand: { hash: /^[A-Z2-7]{52}$/, dirs: ['in', 'out', 'self'], symbol: 'ALGO', decimals: 6, peer: p => p === '' || /^[A-Z2-7]{58}$/.test(p), statuses: ['confirmed'], max: HISTORY_LIMIT, zero: true },
+  xion: { hash: /^[0-9a-f]{64}$/, dirs: ['in', 'out', 'self'], symbol: 'XION', decimals: 6, peer: xionAccount, statuses: ['confirmed', 'failed'], max: HISTORY_LIMIT },
+  splendor: { hash: /^[0-9a-f]{64}$/, dirs: ['in', 'out', 'self'], symbol: 'SPLD', decimals: 18, peer: p => /^SQ:[0-9a-f]{64}$/.test(p), statuses: ['confirmed', 'failed'], max: HISTORY_LIMIT },
+});
+// `zero`: only Algorand's reader writes a zero amount (a self payment or a zero-amount transfer, algorand.js:80-85);
+// the other readers leave equal flows out (soqu-history.js:35, qtc.js:84) or accept only positive amounts
+// (xion-history.js:20, splendor-history.js:11), so a saved zero there is not a row their reader wrote.
+const decimalText = (value, decimals, zero = false) => typeof value === 'string' && new RegExp(`^(0|[1-9]\\d{0,77})(\\.\\d{0,${decimals - 1}}[1-9])?$`).test(value) && (zero || /[1-9]/.test(value));
+const invalidSaved = () => new Error('Invalid saved history.');
+function checkPqRows(chain, rows) {
+  const shape = PQ_SAVED[chain];
+  if (!Array.isArray(rows) || rows.length > shape.max) throw invalidSaved();
+  return rows.map(r => {
+    if (!r || r.chain !== chain || typeof r.hash !== 'string' || !shape.hash.test(r.hash) || !Number.isSafeInteger(r.time) || r.time <= 0 ||
+        !shape.dirs.includes(r.dir) || r.symbol !== shape.symbol || !decimalText(r.amount, shape.decimals, shape.zero === true) ||
+        typeof r.peer !== 'string' || !shape.peer(r.peer) || !shape.statuses.includes(r.status)) throw invalidSaved();
+    return { chain, hash: r.hash, time: r.time, dir: r.dir, symbol: r.symbol, amount: r.amount, peer: r.peer, status: r.status };
+  });
+}
+// CKB (the extension only, src/pq/ckb-history.js:27): { hash, dir, amount, symbol, status, time } — no chain field, the
+// status is 'committed', the hash is 0x-prefixed, at most 20 rows. historySupported('ckb') stays false (the web wallet reads none).
+function checkCkbRows(rows) {
+  if (!Array.isArray(rows) || rows.length > 20) throw invalidSaved();
+  return rows.map(r => {
+    if (!r || typeof r.hash !== 'string' || !/^0x[0-9a-f]{64}$/.test(r.hash) || !['in', 'out', 'self'].includes(r.dir) || !decimalText(r.amount, 8, r.dir === 'self') ||
+        r.symbol !== 'CKB' || r.status !== 'committed' || !Number.isSafeInteger(r.time) || r.time <= 0 || r.time > 8640000000000000) throw invalidSaved();
+    return { hash: r.hash, dir: r.dir, amount: r.amount, symbol: r.symbol, status: r.status, time: r.time };
+  });
+}
+// The chains whose account history may be kept on the device (a saved wallet only): every chain this wallet reads a
+// history for, plus CKB (extension) — and NODUS, which keeps a page, not rows (src/nodus/history.js).
+export const historyKept = chain => historySupported(chain) || chain === 'ckb';
 export function checkHistoryRows(chain, rows) {
-  if (chain === 'soqucoin' || chain === 'algorand' || chain === 'qtc' || chain === 'xion' || chain === 'splendor' || !historySupported(chain) || !Array.isArray(rows) || rows.length > HISTORY_LIMIT) throw new Error('Invalid saved history.');
+  if (Object.hasOwn(PQ_SAVED, chain) && historySupported(chain)) return checkPqRows(chain, rows);
+  if (chain === 'ckb') return checkCkbRows(rows);
+  if (!historySupported(chain) || !Array.isArray(rows) || rows.length > HISTORY_LIMIT) throw new Error('Invalid saved history.');
   return rows.map(r => {
     if (!r || r.chain !== chain || typeof r.hash !== 'string' || !HASHES[chain].test(r.hash) || !Number.isSafeInteger(r.time) || r.time <= 0 ||
         !['in', 'out', 'self'].includes(r.dir) || !symbolsOf(chain).includes(r.symbol) || typeof r.amount !== 'string' || !/^\d{1,78}(\.\d{1,18})?$/.test(r.amount) ||

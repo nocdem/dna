@@ -16,9 +16,10 @@ import { validateSplendorSignedPayload } from './pq/splendor-recovery.js';
 import { validateSoquSignedPayload } from './pq/soqu-signed-payload.js';
 import { validHash, validNodusPending, validSoquPending, validSplendorPending, validAsentumPending, terminal } from './activity.js';
 import { NODUS_ASSET } from './nodus/network.js';
-import { historySupported, checkHistoryRows } from './history.js';
+import { historySupported, historyKept, checkHistoryRows } from './history.js';
+import { isPqChain, PQ_NETWORKS } from './pq/networks.js';
 import { checkAddressBook, ADDRESS_BOOK_MAX } from './address-book.js';
-import { localRowsToShow, NODUS_HISTORY_LIMIT } from './nodus/history.js';
+import { localRowsToShow, NODUS_HISTORY_LIMIT, nodusPageToSaved, nodusPageFromSaved } from './nodus/history.js';
 const encoder = new TextEncoder(), MAX_PLAIN = 150000;
 const context = 'nodus.wallet.activity.v2';
 function encode(bytes) {
@@ -76,13 +77,17 @@ async function openRecord(context, text, id, key, maxPlain, what) {
 }
 
 // The account history per network (src/history.js), saved only with a saved
-// wallet, under its own key: { chain: { address, readAt, rows } }. Ixios, read per selected network, also keeps
-// `networkId` (a record without it is the network its storage key belongs to, as in the extension's per-network keys).
+// wallet, under its own key: { chain: { address, readAt, rows } }. Ixios and the PQ chains, read per selected network,
+// also keep `networkId` (a record without it is the network its storage key belongs to, as in the extension's per-network
+// keys). NODUS keeps the node's page instead of rows: { address, readAt, page } (src/nodus/history.js nodusPageToSaved).
 export const HISTORY_CONTEXT = 'nodus.wallet.history.v1';
 const HISTORY_MAX_PLAIN = 400000;
 export const historyKeyFor = (phrase, id) => activityKeyFor(phrase, id, HISTORY_CONTEXT);
+const networksOf = chain => chain === 'ixios' ? Object.keys(IXIOS_NETWORKS) : isPqChain(chain) ? PQ_NETWORKS[chain].networks.map(n => n.id) : [];
 export async function serializeHistory(id, byChain, key) {
-  const value = Object.fromEntries(Object.entries(byChain).map(([chain, h]) => [chain, { address: h.address, readAt: h.readAt, rows: h.rows, ...(chain === 'ixios' && h.networkId !== undefined ? { networkId: h.networkId } : {}) }]));
+  const value = Object.fromEntries(Object.entries(byChain).map(([chain, h]) => [chain, chain === NODUS_ASSET.chain
+    ? { address: h.address, readAt: h.readAt, page: nodusPageToSaved(h.page) }
+    : { address: h.address, readAt: h.readAt, rows: h.rows, ...(networksOf(chain).length && h.networkId !== undefined ? { networkId: h.networkId } : {}) }]));
   return sealRecord(HISTORY_CONTEXT, id, value, key, HISTORY_MAX_PLAIN, 'history');
 }
 export async function parseHistory(text, id, key, now = Date.now()) {
@@ -91,8 +96,13 @@ export async function parseHistory(text, id, key, now = Date.now()) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid saved history.');
   const out = {};
   for (const [chain, h] of Object.entries(value)) {
-    if (!historySupported(chain) || !h || typeof h.address !== 'string' || h.address.length === 0 || h.address.length > 128 ||
-        !Number.isSafeInteger(h.readAt) || h.readAt <= 0 || h.readAt > now + 60000 || (h.networkId !== undefined && (chain !== 'ixios' || !Object.hasOwn(IXIOS_NETWORKS, h.networkId)))) throw new Error('Invalid saved history.');
+    const nodus = chain === NODUS_ASSET.chain;
+    if (!(nodus || historyKept(chain)) || !h || typeof h.address !== 'string' || h.address.length === 0 || h.address.length > 128 ||
+        !Number.isSafeInteger(h.readAt) || h.readAt <= 0 || h.readAt > now + 60000 || (h.networkId !== undefined && !networksOf(chain).includes(h.networkId))) throw new Error('Invalid saved history.');
+    if (nodus) {
+      try { out[chain] = { address: h.address, readAt: h.readAt, page: nodusPageFromSaved(h.page) }; } catch { throw new Error('Invalid saved history.'); }
+      continue;
+    }
     out[chain] = { address: h.address, readAt: h.readAt, rows: checkHistoryRows(chain, h.rows), ...(h.networkId !== undefined ? { networkId: h.networkId } : {}) };
   }
   return out;

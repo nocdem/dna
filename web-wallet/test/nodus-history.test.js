@@ -43,10 +43,10 @@ const ALL_KINDS = [
   entry(118, 0, 0, 'spend_out', { amount: '100000000', peer: PEER, fee: '10000' }),
 ];
 
-test('the wallet page size is the other networks\' HISTORY_LIMIT, and NODUS is never a cached provider history', () => {
+test('the wallet page size is the other networks\' HISTORY_LIMIT, and NODUS is not a provider history of rows', () => {
   assert.equal(NODUS_HISTORY_LIMIT, HISTORY_LIMIT);
-  // src/history.js caches only its providers (persistHistory / parseHistory):
-  // the node's rows are never written to the device, they are read again.
+  // src/history.js lists the providers' row histories (historySupported); the node's page is no such list. It is kept for a saved
+  // wallet in its own form (src/activity-storage.js parseHistory `nodus`, test/history-kept.test.js), not as rows.
   assert.equal(historySupported('nodus'), false);
 });
 

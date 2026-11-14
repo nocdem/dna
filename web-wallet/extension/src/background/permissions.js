@@ -189,14 +189,18 @@ export function createPermissions({ messenger, approvals, runtime, getNetworkSta
   // until the wallet UI unlocks (ui/app.js render's !state.isUnlocked branch).
   // The answer carries the account's chain name when this session has confirmed one; the name is public on chain for
   // the address the site already receives. It is added to the answer only, never to the stored grant.
-  function withName(list) {
-    return list.map(account => { const name = getAccountName(account.address); return name ? { ...account, name } : account; });
+  // getAccountName may wait for the wallet's own-name read (nodus.js accountName); a failure there leaves the name out.
+  async function withName(list) {
+    return Promise.all(list.map(async account => {
+      const name = await Promise.resolve().then(() => getAccountName(account.address)).catch(() => '');
+      return name ? { ...account, name } : account;
+    }));
   }
   async function requestNodusAccounts(req, res, _next, end) {
     const permitted = getNodusAccounts(req.origin);
-    if (permitted.length) { res.result = withName(permitted); return end(); }
+    if (permitted.length) { res.result = await withName(permitted); return end(); }
     await waitForGrant(req.origin, { [NODUS_PERMISSION]: {} }, getNodusAccounts);
-    res.result = withName(getNodusAccounts(req.origin)); return end();
+    res.result = await withName(getNodusAccounts(req.origin)); return end();
   }
 
   // Port: handlers/wallet-requestPermissions.ts:113-160.

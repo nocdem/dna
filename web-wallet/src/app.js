@@ -448,10 +448,18 @@ async function loadHistory(chain, { manual = false } = {}) {
   } catch (error) { if (historyJob === job) historyNote[chain] = error.message; }
   finally { if (historyJob === job) { historyJob = null; renderHistory(); renderActivity(); } }   // a send this read lists leaves "Sent from here" (0.1.96)
 }
+// Whether a kept page still belongs to this wallet's address. A PQ chain has one address per network (the shown one is
+// wallet.addresses[chain]); a page of the network not shown is compared with that network's own address, and one whose
+// address is not derived yet (the derivation runs after the opening) is kept, never dropped from the saved record.
+const historyAddressOk = (chain, h, source) => isPqChain(chain)
+  ? h.networkId !== undefined && (pqAddresses[chain]?.[h.networkId] === undefined || pqAddresses[chain][h.networkId] === h.address)
+  : h.address === source.addresses[chain];
 function persistHistory() {
   const session = activitySession, source = wallet;
   if (!session?.historyKey || !source) return;
-  const snapshot = Object.fromEntries(Object.entries(historyByChain).filter(([chain, h]) => !isPqChain(chain) && h.address === source.addresses[chain]));
+  const snapshot = Object.fromEntries(Object.entries(historyByChain).filter(([chain, h]) => historyAddressOk(chain, h, source)));
+  // NODUS: the last page the node answered (nodusSaved), not the one shown — a failed read clears nodusHistory but not the saved page.
+  if (nodusSaved && nodusSaved.address === source.addresses.nodus) snapshot[NODUS_ASSET.chain] = nodusSaved;
   accountHistoryWrites = accountHistoryWrites.catch(() => {}).then(async () => {
     const encrypted = await serializeHistory(session.id, snapshot, session.historyKey);
     if (session !== activitySession || source !== wallet || source.locked || localStorage.getItem(VAULT_KEY) !== session.vault) return;
@@ -460,21 +468,26 @@ function persistHistory() {
 }
 function clearHistory() {
   historyJob?.controller.abort(); historyJob = null; historyByChain = {}; historyNote = {};
-  nodusHistoryJob?.controller.abort(); nodusHistoryJob = null; nodusHistory = null; nodusHistoryError = ''; nodusPeerNames.clear(); keptPeerNames.clear();
+  nodusHistoryJob?.controller.abort(); nodusHistoryJob = null; nodusHistory = nodusSaved = null; nodusHistoryError = ''; nodusPeerNames.clear(); keptPeerNames.clear();
   renderHistory();
 }
 // ── NODUS account history (src/nodus/history.js) ────────────────────────
 // Decision 2026-10-01-node-address-history-index.md item 6: NODUS Activity
 // from the node's address history — sends from other devices, coins
 // received, claims, staking, reward payouts, releases and fees. ONE node's
-// local index (not consensus), from its from_height; kept in memory only,
-// never saved (persistHistory has no NODUS entry: re-read from the node).
+// local index (not consensus), from its from_height; kept in memory, and with
+// a SAVED wallet also encrypted in HISTORY_KEY (persistHistory, nodusSaved;
+// decision 2026-10-02-device-cache-only-when-saved): shown at once when the
+// wallet opens, replaced by the next read. A typed-words wallet keeps nothing.
 // Read when the connection opens (connectNodus), when the Activity page
 // opens (showWalletPage), after a transaction of this wallet is confirmed
 // (checkRow), on "Refresh history", and on selecting Nodus (at most once per
 // HISTORY_MANUAL_MS by itself). No timer of its own. A failed read shows a
 // plain note; "Sent from here" then lists every record of this tab.
 let nodusHistory = null, nodusHistoryJob = null, nodusHistoryError = '';
+// The last page a node answered (or the saved one that opened with the wallet): what persistHistory writes. nodusHistory
+// is what is shown and is cleared by a failed read; the saved page is not.
+let nodusSaved = null;
 // Chain names of the counterparties (nameOf, one node), fingerprint -> name
 // ('' = none); at most NODUS_NAME_LOOKUPS new lookups per read.
 const nodusPeerNames = new Map(), NODUS_NAME_LOOKUPS = 20;
@@ -533,7 +546,8 @@ async function loadNodusHistory({ manual = false, force = false } = {}) {
   try {
     const page = await client.addrHistory({ limit: NODUS_HISTORY_LIMIT }, { signal: job.controller.signal });
     if (nodusHistoryJob !== job || wallet !== source) return;
-    nodusHistory = { address, page, readAt: Date.now() };
+    nodusHistory = nodusSaved = { address, page, readAt: Date.now() };
+    persistHistory();
     void nameNodusPeers(page, source, client);
   } catch (error) {
     // No error wall: the note says it, and "Sent from here" lists every
@@ -1004,7 +1018,8 @@ function chooseNetwork(chain, id) {
   if (!isPqChain(chain)) return;
   if (isPqChain(chain) && historySupported(chain)) {
     if (historyJob?.chain === chain) { historyJob.controller.abort(); historyJob = null; }
-    delete historyByChain[chain]; delete historyNote[chain];
+    // The kept page of the other network stays (it is saved for a saved wallet and historyFor never shows it here).
+    delete historyNote[chain];
   }
   pqSelections[chain] = pqNetwork(chain, id).id;
   syncPqAddress(chain);
@@ -2995,7 +3010,7 @@ function focusOpenWallet(kept = {}) {
     const id = PQ_NETWORKS[chain].defaultNetwork;
     if (pqSelections[chain] === id) continue;
     if (historyJob?.chain === chain) { historyJob.controller.abort(); historyJob = null; }
-    delete historyByChain[chain]; delete historyNote[chain];
+    delete historyNote[chain];   // the kept page stays: it is saved with a saved wallet, and historyFor shows it only on its own network
     pqSelections[chain] = id; syncPqAddress(chain);
   }
   // Ixios starts on mainnet on every opening as well.
@@ -3054,6 +3069,8 @@ $('unlock-form').onsubmit = async event => {
     disposeWallet(wallet); wallet = restored; activitySession = { id: saved.id, key, balancesKey, historyKey, addressBookKey, identityKey, vault: text }; activityBlocked = !!problem;
     ownIdentity = keptIdentity;
     keptPeerNames.clear(); for (const [peer, name] of Object.entries(keptIdentity.peers || {})) keptPeerNames.set(peer, name);
+    // NODUS keeps a page (shown at once, nodusHistoryFor checks the address); every other network keeps rows.
+    nodusHistory = nodusSaved = keptHistory[NODUS_ASSET.chain] ?? null; delete keptHistory[NODUS_ASSET.chain];
     historyByChain = keptHistory;
     addressBook = keptBook; addressBookNote = bookProblem; addressBookUnreadable = !!bookProblem;
     walletFresh = false; siteLock.start();

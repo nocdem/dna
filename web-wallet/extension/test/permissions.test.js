@@ -121,4 +121,9 @@ test('nodus_requestAccounts adds the confirmed chain name to the answer, never t
   assert.deepEqual((await request('nodus_requestAccounts')).result, [{ ...nodusAccount, name: 'alice7' }]);
   name = '';
   assert.deepEqual((await request('nodus_requestAccounts')).result, [nodusAccount], 'no confirmed name: no name field');
+  // The background's accountName may wait for its own-name read (a promise); a failure there leaves the name out.
+  name = Promise.resolve('bob42');
+  assert.deepEqual((await request('nodus_requestAccounts')).result, [{ ...nodusAccount, name: 'bob42' }], 'a waited-for name is carried');
+  name = Promise.reject(new Error('read failed')); name.catch(() => {});
+  assert.deepEqual((await request('nodus_requestAccounts')).result, [nodusAccount], 'a failed name read: no name field, no error');
 });
