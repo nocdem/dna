@@ -314,6 +314,17 @@ test('an unpaid request names why it was not paid: no fee coin, a failed payment
   assert.equal(rejected.text, DELIVERED_UNPAID_ADD_TEXT.replace('nothing was paid.', 'nothing was paid. You rejected the payment in the extension.'));
 });
 
+// PROVES: an extension message that already ends with a period gives one period before "Check the extension" (the live
+//   text of 2026-11-14 read "right now.. Check"); a message without one gets one; no message reads "unknown error".
+// ENVIRONMENT: none. LEAVES BEHIND: nothing. FALSE PASS: only describeAdapterError's last branch is exercised.
+test('the extension\'s own reason ends with exactly one period', () => {
+  for (const [message, reason] of [['Nodus sending is not available right now.', 'Nodus sending is not available right now'],
+    ['Network down', 'Network down'], ['Wallet is locked. ', 'Wallet is locked'], ['', 'unknown error']]) {
+    const r = describeAdapterError(new AdapterError('extension_error', message, {}));
+    assert.equal(r.text, `The extension did not finish: ${reason}. Check the extension before you try again.`, message);
+  }
+});
+
 test('the adapter\'s failure ends the flow in plain words: not configured, no extension, rejected, passed-on refusal', async () => {
   const cases = [
     [new AdapterError('not_configured', 'x'), /not available in the extension yet/, undefined],

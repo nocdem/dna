@@ -7,7 +7,7 @@ import { createAdapter } from './adapter.js';
 import { createSwapFlow, stepText } from './flow.js';
 import { createLogger, errorFields } from './log.js';
 import {
-  USDT_DECIMALS, NODUS_DECIMALS, outputUnit, displayAmount, percentToBps, priceFromReserves, poolText, priceMovementPercent, waitText, refusalText, nodusWithCommas, STILL_PENDING_TEXT, approveEnabled, stateLabel,
+  USDT_DECIMALS, NODUS_DECIMALS, outputUnit, displayAmount, percentToBps, priceFromReserves, poolText, priceMovementPercent, waitText, refusalText, nodusWithCommas, STILL_PENDING_TEXT, approveEnabled, stateLabel, progressSteps,
 } from './swap-logic.js';
 
 const $ = id => document.getElementById(id);
@@ -253,8 +253,13 @@ function renderState({ info, answer }, unit) {
     ? ` Approval time ends at ${time(answer.validUntil)}.` : '';
   $('state-text').textContent = info.text + approvalEnd;
   $('state-word').textContent = stateLabel(info.state);
-  $('step-state').classList.toggle('done', info.final);
-  $('step-state').classList.toggle('now', !info.final);
+  const steps = progressSteps(info);
+  $('step-state').classList.toggle('done', steps.payout === 'done');
+  $('step-state').classList.toggle('now', steps.payout === 'now');
+  // "Swap complete" keeps the time this page first saw the bot's `paid` for the followed swap.
+  if (steps.complete && !$('step-complete').classList.contains('done')) {
+    $('step-complete').classList.add('done'); $('step-complete-t').textContent = time(Math.floor(Date.now() / 1000));
+  }
   const showResult = Boolean(answer) && (answer.output !== undefined || answer.reason !== undefined);
   $('result').hidden = !showResult;
   if (showResult) {
@@ -273,6 +278,7 @@ async function followSwap(requestNumber, unit) {
   $('follow-request').textContent = `Request ${requestNumber}`; $('follow-request').hidden = false;
   $('state-text').textContent = 'Checking your swap with the bot.'; $('state-word').textContent = stateLabel('');
   $('step-state').classList.remove('done'); $('step-state').classList.add('now'); $('result').hidden = true;
+  $('step-complete').classList.remove('done'); $('step-complete-t').textContent = '';
   const r = await flow.follow(requestNumber, update => renderState(update, unit));
   if (r.stopped) return;
   // r.unknown (the bot has no swap with this number) shows its text through renderState and no "Check again": asking again cannot change it.

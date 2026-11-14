@@ -131,7 +131,8 @@ export function describeAdapterError(err, ctx = {}) {
   if (err?.openRequestNumber != null) out.openRequestNumber = String(err.openRequestNumber);
   if (typeof err?.reason === 'string') out.text = refusalText(err.reason);
   else if ((err?.extensionCode ?? err?.code) === 4001) out.text = 'You rejected the request in the extension. Nothing was paid.';
-  else out.text = `The extension did not finish: ${err?.message || 'unknown error'}. Check the extension before you try again.`;
+  // The extension's own message usually ends with a period already: one period ends the reason.
+  else out.text = `The extension did not finish: ${String(err?.message || 'unknown error').replace(/[.\s]+$/, '')}. Check the extension before you try again.`;
   return out;
 }
 
