@@ -485,6 +485,16 @@ function payoutPendingText(answer) {
 // Display only: the third step's title for a state word, never read back as a state (describeSwapState stays the state).
 export const stateLabel = state => (typeof state === 'string' && STATE_TITLES.get(state)) || 'Payout';
 
+// The status panel's last two steps for a described state (describeSwapState). The third step ("Payout") is in progress
+// until the bot has finished the swap and done after; the fourth ("Swap complete") is done only for `paid`, where the
+// bot has seen its payout confirmed (USDT PAYOUT_FINAL_DEPTH_ETH Ethereum blocks deep, NODUS in a Nodus block), never
+// for a refund, a drop or an expiry. The bot's answer carries no payout transaction, so the page cannot tell a planned
+// payout from a sent one: payout_pending keeps the third step in progress.
+export function progressSteps(info) {
+  const final = info?.final === true;
+  return { payout: final ? 'done' : 'now', complete: final && info.state === 'paid' };
+}
+
 // Final = the bot has decided and finished. Everything else is "pending": never "failed" for a non-final
 // state (plan section 7 step 8).
 export function describeSwapState(answer) {

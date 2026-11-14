@@ -18,7 +18,7 @@ import {
   quoteBody, liquidityQuoteBody, withdrawBody, randomRequestNumber,
   buildNodusToUsdtText, buildLiquidityAddText, buildWithdrawText,
   buildUsdtToNodusTypedData, buildLiquidityAddTypedData,
-  readQuoteAnswer, readAddQuoteAnswer, refusalText, describeSwapState, stateLabel, PAYOUT_FINAL_DEPTH_ETH, PAYOUT_FINAL_SECONDS_ETH, U64_MAX, approveEnabled,
+  readQuoteAnswer, readAddQuoteAnswer, refusalText, describeSwapState, stateLabel, progressSteps, PAYOUT_FINAL_DEPTH_ETH, PAYOUT_FINAL_SECONDS_ETH, U64_MAX, approveEnabled,
 } from '../swap-logic.js';
 
 const ETH = `0x${'4b'.repeat(20)}`;
@@ -484,6 +484,19 @@ test('describeSwapState: approved says no payment is seen yet and when an unpaid
   const d = describeSwapState({ state: 'approved' });
   assert.equal(d.text, 'The bot has not seen a payment yet. If you paid, it shows here as soon as the bot sees it. If you did not pay, this request expires unpaid once the approval time has passed and the bot has checked that no payment came.');
   assert.equal(d.final, false);
+});
+
+// PROVES: the status panel's fourth step ("Swap complete") is done only for the bot's `paid` (the payout confirmed),
+//   never for a refund, a drop, an expiry or any pending state; the third step ("Payout") is in progress until the bot
+//   has finished the swap, payout_pending included, and done for every final state.
+// ENVIRONMENT: as above. LEAVES BEHIND: nothing. FALSE PASS: swap.js's use of the result is not run (no DOM).
+test('progressSteps: "Swap complete" only at paid; "Payout" done for every final state', () => {
+  const at = state => progressSteps(describeSwapState({ state, direction: 'nodus_to_usdt', paid: '1853722' }));
+  assert.deepEqual(at('paid'), { payout: 'done', complete: true });
+  for (const state of ['refunded', 'dropped', 'expired']) assert.deepEqual(at(state), { payout: 'done', complete: false }, state);
+  for (const state of ['approved', 'paid_waiting_depth', 'counted', 'payout_pending', 'refund_pending', 'held', 'reversed', 'unknown', 'something_new', '', 'constructor'])
+    assert.deepEqual(at(state), { payout: 'now', complete: false }, state);
+  for (const info of [undefined, null, {}, { final: 'true', state: 'paid' }, { final: false, state: 'paid' }]) assert.deepEqual(progressSteps(info), { payout: 'now', complete: false });
 });
 
 // PROVES: stateLabel gives the short title of the status panel's third step for every state word of the bot, and
