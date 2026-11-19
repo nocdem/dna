@@ -226,6 +226,21 @@ is in state `unknown` (`amm_engine.c:1638`). A required fact that cannot be read
 sources) leaves the swap in its state; it is never read as zero or "not found"
 (plan section 17).
 
+**Threads.** Two threads use the engine: the HTTP loop (`amm_http_poll` in
+`main`, one request at a time) and the worker, whose round runs under the
+engine lock `g_eng_mu` (`amm_main.c` `worker_main`). Every route except the
+price question takes that lock too, so it waits while a round runs. The price
+question (`POST /amm/quote`, `be_quote`) does not take it: a round waiting on a
+network does not hold it up. What the question shares with the round is locked
+where it lives (the journal's lock, held through each transaction, which
+contains no network call; the node session; each Ethereum provider's handle;
+the price). It still waits where the round holds the same node session or the
+same provider's connection, so a slow Nodus node delays it in both directions,
+and a `nodus_to_usdt` question can wait for the round's call on a provider it
+reads the USDT balance from. The approval is written by one journal transaction
+that repeats the pause, stop, limit, in-flight and open-question checks
+(`amm_journal_quote_approve`). Test: `test_amm_engine` E45.
+
 **Restart.** The journal is SQLite (WAL, `synchronous=FULL`); every state
 transition is one transaction. After a restart: watchers resume from stored
 cursors, stored-but-unconfirmed payouts are looked up on chain and never rebuilt,

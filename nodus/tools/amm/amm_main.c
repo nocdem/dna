@@ -97,13 +97,24 @@ typedef struct {
     amm_journal_t *j;
 } app_t;
 
+/* The price question does not take g_eng_mu, so a worker round that waits on a
+ * network does not make it wait too. Everything it shares with the round is
+ * locked where it lives: the journal (one recursive lock, held through every
+ * transaction, which contains no network call), the node session (n->mu, taken
+ * until the question's own deadline), each Ethereum provider's handle and
+ * connection, and the price. The payers' planning reads used here are
+ * read-only (amm_eth_pay_plan, amm_nodus_pay_quote). The engine's own question
+ * caches (rc_usdt, rc_nodus, rc_facts) are used by this path only, and every
+ * question runs on the one HTTP thread (amm_http_poll in main), so the caches
+ * need no lock. The approval itself is written by amm_journal_quote_approve,
+ * which repeats the pause, stop, limit, in-flight and open-question checks
+ * inside its own transaction. It still waits where the round holds the same
+ * session or provider connection: a round's node call holds n->mu, and a
+ * round's call to a provider holds that provider's handle. */
 static int be_quote(void *c, amm_dir_t dir, uint64_t amount, const uint8_t *dest, uint64_t dl,
                     amm_quote_answer_t *o) {
     app_t *a = c;
-    pthread_mutex_lock(&g_eng_mu);
-    int rc = amm_engine_quote(a->eng, dir, amount, dest, dl, o);
-    pthread_mutex_unlock(&g_eng_mu);
-    return rc;
+    return amm_engine_quote(a->eng, dir, amount, dest, dl, o);
 }
 
 static int map_acc(int acc, const amm_swap_t *s, uint32_t req_no, uint32_t *req_out, uint32_t *open_req) {

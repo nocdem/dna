@@ -78,6 +78,9 @@
  *       the USDT side nothing after its fee (refused whole too), pause,
  *       restart; E34 a withdrawal's NODUS payout in the queue behind a deferred expired
  *       swap payout (each documented at its test).
+ *   E45 the price question is answered while a worker round waits inside a
+ *       provider call (two threads; see the comment of E45 for what it does
+ *       not show).
  * HAND VECTORS: pool 3*10^15 raw NODUS / 3*10^9 raw USDT. USDT -> NODUS of
  * 10^8 gives 93652445369406 (test_amm_ledger L3: 9*10^32 / 9.61*10^18);
  * NODUS -> USDT of 10^14 gives 93652445 (9*10^38 / 9.61*10^30). After the
@@ -104,11 +107,14 @@
  * payer do): E12 does not exercise that.
  */
 #include <dirent.h>
+#include <errno.h>
+#include <pthread.h>
 #include <sqlite3.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "amm_engine.h"
@@ -274,7 +280,23 @@ static int n_submit(void *c, const uint8_t w[64], const uint8_t *env, size_t len
 
 /* the Ethereum providers (two identical, quorum 2) */
 static int e_chain(void *c, uint64_t *o, uint64_t dl) { (void)c; (void)dl; *o = W.eth_chain; return AMM_ETH_OK; }
-static int e_bn(void *c, uint64_t *o, uint64_t dl) { (void)c; (void)dl; *o = W.eth_tip; return AMM_ETH_OK; }
+/* E45: while g_bn_hold is 1, every block-number read (the watcher's first provider read of a round)
+ * counts itself in g_bn_in and waits until the test clears g_bn_hold: a round held inside a provider call */
+static pthread_mutex_t g_bn_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_bn_cv = PTHREAD_COND_INITIALIZER;
+static int g_bn_hold, g_bn_in;
+static int e_bn(void *c, uint64_t *o, uint64_t dl) {
+    (void)c; (void)dl;
+    pthread_mutex_lock(&g_bn_mu);
+    if (g_bn_hold) {
+        g_bn_in++;
+        pthread_cond_broadcast(&g_bn_cv);
+        while (g_bn_hold) pthread_cond_wait(&g_bn_cv, &g_bn_mu);
+    }
+    pthread_mutex_unlock(&g_bn_mu);
+    *o = W.eth_tip;
+    return AMM_ETH_OK;
+}
 static int e_block(void *c, uint64_t n, amm_eth_block_t *o, uint64_t dl) {
     (void)c; (void)n; (void)o; (void)dl; return AMM_ETH_ERR;
 }
@@ -3731,6 +3753,140 @@ static void e44_immediate_step_error(void) {
     env_close(&e);
 }
 
+/* ── E45 ──────────────────────────────────────────────────────────────── */
+
+/* E45 the price question is answered while a worker round waits inside a provider call. The bot's
+ * HTTP thread asks the question without the round's lock (amm_main.c be_quote); this proves that the
+ * engine answers it then: nothing the question needs is held by the round while the round waits on a
+ * network (the journal's lock is not held across a provider call), the approval is stored, and the
+ * round finishes normally afterwards. The round is held in the watcher's block-number read (e_bn,
+ * both providers, counted in g_bn_in); a USDT -> NODUS question reads only the node stubs and the journal, never e_bn.
+ * HOW IT CAN FALSELY PASS: the stubs have no per-provider connection lock, so the wait of a NODUS ->
+ * USDT question behind the round's call on the same provider (real amm_eth_rpc) is not shown here;
+ * it does not run amm_main.c, so it proves the engine side, not the removal of the lock itself.
+ * Every wait is bounded: a question that has not returned 10 s after it was asked fails the check; the
+ * round is then released, and a thread still running 30 s later ends the test with exit code 1 instead
+ * of a join that would hang. The watcher asks both stub providers at once (amm_fanout_run): the
+ * question is asked only after both block-number reads are held. */
+typedef struct {
+    env_t *e;
+    int rc, done;
+    amm_quote_answer_t a;
+} e45_q_t;
+typedef struct {
+    env_t *e;
+    int rc, done;
+} e45_s_t;
+static pthread_mutex_t g_e45_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_e45_cv = PTHREAD_COND_INITIALIZER;
+
+static void *e45_round(void *arg) {
+    e45_s_t *t = arg;
+    const int rc = step(t->e, NULL);
+    pthread_mutex_lock(&g_e45_mu);
+    t->rc = rc; t->done = 1;
+    pthread_cond_broadcast(&g_e45_cv);
+    pthread_mutex_unlock(&g_e45_mu);
+    return NULL;
+}
+static void *e45_question(void *arg) {
+    e45_q_t *t = arg;
+    amm_quote_answer_t a;
+    memset(&a, 0, sizeof(a));
+    const int rc = amm_engine_quote(t->e->eng, AMM_USDT_TO_NODUS, 100000000ULL, 0, &a);
+    pthread_mutex_lock(&g_e45_mu);
+    t->a = a; t->rc = rc; t->done = 1;
+    pthread_cond_broadcast(&g_e45_cv);
+    pthread_mutex_unlock(&g_e45_mu);
+    return NULL;
+}
+static void e45_deadline(struct timespec *ts, int s) {
+    clock_gettime(CLOCK_REALTIME, ts);
+    ts->tv_sec += s;
+}
+
+/* release the held round (E45) */
+static void e45_release(void) {
+    pthread_mutex_lock(&g_bn_mu);
+    g_bn_hold = 0;
+    pthread_cond_broadcast(&g_bn_cv);
+    pthread_mutex_unlock(&g_bn_mu);
+}
+
+/* Wait up to `s` seconds until both threads that were started report done. A thread that is still
+ * running then cannot be joined without hanging the test: the scenario is reported failed and the
+ * test ends at once with exit code 1. */
+static void e45_wait_or_exit(e45_q_t *qt, int q_started, e45_s_t *rt, int r_started, int s) {
+    struct timespec ts;
+    e45_deadline(&ts, s);
+    int err = 0;
+    pthread_mutex_lock(&g_e45_mu);
+    while (((q_started && !qt->done) || (r_started && !rt->done)) && err != ETIMEDOUT)
+        err = pthread_cond_timedwait(&g_e45_cv, &g_e45_mu, &ts);
+    const int stuck = (q_started && !qt->done) || (r_started && !rt->done);
+    pthread_mutex_unlock(&g_e45_mu);
+    if (stuck) {
+        CHECK(0, "E45: a thread did not return within its bound after the round was released");
+        printf("%d checks, %d failures\n", g_checks, g_failures);
+        fflush(stdout);
+        _exit(1);
+    }
+}
+
+static void e45_question_during_round(void) {
+    printf("E45 the price question is answered while a round waits inside a provider call\n");
+    env_t e;
+    env_open(&e);
+    W.rq[0] = 0x45454545; W.rq_n = 1;
+    pthread_mutex_lock(&g_bn_mu);
+    g_bn_hold = 1; g_bn_in = 0;
+    pthread_mutex_unlock(&g_bn_mu);
+
+    e45_s_t rt = { &e, -1, 0 };
+    e45_q_t qt;
+    memset(&qt, 0, sizeof(qt));
+    qt.e = &e; qt.rc = -1;
+    pthread_t rth, qth;
+    const int r_started = pthread_create(&rth, NULL, e45_round, &rt) == 0;
+    CHECK(r_started, "the round started on its own thread");
+    if (!r_started) { e45_release(); env_close(&e); return; }
+
+    /* both providers' block-number reads (the watcher asks all providers at once) are held */
+    struct timespec ts;
+    e45_deadline(&ts, 10);
+    int entered, err = 0;
+    pthread_mutex_lock(&g_bn_mu);
+    while (g_bn_in < 2 && err != ETIMEDOUT) err = pthread_cond_timedwait(&g_bn_cv, &g_bn_mu, &ts);
+    entered = g_bn_in;
+    pthread_mutex_unlock(&g_bn_mu);
+    CHECK(entered == 2, "the round is inside its provider call: both providers' block-number reads wait");
+
+    const int q_started = entered == 2 && pthread_create(&qth, NULL, e45_question, &qt) == 0;
+    CHECK(q_started, "the question asked on another thread");
+    int q_done = 0, round_done = 1;
+    if (q_started) {
+        e45_deadline(&ts, 10);
+        err = 0;
+        pthread_mutex_lock(&g_e45_mu);
+        while (!qt.done && err != ETIMEDOUT) err = pthread_cond_timedwait(&g_e45_cv, &g_e45_mu, &ts);
+        q_done = qt.done; round_done = rt.done;
+        pthread_mutex_unlock(&g_e45_mu);
+    }
+    CHECK(q_done && !round_done, "the question returned within 10 s while the round was still waiting");
+    CHECK(q_done && qt.rc == AMM_Q_OK && qt.a.request_number == 0x45454545 && qt.a.number == OUT_UN,
+          "  answered: 100 USDT -> NODUS, request number 0x45454545, the bot's number 93652445369406");
+
+    e45_release();
+    e45_wait_or_exit(&qt, q_started, &rt, r_started, 30);
+    if (q_started) pthread_join(qth, NULL);
+    pthread_join(rth, NULL);
+    CHECK(rt.rc == 0, "the round, released, finished without an error");
+    amm_swap_t s;
+    CHECK(swap_of(&e, 0x45454545, &s) && !strcmp(s.state, "approved") && s.quote_out == OUT_UN,
+          "the approval the question stored is in the journal after the round");
+    env_close(&e);
+}
+
 int main(void) {
     printf("test_amm_engine\n");
     e1_quote();
@@ -3777,6 +3933,7 @@ int main(void) {
     e42_question_is_the_deduction();
     e43_recovery();
     e44_immediate_step_error();
+    e45_question_during_round();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
