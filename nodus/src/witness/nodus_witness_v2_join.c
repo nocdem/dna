@@ -20,6 +20,7 @@
  */
 
 #include "witness/nodus_witness_v2_join.h"
+#include "witness/nodus_witness_v2_gen.h"    /* nodus_witness_v2_scratch_clear */
 #include "witness/nodus_witness_v2_bundle.h"
 #include "witness/nodus_witness_v2_schema.h"
 #include "witness/nodus_witness_v2_claims.h"
@@ -62,27 +63,17 @@ static uint64_t join_mono_ms(void) {
     return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
 }
 
-/* Remove a scratch derivation directory and its files (best effort — a
- * crashed prior attempt or a completed one). Only the two files the
- * derivation can create are unlinked; the seam uses the same shape. */
+/* Remove a scratch derivation directory (best effort — a crashed prior
+ * attempt or a completed one). The derivation's create_chain_db makes
+ * `<dir>/archive` as well as the witness_*.db files, so the directory is
+ * cleared by the shared helper that knows that shape (the one the genesis
+ * derivation uses): it empties `dir`, empties and removes the one nested
+ * `archive` directory, then removes `dir` — without it the unlink of the
+ * subdirectory failed and the rmdir after it hit ENOTEMPTY, leaving
+ * `.v2join.tmp/archive` behind on every join. */
 static void join_scratch_clear(const char *dir) {
     if (!dir || !dir[0]) return;
-    /* the derivation creates witness_*.db (+ -wal/-shm) under `dir`;
-     * unlink by globbing is avoided — rmdir fails if non-empty, so
-     * remove the known artifacts first. A leftover unknown file only
-     * makes rmdir fail, which is harmless (next run reuses the dir). */
-    DIR *d = opendir(dir);
-    if (d) {
-        struct dirent *e;
-        while ((e = readdir(d)) != NULL) {
-            if (e->d_name[0] == '.') continue;
-            char p[600];
-            snprintf(p, sizeof(p), "%s/%s", dir, e->d_name);
-            unlink(p);
-        }
-        closedir(d);
-    }
-    rmdir(dir);
+    nodus_witness_v2_scratch_clear(dir);
 }
 
 int nodus_witness_v2_join_arm(nodus_witness_t *w) {
@@ -193,16 +184,28 @@ static bool join_pick_source(nodus_witness_t *w, int n_peers) {
     return true;
 }
 
+/* join_adopt results. */
+#define JOIN_ADOPTED       0
+#define JOIN_REJECTED    (-1)   /* the bundle did not adopt: the source is at
+                                 * fault or the scratch derivation failed —
+                                 * the joiner stays active and re-pulls */
+#define JOIN_LOCAL_FAULT (-2)   /* the bundle WAS adopted (the verified
+                                 * chain database is renamed into the data
+                                 * path) but this process could not open or
+                                 * serve it: nobody's fault but ours, and
+                                 * pulling another bundle cannot help */
+
 /* Adopt the fully-received bundle: re-derive the genesis in a scratch DB
  * against the local pin and, on a match, rename it into the real data
- * path and open the main witness on it. Returns 0 adopted, -1 not (the
- * joiner stays active and retries). */
+ * path and open the main witness on it. Returns JOIN_ADOPTED,
+ * JOIN_REJECTED (the joiner stays active and retries) or JOIN_LOCAL_FAULT
+ * (adopted, but opening it failed — terminal, see the caller). */
 static int join_adopt(nodus_witness_t *w) {
     const uint8_t *bytes = w->v2_join.acc;
     size_t len = w->v2_join.acc_len;
 
     nodus_witness_t *w2 = calloc(1, sizeof(*w2));
-    if (!w2) return -1;
+    if (!w2) return JOIN_REJECTED;
     w2->cached_committee_epoch_start = UINT64_MAX;
     w2->host = w->host;                   /* identity only; no signing here */
 
@@ -210,7 +213,7 @@ static int join_adopt(nodus_witness_t *w) {
              w->data_path);
     join_scratch_clear(w2->data_path);
     if (mkdir(w2->data_path, 0700) != 0 && errno != EEXIST) {
-        w2->host = NULL; free(w2); return -1;
+        w2->host = NULL; free(w2); return JOIN_REJECTED;
     }
 
     /* Provisional deterministic name; renamed to the real chain id after
@@ -306,14 +309,14 @@ static int join_adopt(nodus_witness_t *w) {
     w2->host = NULL;
     free(w2);
 
-    if (adopted != 0) return -1;
+    if (adopted != 0) return JOIN_REJECTED;
 
     /* Open the main witness on the adopted successor — the SAME path a
      * restart takes (scan → open → post-open gate arms ingress). */
     if (nodus_witness_scan_chain_db(w) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "adopted successor did not open — "
                       "fatal joiner state");
-        return -1;
+        return JOIN_LOCAL_FAULT;
     }
 
     /* R3 W3 delta 9 (register row R3-W3-C2c-15) — the cometbft server
@@ -354,7 +357,7 @@ static int join_adopt(nodus_witness_t *w) {
         QGP_LOG_ERROR(LOG_TAG, "%s", "adopted successor opened but the "
                       "cometbft server binding could not be built — "
                       "fatal joiner state");
-        return -1;
+        return JOIN_LOCAL_FAULT;
     }
 
     w->v2_join.active = 0;
@@ -365,7 +368,26 @@ static int join_adopt(nodus_witness_t *w) {
                  "is already in the past for a joiner), catching up "
                  "through the block sync reactor (0x40) before "
                  "consensus starts");
-    return 0;
+    return JOIN_ADOPTED;
+}
+
+/* A local fault AFTER the adoption (JOIN_LOCAL_FAULT): the chain database
+ * that matched the pin is on disk and a re-pull cannot repair what is wrong
+ * here, so this is terminal for the process, not the source's fault. The
+ * joiner stops pulling (no further bundle is requested, so no second rename
+ * can land on the path the open handle holds), the peer is NOT excluded, and
+ * the witness stops participating through the existing local-fault flag
+ * (`running`, as every CMT_FAULT does); a restart takes the ordinary
+ * scan -> open -> live-init path on the adopted database. */
+static void join_halt_local_fault(nodus_witness_t *w) {
+    w->v2_join.active = 0;
+    w->v2_join.src[0] = '\0';
+    w->v2_join.awaiting = false;
+    join_reset_acc(w);
+    w->running = false;
+    QGP_LOG_ERROR(LOG_TAG, "%s", "the adopted chain is on disk but this "
+                  "process could not open or serve it — joining stopped, "
+                  "this witness is halted; restart the node");
 }
 
 void nodus_witness_v2_join_handle_gbundle_r(nodus_witness_t *w,
@@ -444,10 +466,13 @@ void nodus_witness_v2_join_handle_gbundle_r(nodus_witness_t *w,
     QGP_LOG_INFO(LOG_TAG, "genesis bundle fully received (%zu bytes) from "
                  "%s — re-deriving against the local pin",
                  w->v2_join.acc_len, w->v2_join.src);
-    if (join_adopt(w) != 0) {
-        /* Rejected / faulted: the whole bundle came from the source, so
-         * the source is excluded (join_fail_source drops the buffer) and
-         * the tick re-pulls from offset 0 from the next peer. */
+    int adopt = join_adopt(w);
+    if (adopt == JOIN_LOCAL_FAULT) {
+        join_halt_local_fault(w);
+    } else if (adopt != JOIN_ADOPTED) {
+        /* Rejected: the whole bundle came from the source, so the source
+         * is excluded (join_fail_source drops the buffer) and the tick
+         * re-pulls from offset 0 from the next peer. */
         join_fail_source(w, "its bundle failed at adopt");
     }
 }

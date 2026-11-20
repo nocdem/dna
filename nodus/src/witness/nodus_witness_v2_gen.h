@@ -640,6 +640,15 @@ typedef struct {
 int nodus_witness_v2_gen_config_validate(const nodus_v2_gen_config_t *cfg);
 
 /**
+ * Remove a scratch derivation directory: the files in it, the one nested
+ * "<dir>/archive" directory create_chain_db makes (cleared one level deep —
+ * deliberately not a recursive delete) and the directory itself. Best
+ * effort; a directory that survives is logged. Used by the genesis
+ * derivation and by the joiner's adoption scratch directory.
+ */
+void nodus_witness_v2_scratch_clear(const char *dir);
+
+/**
  * Is `db_path` a PURE-V2 chain database — i.e. does it carry a committed
  * height-0 genesis manifest whose source_tag is NODUS_V2_GEN_SOURCE_TAG?
  *

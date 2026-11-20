@@ -174,7 +174,11 @@ static void gen_scratch_clear_files(const char *dir) {
     closedir(d);
 }
 
-static void gen_scratch_clear(const char *dir) {
+/* Exported (nodus_witness_v2_gen.h) for the joiner's adoption scratch
+ * directory, which holds the same thing: create_chain_db's files and its
+ * one nested "archive" directory. */
+void nodus_witness_v2_scratch_clear(const char *dir) {
+    if (!dir || !dir[0]) return;
     gen_scratch_clear_files(dir);
 
     /* The one nested directory create_chain_db is known to create. */
@@ -2903,7 +2907,7 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
         gen_plan_free(&plan);
         return -1;
     }
-    gen_scratch_clear(w2->data_path);           /* crashed prior attempt */
+    nodus_witness_v2_scratch_clear(w2->data_path);   /* crashed prior attempt */
     if (mkdir(w2->data_path, 0700) != 0 && errno != EEXIST) {
         free(work);
         free(w2);
@@ -3366,7 +3370,7 @@ int nodus_witness_v2_gen_derive_v3(const char *data_path,
 
     free(doc);
     if (w2->db) { sqlite3_close(w2->db); w2->db = NULL; }
-    gen_scratch_clear(w2->data_path);           /* nothing partial */
+    nodus_witness_v2_scratch_clear(w2->data_path);   /* nothing partial */
     free(w2);
     free(work);
     gen_plan_free(&plan);
