@@ -17,7 +17,7 @@ import { keepBusyEnvelope, canResubmit, dropSettledEnvelope, resubmitKept, NODUS
 import { recordActivity, watchActivity, terminal, evmActivityText, publicActivityRow } from '../../../src/activity.js';
 import { sentRowsToShow, activityKeyFor, parseActivity, serializeActivity, serializeWithoutQuarantined, requireSavedForEvm,
   historyKeyFor, parseHistory, serializeHistory, balancesKeyFor, parseBalances, serializeBalances,
-  addressBookKeyFor, parseAddressBook, serializeAddressBook, identityKeyFor, parseIdentity, serializeIdentity } from '../../../src/activity-storage.js';
+  addressBookKeyFor, parseAddressBook, serializeAddressBook, identityKeyFor, parseIdentity, serializeIdentity, reuseQuarantineLocks } from '../../../src/activity-storage.js';
 import { checkAddressBook } from '../../../src/address-book.js';
 import { ACTIVITY_KEY, VAULT_KEY, HISTORY_KEY, BALANCES_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY } from '../../../src/vault.js';
 import { EvmAccount, Contract, describeArgs } from '../../../src/evm/contract.js';
@@ -307,7 +307,10 @@ export function createNodus({ lockCoordinator, storage, getAddresses, getPqAddre
       // src/app.js:205,215-224 saves a snapshot without replacing live history.
       // A send may append while encryption/storage yields; its queued save
       // must still see that signed record when this older save completes.
-      s.quarantined = aside;
+      // A lock whose whole content is unchanged keeps its object, so a release
+      // recorded against it survives the save (W-29, src/app.js refreshQuarantine).
+      s.quarantined = reuseQuarantineLocks(s.quarantined, aside, s.releasedQuarantine);
+      armQuarantineTimer(s);
     });
     writes = operation; return operation;
   }

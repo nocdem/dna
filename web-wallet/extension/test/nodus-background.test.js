@@ -529,6 +529,33 @@ test('quarantine releases only beyond its validated expiry and keeps every other
   }
 });
 
+// W-29: proves a quarantine release survives a save (persist re-reads the saved records as new objects), a record whose
+// content changed is a new reservation and is locked again, and a release is dropped once its record is gone. Lock state is
+// read through prepareSend (refused as "held by a pending send" while locked); no network, timers stopped by lock.
+test('a released quarantine lock stays released across a save; a changed or reappearing record is locked', async t => {
+  const { background, values } = await setup(t);
+  const record = savedRow({ amount: 'unreadable', expiryHeight: '9', hash: '3'.repeat(128) });
+  await saveActivity(values, [], [record]);
+  await unlockConnected(background); await background.nodus.reconcileQuarantine();
+  const sendable = async () => {
+    try { const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }); background.nodus.cancelSend(review.id); return true; }
+    catch (error) { assert.match(error.message, /held by a pending send/); return false; }
+  };
+  const persist = () => background.nodus.chainActivity('nodus').persist();
+  assert.equal(await sendable(), true, 'released: the tip is past the expiry');
+  await persist();
+  assert.equal(await sendable(), true, 'still released after a save');
+  await saveActivity(values, [], [{ ...record, expiryHeight: '50' }]);
+  await persist();
+  assert.equal(await sendable(), false, 'a changed expiry is a new reservation and is locked');
+  await saveActivity(values, [], []);
+  await persist();
+  await saveActivity(values, [], [record]);
+  await persist();
+  assert.equal(await sendable(), false, 'the release of the vanished record was dropped; the same content is new again');
+  await background.lock();
+});
+
 // Proves 15-second monotonic pacing, failed reads keeping locks, and both lock paths stopping polls; only mock time advances.
 test('quarantine polling follows web-wallet cadence and stops on manual or inactivity lock', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
