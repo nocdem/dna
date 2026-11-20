@@ -18,6 +18,12 @@ set(SHARED_DIR "${MONOREPO_ROOT}/shared")
 # cmt_state.h refuses to compile without it (#error), so it can never fall
 # back to the reference's literal. The single source of truth stays the
 # header that already governs the four NODUS_VERSION_* macros.
+# The value is read at configure time only, so an incremental build after a
+# version bump must re-run configure (B-01): without this dependency the old
+# CMT_SOFTWARE_VERSION stays compiled in and the ABCI software-version a node
+# reports lags the version header.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${NODUS_DIR}/include/nodus/nodus_types.h")
 file(STRINGS "${NODUS_DIR}/include/nodus/nodus_types.h" _nodus_version_line
      REGEX "^#define NODUS_VERSION_STRING \"[0-9]+\\.[0-9]+\\.[0-9]+\"")
 string(REGEX REPLACE "^#define NODUS_VERSION_STRING \"([0-9]+\\.[0-9]+\\.[0-9]+)\".*$"
@@ -1741,6 +1747,28 @@ target_compile_definitions(test_client_get_owner_page PRIVATE
                            NODUS_CLIENT_TEST_SEAM=1)
 add_test(NAME test_client_get_owner_page COMMAND test_client_get_owner_page)
 
+# C-07 / C-08: the pending-slot allocators (an allocation failure must not
+# publish the slot) and the channel client's duplicate-reply guard. Same seam
+# as test_client_dup_array (nodus_client.c compiled into the test with
+# NODUS_CLIENT_TEST_SEAM=1), plus -Wl,--wrap=calloc for the failure injection.
+# Default build, no environment, no sockets.
+add_executable(test_client_alloc_dup tests/test_client_alloc_dup.c
+               src/client/nodus_client.c)
+target_link_libraries(test_client_alloc_dup nodus dsa nodus pthread)
+target_compile_definitions(test_client_alloc_dup PRIVATE
+                           NODUS_CLIENT_TEST_SEAM=1)
+target_link_options(test_client_alloc_dup PRIVATE -Wl,--wrap=calloc)
+add_test(NAME test_client_alloc_dup COMMAND test_client_alloc_dup)
+
+# C-10 (b) / C-07 end to end: the real client against a fake node on
+# 127.0.0.1:0 — an error reply without a valid code is a protocol error, and a
+# pending slot whose reply buffer cannot be allocated sends no request.
+# -Wl,--wrap=calloc is the failure seam. Default build, no environment.
+add_executable(test_client_error_wire tests/test_client_error_wire.c)
+target_link_libraries(test_client_error_wire nodus dsa kem nodus pthread)
+target_link_options(test_client_error_wire PRIVATE -Wl,--wrap=calloc)
+add_test(NAME test_client_error_wire COMMAND test_client_error_wire)
+
 # Circuit wire protocol test (VPN mesh Faz 1)
 add_executable(test_circuit_wire tests/test_circuit_wire.c)
 target_link_libraries(test_circuit_wire nodus dsa nodus)
@@ -1954,6 +1982,29 @@ add_test(NAME test_rpc_front_door COMMAND test_rpc_front_door)
 add_executable(test_tcp_unix tests/test_tcp_unix.c)
 target_link_libraries(test_tcp_unix nodus dsa nodus)
 add_test(NAME test_tcp_unix COMMAND test_tcp_unix)
+
+# B-01: nodus_types.h is a configure dependency (CMT_SOFTWARE_VERSION is read
+# from it at configure time). Checks the generated build files, no rebuild.
+add_test(NAME test_version_reconfigure
+         COMMAND ${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR}
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_version_reconfigure.cmake)
+
+# B-08: the Stage F state-root helper compares all 64 bytes of global_root and
+# block_id in every mode (synthetic chain databases, no node, no port).
+add_test(NAME test_stagef_diff_selftest
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_stagef_diff_selftest.sh)
+
+# K-02: nodus-cli checks the result of every nodus_random call (source-shape
+# check; the governance proposal nonce used to be drawn as a bare statement).
+add_test(NAME test_cli_random_checked
+         COMMAND ${CMAKE_COMMAND}
+                 -DCLI_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tools/nodus-cli.c
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_cli_random_checked.cmake)
+
+# D-22: transport diagnostics go through QGP_LOG, never straight to stderr.
+add_executable(test_tcp_no_stderr tests/test_tcp_no_stderr.c)
+target_link_libraries(test_tcp_no_stderr nodus dsa nodus)
+add_test(NAME test_tcp_no_stderr COMMAND test_tcp_no_stderr)
 
 # Component split S3: the witness IPC (witness/nodus_witness_ipc.c) against
 # the core's IPC chain backend (server/nodus_chain_backend_ipc.c) over a
@@ -3787,6 +3838,29 @@ target_compile_definitions(test_chain_config_failclose PRIVATE
                            NODUS_WITNESS_INTERNAL_API)
 add_test(NAME test_chain_config_failclose
          COMMAND test_chain_config_failclose)
+
+# Z-16: the shared scratch-directory removal (files, the nested archive
+# directory, the directory) the joiner's adoption now uses. No ports, no
+# environment; its own mkdtemp base under /tmp.
+add_executable(test_v2_scratch_clear tests/test_v2_scratch_clear.c)
+target_link_libraries(test_v2_scratch_clear nodus dsa nodus crypto)
+target_compile_definitions(test_v2_scratch_clear PRIVATE
+                           NODUS_WITNESS_INTERNAL_API)
+add_test(NAME test_v2_scratch_clear COMMAND test_v2_scratch_clear)
+
+# Z-50: a failed sqlite3_bind_* in a shared reader (get_u64, vset_get,
+# storage_set_get, stprobe_report_committed) is a fault (-1), never an absent
+# row / a default. The bind failure is injected by statement text through
+# -Wl,--wrap=sqlite3_bind_int / _int64 (a natural one needs SQLITE_RANGE or
+# SQLITE_NOMEM); the readers are the production code. Links `crypto` like
+# test_chain_config_failclose. Default build, no environment.
+add_executable(test_witness_bind_faults tests/test_witness_bind_faults.c)
+target_link_libraries(test_witness_bind_faults nodus dsa nodus crypto)
+target_compile_definitions(test_witness_bind_faults PRIVATE
+                           NODUS_WITNESS_INTERNAL_API)
+target_link_options(test_witness_bind_faults PRIVATE
+                    -Wl,--wrap=sqlite3_bind_int -Wl,--wrap=sqlite3_bind_int64)
+add_test(NAME test_witness_bind_faults COMMAND test_witness_bind_faults)
 
 # Replication phase tests
 add_executable(test_put_if_newer tests/test_put_if_newer.c ${NODUS_TEST_STORAGE_HELPER})
