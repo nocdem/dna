@@ -3710,9 +3710,14 @@ static void j35_add_expire_onesided(void) {
           amm_journal_nrow_get(g_j, 55, 0, 0, &ng) == 0 && !strcmp(ng.state, "held"),
           "  the add is expired, keeps its height, the row stays held");
     amm_add_t a6 = j35_signed(35006, 'f');
-    amm_nrow_t n6 = mknrow(56, 0, 0, 0xff, "counted");
-    CHECK(amm_journal_nrow_put(g_j, &n6) == 0 && amm_journal_add_link_nodus(g_j, a6.seq, 56) == 0,
-          "setup: a counted Nodus row linked");
+    /* add_link_nodus refuses a row a swap counted (J36), and no journal call changes a stored
+     * row, so a linked add whose row is not held cannot arise through the journal's calls: the
+     * row is linked while held and then counted through a second connection (setup only) to pin
+     * the journal function's own defensive check. */
+    amm_nrow_t n6 = mknrow(56, 0, 0, 0xff, "held");
+    CHECK(amm_journal_nrow_put(g_j, &n6) == 0 && amm_journal_add_link_nodus(g_j, a6.seq, 56) == 0 &&
+          side_sql("UPDATE nodus_rows SET state='counted' WHERE height=56"),
+          "setup: a held Nodus row linked, then counted by setup SQL");
     CHECK(amm_journal_add_expire_onesided(g_j, a6.seq) == AMM_J_ILLEGAL &&
           amm_journal_add_by_seq(g_j, a6.seq, &got) == 0 && !strcmp(got.state, "signed"),
           "  a row that is not held: refused, the add stays signed");
