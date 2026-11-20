@@ -1094,6 +1094,14 @@ int amm_journal_accept_request(amm_journal_t *j, const amm_accept_t *a,
         }
     }
 
+    /* one transfer, one use: an incoming id a liquidity add carries (its signed
+     * transfer id, or its linked USDT deposit) is not a swap's payment */
+    if (*incoming) {
+        int64_t in_add = 0;
+        if (one_int(j, "SELECT COUNT(*) FROM liq_adds WHERE transfer_id=?1 OR eth_tx=?1",
+                    (arg_t[]){AT(incoming)}, 1, &in_add) != 0) goto done;
+        if (in_add > 0) { rc = AMM_J_DUP_TRANSFER; goto done; }
+    }
     if (run(j, "UPDATE swaps SET sender=?1, dest=?2, minimum=?3, incoming_id=?4 "
                "WHERE seq=?5",
             (arg_t[]){AT(a->sender), AT(a->dest), AI(a->minimum), AT(incoming),
@@ -1141,6 +1149,11 @@ int amm_journal_swap_seen(amm_journal_t *j, int64_t seq, const char *incoming_id
                       (arg_t[]){AT(incoming_id)}, 1);
     if (mk < 0) goto done;
     if (mk == 0) { rc = AMM_J_DUP_TRANSFER; goto done; }
+    /* an incoming id linked to a liquidity add is that add's deposit */
+    int64_t in_add = 0;
+    if (one_int(j, "SELECT COUNT(*) FROM liq_adds WHERE (transfer_id=?1 AND nodus_height<>0) OR "
+                   "eth_tx=?1", (arg_t[]){AT(incoming_id)}, 1, &in_add) != 0) goto done;
+    if (in_add > 0) { rc = AMM_J_DUP_TRANSFER; goto done; }
 
     int64_t next = 0;
     /* one sequence for swaps, liquidity adds and withdrawals (plan sections 13, 14) */
@@ -3361,6 +3374,17 @@ int amm_journal_add_link_nodus(amm_journal_t *j, int64_t seq, uint64_t height) {
         rc = AMM_J_ILLEGAL;
         goto done;
     }
+    /* one transfer, one use: a wire id that is a permanent marker, that a swap
+     * (past its approval) carries, or whose stored row a swap counted, is not
+     * this add's deposit */
+    int64_t used = 0;
+    if (one_int(j, "SELECT (SELECT COUNT(*) FROM paid_markers WHERE transfer_id=?1) + "
+                   "(SELECT COUNT(*) FROM swaps WHERE incoming_id=?1 AND "
+                   "state NOT IN ('approved','expired')) + "
+                   "(SELECT COUNT(*) FROM nodus_rows WHERE state='counted' AND "
+                   "'nodus:' || lower(hex(wire))=?1)",
+                (arg_t[]){AT(a.transfer_id)}, 1, &used) != 0) goto done;
+    if (used > 0) { rc = AMM_J_DUP_TRANSFER; goto done; }
     if (run(j, "UPDATE liq_adds SET nodus_height=?1 WHERE seq=?2",
             (arg_t[]){AI(height), AI(seq)}, 2, NULL) != 0) goto done;
     if (add_take_seen_locked(j, seq) != 0) goto done;
@@ -3450,6 +3474,22 @@ int amm_journal_add_expire(amm_journal_t *j, int64_t seq) {
     rc = AMM_J_OK;
 done:
     return op_end(j, rc);
+}
+
+int amm_journal_expired_deposits_rehold(amm_journal_t *j, int *held) {
+    if (held) *held = 0;
+    if (!j) return -1;
+    if (op_begin(j) != 0) return -1;
+    int n = 0;
+    /* record state table: deep -> held. A record that moved block (the watcher
+     * walks held -> deep -> seen) is held again when it is deep again. */
+    int rc = run(j, "UPDATE eth_records SET state='held' WHERE state='deep' AND EXISTS ("
+                    "SELECT 1 FROM liq_adds a WHERE a.state='expired' AND a.eth_tx<>'' AND "
+                    "a.eth_tx='eth:' || lower(hex(eth_records.tx)) AND "
+                    "a.eth_log=eth_records.log_index)", NULL, 0, &n) == 0 ? AMM_J_OK : -1;
+    if (op_end(j, rc) != AMM_J_OK) return -1;
+    if (held) *held = n;
+    return 0;
 }
 
 int amm_journal_add_expire_onesided(amm_journal_t *j, int64_t seq) {

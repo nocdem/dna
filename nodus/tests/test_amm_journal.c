@@ -3767,6 +3767,64 @@ static void j35_add_expire_onesided(void) {
           "  a reopen keeps the expired adds, their links and the held record");
 }
 
+/* J36: one NODUS transfer is used once (BUGS.md AMM-01 continuation): a transfer id a signed add
+ * carries is refused to a NODUS -> USDT swap at its signed request (AMM_J_DUP_TRANSFER, nothing
+ * written), a wire id a swap counted (or a stored row counted by a swap) is refused to an add's
+ * link, and a payment linked to an add is refused to a swap's seen payment. Each of the three
+ * is accepted on the code before this change (the transfer was usable twice: swap payout and
+ * liquidity units). Control: an unrelated transfer id is accepted by the swap.
+ * FLAGS: none. LEAVES BEHIND: the test journal (removed at the end). HOW IT COULD FALSELY PASS:
+ * the swap that carries the id at approval (amm_journal_approve with an incoming id) is the
+ * journal's own path; the engine and watcher paths that reach these calls are E49 and
+ * test_amm_nodus_watch. */
+static void j36_one_transfer_one_use(void) {
+    printf("J36 one NODUS transfer is used once\n");
+    fresh();
+    amm_add_t a1 = j35_signed(36001, 'a');             /* transfer id nodus:aa..aa */
+    amm_quote_t q = mkq(36101, 10000000ULL, 10000000ULL);
+    q.dir = AMM_NODUS_TO_USDT;
+    amm_swap_t s, x;
+    CHECK(amm_journal_quote_approve(g_j, &q, &s) == AMM_J_OK, "setup: a NODUS -> USDT price approval");
+    char snd[129], dst[41];
+    memset(snd, 'c', 128); snd[128] = 0; memset(dst, 'b', 40); dst[40] = 0;
+    amm_accept_t ac;
+    memset(&ac, 0, sizeof(ac));
+    ac.dir = AMM_NODUS_TO_USDT; ac.bot_req = 36101; ac.sender = snd; ac.dest = dst;
+    ac.amount = 10000000ULL; ac.minimum = 5; ac.incoming_id = a1.transfer_id;
+    ac.req_no[31] = 1;
+    CHECK(amm_journal_accept_request(g_j, &ac, &x) == AMM_J_DUP_TRANSFER,
+          "an incoming id a signed add carries is refused to the swap's signed request");
+    CHECK(amm_journal_swap_by_botreq(g_j, 36101, &s) == 0 && !*s.sender && !strcmp(s.state, "approved"),
+          "  nothing was written");
+    char other[AMM_TID_MAX];
+    snprintf(other, sizeof(other), "nodus:%s", snd);
+    ac.incoming_id = other;
+    CHECK(amm_journal_accept_request(g_j, &ac, &x) == AMM_J_OK, "control: another id is accepted");
+
+    /* a swap past its approval carries the id: the add cannot link a row of that wire */
+    amm_add_t a2 = j35_signed(36002, 'e');
+    amm_approve_t ap = mk_n2u('d', 20000000ULL, 20000000ULL, a2.transfer_id);
+    amm_swap_t cs;
+    CHECK(approve_ok(&ap, &cs) && drive(&cs, "counted", a2.transfer_id), "setup: a swap counted with the add's transfer id");
+    CHECK(amm_journal_add_link_nodus(g_j, a2.seq, 70) == AMM_J_DUP_TRANSFER, "a wire a swap counted is not linked to an add");
+    amm_add_t got;
+    CHECK(amm_journal_add_by_seq(g_j, a2.seq, &got) == 0 && got.nodus_height == 0, "  nothing was linked");
+
+    /* a stored row counted by a swap */
+    amm_add_t a3 = j35_signed(36003, 'f');
+    amm_nrow_t n3 = mknrow(71, 0, 0, 0xff, "counted");
+    CHECK(amm_journal_nrow_put(g_j, &n3) == 0 && amm_journal_add_link_nodus(g_j, a3.seq, 71) == AMM_J_DUP_TRANSFER,
+          "a stored row a swap counted is not linked to an add");
+
+    /* a payment linked to an add is refused to a swap */
+    amm_add_t a4 = j35_signed(36004, '4');
+    CHECK(amm_journal_add_link_nodus(g_j, a4.seq, 72) == 0, "setup: a payment linked to an add");
+    amm_approve_t ap4 = mk_n2u('9', 30000000ULL, 30000000ULL, a4.transfer_id);
+    amm_swap_t s4;
+    CHECK(approve_ok(&ap4, &s4) && tr(s4.seq, "paid_waiting_depth", a4.transfer_id) == AMM_J_DUP_TRANSFER,
+          "a payment linked to an add is refused as a swap's seen payment");
+}
+
 int main(void) {
     printf("test_amm_journal\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_jnl_testXXXXXX");
@@ -3809,6 +3867,7 @@ int main(void) {
     j33_migration();
     j34_check_copy();
     j35_add_expire_onesided();
+    j36_one_transfer_one_use();
 
     if (g_j) amm_journal_close(g_j);
     cleanup_dir();

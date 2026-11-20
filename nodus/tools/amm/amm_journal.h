@@ -1169,6 +1169,12 @@ int amm_journal_add_expire(amm_journal_t *j, int64_t seq);
  *  0 / AMM_J_NOT_YET / AMM_J_ILLEGAL (not signed, no link or both linked, or a
  *  Nodus row that is not held) / -1. */
 int amm_journal_add_expire_onesided(amm_journal_t *j, int64_t seq);
+/** The USDT deposit of an expired add (its link is kept) that is `deep` again
+ *  is held again, in ONE statement: a payment that moved block after the hold
+ *  is walked held -> deep -> seen by the watcher and no walk reads a record
+ *  linked to an add, so it would stay deep. Idempotent. *held (may be NULL) =
+ *  the records held. 0 / -1. */
+int amm_journal_expired_deposits_rehold(amm_journal_t *j, int *held);
 /** The units of the position (eth address 40 hex, nodus address 128 hex);
  *  0 found / 1 none / -1. */
 int amm_journal_position_get(amm_journal_t *j, const char *eth_addr,

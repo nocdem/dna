@@ -432,6 +432,7 @@ static int accept_common(amm_engine_t *e, amm_accept_t *a, uint64_t request_numb
     case AMM_J_AMOUNT:      return AMM_ACC_AMOUNT;
     case AMM_J_REQ_REUSED:  return AMM_ACC_REUSED;
     case AMM_J_ILLEGAL:     return AMM_ACC_USED;
+    case AMM_J_DUP_TRANSFER: return AMM_ACC_DUP_TRANSFER;
     default:                return AMM_ACC_ERR;
     }
 }
@@ -888,8 +889,11 @@ static int unlinked_payment_pending(amm_engine_t *e, const amm_add_t *a, int wan
                     QGP_LOG_INFO(LOG_TAG, "add %lld: the Nodus payment in block %llu is linked "
                                  "before its expiry was decided", (long long)a->seq,
                                  (unsigned long long)nr.height);
+                    return 1;
                 }
-                return 1;
+                /* a payment another use already took (AMM_J_DUP_TRANSFER) is not this
+                 * add's: it does not hold the expiry back */
+                if (lr != AMM_J_DUP_TRANSFER) return 1;
             }
         }
     }
@@ -1097,6 +1101,17 @@ static int liquidity_adds(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
         o->adds_examined += (int)examined;
     }
     free(l);
+    if (rc == 0) {
+        /* the paid USDT deposit of an expired add is held again when a reorganisation
+         * moved it and it is deep again */
+        int again = 0;
+        if (amm_journal_expired_deposits_rehold(e->c.journal, &again) != 0) rc = -1;
+        else if (again > 0) {
+            o->held_records += again;
+            QGP_LOG_INFO(LOG_TAG, "%d deposit(s) of expired adds held again after a "
+                         "reorganisation moved them", again);
+        }
+    }
     return rc;
 }
 

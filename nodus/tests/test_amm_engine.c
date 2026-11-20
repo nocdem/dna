@@ -4152,6 +4152,72 @@ static void e48_unlinked_counterpart(void) {
     e48_case(2);
 }
 
+/* ── E49 one transfer one use; the held deposit of an expired add stays held ── */
+
+/* Proves (BUGS.md AMM-01 continuation):
+ *   (a) a NODUS -> USDT swap whose signed request carries the transfer id of a signed add is refused
+ *       (AMM_ACC_DUP_TRANSFER) and the swap row is untouched; before this change the same Nodus
+ *       payment could be counted for the swap payout and linked to the add;
+ *   (b) the held USDT deposit of an expired one-sided add: when the payment moves block (the watcher
+ *       walks held -> deep -> seen, done here through the journal) it is held again once it is deep;
+ *       the add stays expired with its link and the pool is unchanged.
+ * FLAGS: none. LEAVES BEHIND: the temporary journal directory (removed by env_close).
+ * HOW IT COULD FALSELY PASS: (b) moves the record with the journal's own record writes, the way
+ * E10 does; the watcher's reorganisation detection is its own tests'. */
+static void e49_one_transfer_and_rehold(void) {
+    printf("E49 one transfer one use; a held deposit stays held\n");
+    env_t e;
+    env_open(&e);
+    amm_add_answer_t aa;
+    W.rq[0] = 0x49010101; W.rq_n = 1; W.rq_i = 0;
+    CHECK(amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK, "add question");
+    amm_req_liq_add_t lr = add_req(&aa, 'a', 'c', 'a');
+    CHECK(amm_engine_accept_add(e.eng, &lr, NULL) == AMM_ACC_RECEIVED, "signed add, transfer id 'a'");
+    amm_quote_answer_t c;
+    CHECK(amm_engine_quote(e.eng, AMM_NODUS_TO_USDT, 100000000000000ULL, 0, &c) == AMM_Q_OK, "NODUS approval");
+    amm_req_nodus_to_usdt_t nr = nodus_req(&c, 'a', 1);
+    CHECK(amm_engine_accept_nodus(e.eng, &nr, NULL) == AMM_ACC_DUP_TRANSFER,
+          "(a) the swap request with the add's transfer id is refused");
+    amm_swap_t sw;
+    CHECK(swap_of(&e, c.request_number, &sw) && !*sw.sender && !strcmp(sw.state, "approved"), "  the swap row is untouched");
+    nr = nodus_req(&c, 'f', 1);
+    CHECK(amm_engine_accept_nodus(e.eng, &nr, NULL) == AMM_ACC_RECEIVED, "  control: another transfer id is accepted");
+    env_close(&e);
+
+    env_t f;
+    env_open(&f);
+    amm_engine_step_t o;
+    amm_add_t row;
+    amm_rec_t rg;
+    uint8_t tx[32];
+    W.rq[0] = 0x49020202; W.rq_n = 1; W.rq_i = 0;
+    CHECK(amm_engine_add_question(f.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK, "add question");
+    lr = add_req(&aa, 'a', 'c', 'a');
+    CHECK(amm_engine_accept_add(f.eng, &lr, NULL) == AMM_ACC_RECEIVED, "signed");
+    e47_usdt_only(&f, &lr, 0x96, 1001, 1);
+    memset(tx, 0x96, 32);
+    W.eth_tip = 1400;
+    CHECK(step(&f, &o) == 0 && o.adds_linked == 1, "the USDT deposit is linked");
+    e47_observe_windows(&f);
+    CHECK(step(&f, &o) == 0 && o.adds_expired == 1 && amm_journal_rec_get(f.j, tx, 0, &rg) == 0 &&
+          !strcmp(rg.state, "held"), "(b) the add expires one-sided, the record is held");
+    /* the payment moves to block 1003: held -> deep -> seen (the watcher's walk) */
+    rg.block_number = 1003;
+    snprintf(rg.state, sizeof(rg.state), "deep");
+    CHECK(amm_journal_rec_put(f.j, &rg) == 0, "  the record is deep again (moved)");
+    snprintf(rg.state, sizeof(rg.state), "seen");
+    CHECK(amm_journal_rec_put(f.j, &rg) == 0, "  and seen at its new block");
+    CHECK(step(&f, &o) == 0 && amm_journal_rec_get(f.j, tx, 0, &rg) == 0 && !strcmp(rg.state, "seen"),
+          "  seen: not held yet");
+    snprintf(rg.state, sizeof(rg.state), "deep");
+    CHECK(amm_journal_rec_put(f.j, &rg) == 0, "  the record is deep");
+    CHECK(step(&f, &o) == 0 && o.held_records == 1 && amm_journal_rec_get(f.j, tx, 0, &rg) == 0 &&
+          !strcmp(rg.state, "held"), "  deep: held again");
+    CHECK(amm_journal_add_by_botreq(f.j, aa.request_number, &row) == 0 && !strcmp(row.state, "expired") &&
+          *row.eth_tx && e47_pool_unchanged(&f), "  the add stays expired with its link, the pool is unchanged");
+    env_close(&f);
+}
+
 int main(void) {
     printf("test_amm_engine\n");
     e1_quote();
@@ -4201,6 +4267,7 @@ int main(void) {
     e45_question_during_round();
     e47_one_sided_adds();
     e48_unlinked_counterpart();
+    e49_one_transfer_and_rehold();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
