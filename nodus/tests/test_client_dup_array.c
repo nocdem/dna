@@ -192,10 +192,134 @@ static void test_utxo(void) {
     nodus_client_free_utxo_result(&res);
 }
 
+/* ── reply envelope (C-09, C-10) ─────────────────────────────────────
+ *
+ * Proves: the client reads the reply envelope only when the whole outer map
+ * is well formed — every key text, "r" once, every declared pair present
+ * with its whole value, nothing after the map. Each malformed shape below is
+ * NODUS_ERR_PROTOCOL_ERROR (today the container-key, short and trailing-byte
+ * shapes decode: the first returns the NESTED "r", the other two ignore the
+ * damage). The controls (an honest reply; an unknown text key holding a
+ * negative integer and nested data) still decode.
+ * How it can falsely pass: the cases go through the split dnac_utxo decoder
+ * (find_response_map is shared by every dnac_* decoder, only this one has a
+ * byte-level seam); a frame the Tier-2 receive path would already drop never
+ * reaches this decoder in production, so each case here is one that path
+ * lets through. */
+
+/* One entry {"amount": a, "tid": 64 bytes} as the node writes it. */
+static void enc_one_entry_r(cbor_encoder_t *e, uint64_t amount) {
+    uint8_t tid[64];
+    memset(tid, 0xA1, sizeof(tid));
+    cbor_encode_map(e, 2);
+    cbor_encode_cstr(e, "count"); cbor_encode_uint(e, 1);
+    cbor_encode_cstr(e, "utxos");
+    cbor_encode_array(e, 1);
+    cbor_encode_map(e, 2);
+    cbor_encode_cstr(e, "amount"); cbor_encode_uint(e, amount);
+    cbor_encode_cstr(e, "tid"); cbor_encode_bstr(e, tid, sizeof(tid));
+}
+
+static void enc_envelope_head(cbor_encoder_t *e, size_t pairs) {
+    cbor_encoder_init(e, g_frame, sizeof(g_frame));
+    cbor_encode_map(e, pairs);
+    cbor_encode_cstr(e, "t"); cbor_encode_uint(e, 42);
+    cbor_encode_cstr(e, "y"); cbor_encode_cstr(e, "r");
+    cbor_encode_cstr(e, "q"); cbor_encode_cstr(e, "dnac_utxo");
+}
+
+static void test_envelope(void) {
+    cbor_encoder_t e;
+    nodus_dnac_utxo_result_t res;
+    int rc;
+
+    /* control: honest envelope */
+    enc_envelope_head(&e, 4);
+    cbor_encode_cstr(&e, "r"); enc_one_entry_r(&e, 700);
+    rc = nodus_client_test_parse_utxo(g_frame, cbor_encoder_len(&e), &res);
+    CHECK(rc == 0 && res.count == 1 && res.entries[0].amount == 700,
+          "envelope: honest reply decodes");
+    nodus_client_free_utxo_result(&res);
+
+    /* control: an unknown TEXT key before "r" holding a negative integer and
+     * nested data is stepped over whole and the real "r" is read */
+    enc_envelope_head(&e, 5);
+    cbor_encode_cstr(&e, "zz");
+    cbor_encode_array(&e, 2);
+    cbor_encode_int(&e, -7);
+    cbor_encode_map(&e, 1);
+    cbor_encode_cstr(&e, "a"); cbor_encode_int(&e, -1);
+    cbor_encode_cstr(&e, "r"); enc_one_entry_r(&e, 701);
+    rc = nodus_client_test_parse_utxo(g_frame, cbor_encoder_len(&e), &res);
+    CHECK(rc == 0 && res.count == 1 && res.entries[0].amount == 701,
+          "envelope: unknown text key with negative/nested value is skipped whole");
+    nodus_client_free_utxo_result(&res);
+
+    /* C-09: {..., ["pad","r",R_A]: null, "r": R_B} — the old walk read the
+     * array key as a header, then took its child "r" for the envelope's */
+    enc_envelope_head(&e, 5);
+    cbor_encode_array(&e, 3);
+    cbor_encode_cstr(&e, "pad"); cbor_encode_cstr(&e, "r");
+    enc_one_entry_r(&e, 111);                       /* R_A */
+    cbor_encode_null(&e);
+    cbor_encode_cstr(&e, "r"); enc_one_entry_r(&e, 222);   /* R_B */
+    rc = nodus_client_test_parse_utxo(g_frame, cbor_encoder_len(&e), &res);
+    CHECK(rc == NODUS_ERR_PROTOCOL_ERROR && res.entries == NULL,
+          "envelope: a container key cannot shadow the real \"r\"");
+    nodus_client_free_utxo_result(&res);
+
+    /* a non-text key of another kind (uint) */
+    enc_envelope_head(&e, 5);
+    cbor_encode_uint(&e, 9); cbor_encode_null(&e);
+    cbor_encode_cstr(&e, "r"); enc_one_entry_r(&e, 5);
+    rc = nodus_client_test_parse_utxo(g_frame, cbor_encoder_len(&e), &res);
+    CHECK(rc == NODUS_ERR_PROTOCOL_ERROR, "envelope: a non-text key is refused");
+    nodus_client_free_utxo_result(&res);
+
+    /* "r" twice */
+    enc_envelope_head(&e, 5);
+    cbor_encode_cstr(&e, "r"); enc_one_entry_r(&e, 1);
+    cbor_encode_cstr(&e, "r"); enc_one_entry_r(&e, 2);
+    rc = nodus_client_test_parse_utxo(g_frame, cbor_encoder_len(&e), &res);
+    CHECK(rc == NODUS_ERR_PROTOCOL_ERROR, "envelope: a repeated \"r\" is refused");
+    nodus_client_free_utxo_result(&res);
+
+    /* C-10 (a): five pairs declared, four carried */
+    enc_envelope_head(&e, 5);
+    cbor_encode_cstr(&e, "r"); enc_one_entry_r(&e, 3);
+    rc = nodus_client_test_parse_utxo(g_frame, cbor_encoder_len(&e), &res);
+    CHECK(rc == NODUS_ERR_PROTOCOL_ERROR,
+          "envelope: fewer pairs than declared is refused");
+    nodus_client_free_utxo_result(&res);
+
+    /* C-10 (a): a byte after the outer map */
+    enc_envelope_head(&e, 4);
+    cbor_encode_cstr(&e, "r"); enc_one_entry_r(&e, 4);
+    {
+        size_t n = cbor_encoder_len(&e);
+        g_frame[n] = 0x00;
+        rc = nodus_client_test_parse_utxo(g_frame, n + 1, &res);
+        CHECK(rc == NODUS_ERR_PROTOCOL_ERROR,
+              "envelope: a trailing byte after the map is refused");
+        nodus_client_free_utxo_result(&res);
+    }
+
+    /* a value cut short inside the last pair */
+    enc_envelope_head(&e, 5);
+    cbor_encode_cstr(&e, "zz");
+    cbor_encode_array(&e, 3);                       /* three items declared ... */
+    cbor_encode_uint(&e, 1);                        /* ... one present, no "r" */
+    rc = nodus_client_test_parse_utxo(g_frame, cbor_encoder_len(&e), &res);
+    CHECK(rc == NODUS_ERR_PROTOCOL_ERROR,
+          "envelope: a value cut short is refused");
+    nodus_client_free_utxo_result(&res);
+}
+
 int main(void) {
     QGP_LOG_INFO(LOG_TAG, "=== Nodus client DNAC decoder repeated-key tests ===");
 
     test_utxo();
+    test_envelope();
 
     QGP_LOG_INFO(LOG_TAG, "=== Results: %d passed, %d failed ===", passed, failed);
     return failed > 0 ? 1 : 0;

@@ -684,7 +684,9 @@ int nodus_net_poll_del(nodus_net_poll_t *p, nodus_sock_t s)
 }
 
 /* select failed with WSAENOTSOCK: a registered handle was closed without
- * _del (nodus_client_force_disconnect, BUGS.md C-06; R5). Evict up to
+ * _del (what nodus_client_force_disconnect used to do, C-06; since fixed —
+ * it now releases the connection through the transport; the eviction stays
+ * as the defence for any other stale handle; R5). Evict up to
  * `cap` handles Winsock no longer knows and report each evicted entry's
  * tag once in `out` as ERR|HUP, so its owner learns the socket is gone;
  * the rest stay registered (a further stale one fails the next select

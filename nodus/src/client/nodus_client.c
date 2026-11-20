@@ -330,6 +330,14 @@ static nodus_pending_t *alloc_pending(nodus_client_t *client, uint32_t txn) {
                 memset(p, 0, sizeof(*p));
                 p->txn = txn;
                 p->response = calloc(1, sizeof(nodus_tier2_msg_t));
+                if (!p->response) {
+                    /* Out of memory: the slot stays free (zeroed above) and
+                     * is never published with a NULL response that
+                     * client_on_frame would write through. */
+                    pthread_mutex_unlock(&client->pending_mutex);
+                    QGP_LOG_ERROR(LOG_TAG, "Pending slot: response allocation failed");
+                    return NULL;
+                }
                 p->in_use = true;
                 pthread_mutex_unlock(&client->pending_mutex);
                 if (attempt > 0) {
@@ -1232,24 +1240,48 @@ void nodus_client_force_disconnect(nodus_client_t *client) {
     if (!client) return;
     /* Signal read thread to stop */
     atomic_store(&client->read_thread_stop, true);
-    /* Close socket FIRST — breaks epoll_wait so read thread exits quickly */
-    if (client->conn) {
-        nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)client->conn;
-        if (conn->fd >= 0) {
+
+#ifndef __EMSCRIPTEN__
+    /* Wake the read thread out of its wait: shutdown only, never close — the
+     * descriptor stays owned by the transport until the connection object is
+     * released below, so its number cannot be handed to another socket while
+     * the transport still lists it. The connection is read only under
+     * poll_mutex (the lock every release of it runs under); when the read
+     * thread holds that lock it is inside a poll that ends within its own
+     * 100 ms bound and sees the stop flag, so a failed trylock only means
+     * the join below waits that long. */
+    if (pthread_mutex_trylock(&client->poll_mutex) == 0) {
+        nodus_tcp_conn_t *c = (nodus_tcp_conn_t *)client->conn;
+        if (c && c->fd >= 0) {
 #ifdef _WIN32
-            shutdown(conn->fd, SD_BOTH);
-            closesocket(conn->fd);
+            shutdown(c->fd, SD_BOTH);
 #else
-            shutdown(conn->fd, SHUT_RDWR);
-            close(conn->fd);
+            shutdown(c->fd, SHUT_RDWR);
 #endif
-            conn->fd = -1;
         }
-        client->conn = NULL;
+        pthread_mutex_unlock(&client->poll_mutex);
     }
-    client->state = NODUS_CLIENT_DISCONNECTED;
-    /* Now join the read thread (it should exit fast since socket is closed) */
     stop_read_thread(client);
+    pthread_mutex_lock(&client->poll_mutex);
+#endif
+    /* Browser build: no read thread to wait for, and no wait here — an async
+     * export may be suspended holding poll_mutex (nsw_lock aborts the whole
+     * instance right after this returns), so the lock is not taken there. */
+
+    /* Tear the connection down through the transport — the same call
+     * nodus_client_suspend / nodus_client_close make — so the pool slot and
+     * the poll registration are released. The state is set first: with it
+     * already DISCONNECTED, client_on_disconnect neither schedules a
+     * reconnect nor reports a state change for this deliberate close. */
+    client->state = NODUS_CLIENT_DISCONNECTED;
+    if (client->conn && client->tcp) {
+        nodus_tcp_disconnect((nodus_tcp_t *)client->tcp,
+                              (nodus_tcp_conn_t *)client->conn);
+    }
+    client->conn = NULL;
+#ifndef __EMSCRIPTEN__
+    pthread_mutex_unlock(&client->poll_mutex);
+#endif
 }
 
 void nodus_client_close(nodus_client_t *client) {
@@ -2923,8 +2955,47 @@ int nodus_client_media_exists(nodus_client_t *client,
  * On success, decoder is positioned at first entry of "r" map.
  * Returns 0 on success, -1 if "r" not found or not a map.
  */
+/* The reply envelope, checked whole before any field is read from it (C-09,
+ * C-10): the outer map must be well formed from its first byte to its last.
+ *   - every key is a text string (a container key would otherwise be read as
+ *     a header only, and its children taken for further envelope pairs: a
+ *     nested "r" could then shadow the real one);
+ *   - "r" appears once;
+ *   - every value is stepped over whole (negative integers included, as the
+ *     skip below allows them: an honest reply may carry one in an unknown
+ *     key), and the declared pairs are all present: END where a key or a
+ *     value is owed is an error;
+ *   - nothing follows the outer map.
+ * The decoder limit is raised to the largest any reply decoder uses (the
+ * dnac_state_proof reply carries more than the default item count); a raised
+ * decoder also turns END inside a value into an error. Returns 0 or -1. */
+static int envelope_strict(const uint8_t *raw, size_t raw_len) {
+    cbor_decoder_t dec;
+    cbor_decoder_init(&dec, raw, raw_len);
+    cbor_decoder_set_max_items(&dec, NODUS_CBOR_MAX_ITEMS_STATE_PROOF);
+
+    cbor_item_t top = cbor_decode_next(&dec);
+    if (top.type != CBOR_ITEM_MAP) return -1;
+
+    bool seen_r = false;
+    for (size_t i = 0; i < top.count; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type != CBOR_ITEM_TSTR) return -1;
+        if (key.tstr.len == 1 && key.tstr.ptr[0] == 'r') {
+            if (seen_r) return -1;
+            seen_r = true;
+        }
+        cbor_decode_skip_signed(&dec, NULL);
+        if (dec.error) return -1;
+    }
+    if (dec.error || dec.pos != dec.len) return -1;
+    return 0;
+}
+
 static int find_response_map(const uint8_t *raw, size_t raw_len,
                               cbor_decoder_t *dec, size_t *map_count) {
+    if (envelope_strict(raw, raw_len) != 0) return -1;
+
     cbor_decoder_init(dec, raw, raw_len);
     cbor_item_t top = cbor_decode_next(dec);
     if (top.type != CBOR_ITEM_MAP) return -1;
@@ -2938,7 +3009,7 @@ static int find_response_map(const uint8_t *raw, size_t raw_len,
             *map_count = rmap.count;
             return 0;
         }
-        cbor_decode_skip(dec);
+        cbor_decode_skip_signed(dec, NULL);
     }
     return -1;
 }
@@ -2951,6 +3022,10 @@ int nodus_client_reply_value_shape(const uint8_t *raw, size_t raw_len,
     cbor_decoder_t top_dec;
     cbor_decoder_init(&top_dec, raw, raw_len);
     if (cbor_decode_peek(&top_dec) != CBOR_ITEM_MAP) return -1;
+    /* find_response_map answers -1 for a malformed envelope too, which
+     * below reads as "a map without r: no result" — a malformed envelope is
+     * an error, not an empty result. */
+    if (envelope_strict(raw, raw_len) != 0) return -1;
 
     cbor_decoder_t dec;
     size_t n = 0;
@@ -3546,7 +3621,10 @@ static int dnac_utxo_request(nodus_client_t *client, const char *owner,
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') {
         QGP_LOG_ERROR(LOG_TAG, "dnac_utxo: error response code=%d", resp->error_code);
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        /* An error frame without a positive code must not read as success
+         * with an empty result (C-10): client_error_rc maps it to a
+         * protocol error. */
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
 
     QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: got response raw_len=%zu", req->raw_response_len);
@@ -8564,6 +8642,12 @@ static nodus_ch_pending_t *ch_conn_alloc_pending(nodus_ch_conn_t *ch, uint32_t t
                 memset(p, 0, sizeof(*p));
                 p->txn = txn;
                 p->response = calloc(1, sizeof(nodus_tier2_msg_t));
+                if (!p->response) {
+                    /* Out of memory: leave the slot free, never publish it. */
+                    pthread_mutex_unlock(&ch->pending_mutex);
+                    QGP_LOG_ERROR(LOG_TAG_CH, "Pending slot: response allocation failed");
+                    return NULL;
+                }
                 p->in_use = true;
                 pthread_mutex_unlock(&ch->pending_mutex);
                 return p;
@@ -8681,6 +8765,18 @@ static void ch_conn_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     if (!slot) {
         pthread_mutex_unlock(&ch->pending_mutex);
         QGP_LOG_WARN(LOG_TAG_CH, "Response for unknown txn %u", tmp.txn_id);
+        nodus_t2_msg_free(&tmp);
+        return;
+    }
+
+    /* A second reply for a txn that is already answered (peer retry or
+     * hostile server) must not free or overwrite the first one: the waiter
+     * may be reading it unlocked. Drop it (same rule as client_on_frame). */
+    if (atomic_load(&slot->ready)) {
+        pthread_mutex_unlock(&ch->pending_mutex);
+        QGP_LOG_WARN(LOG_TAG_CH,
+                     "Duplicate response for txn %u dropped (slot already answered)",
+                     tmp.txn_id);
         nodus_t2_msg_free(&tmp);
         return;
     }
@@ -9682,3 +9778,24 @@ int nodus_circuit_close(nodus_circuit_handle_t *h) {
     }
     return 0;
 }
+
+#ifdef NODUS_CLIENT_TEST_SEAM
+/* tests/test_client_alloc_dup.c — the two pending-slot allocators (static
+ * above), called directly so an allocation failure can be injected. They
+ * allocate and publish exactly as the request functions do; compiled only
+ * when a test target builds this TU itself. */
+nodus_pending_t *nodus_client_test_alloc_pending(nodus_client_t *client,
+                                                 uint32_t txn);
+nodus_ch_pending_t *nodus_client_test_ch_alloc_pending(nodus_ch_conn_t *ch,
+                                                       uint32_t txn);
+
+nodus_pending_t *nodus_client_test_alloc_pending(nodus_client_t *client,
+                                                 uint32_t txn) {
+    return alloc_pending(client, txn);
+}
+
+nodus_ch_pending_t *nodus_client_test_ch_alloc_pending(nodus_ch_conn_t *ch,
+                                                       uint32_t txn) {
+    return ch_conn_alloc_pending(ch, txn);
+}
+#endif /* NODUS_CLIENT_TEST_SEAM */

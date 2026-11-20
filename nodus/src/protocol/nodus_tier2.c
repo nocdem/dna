@@ -11,6 +11,7 @@
 #include "protocol/nodus_cbor.h"
 #include "core/nodus_value.h"
 
+#include <limits.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -3105,8 +3106,15 @@ static int t2_decode_body(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg
                 /* code (error) */
                 else if (rkey.tstr.len == 4 && memcmp(rkey.tstr.ptr, "code", 4) == 0) {
                     cbor_item_t val = cbor_decode_next(&dec);
-                    if (val.type == CBOR_ITEM_UINT)
-                        msg->error_code = (int)val.uint_val;
+                    if (val.type == CBOR_ITEM_UINT) {
+                        /* A code that does not fit an int is not a code:
+                         * narrowing it would wrap to 0 or a negative number
+                         * that a caller reads as success. Report it as the
+                         * protocol error it is. */
+                        msg->error_code = val.uint_val > (uint64_t)INT_MAX
+                                              ? NODUS_ERR_PROTOCOL_ERROR
+                                              : (int)val.uint_val;
+                    }
                 }
                 /* msg (error) */
                 else if (rkey.tstr.len == 3 && memcmp(rkey.tstr.ptr, "msg", 3) == 0) {
