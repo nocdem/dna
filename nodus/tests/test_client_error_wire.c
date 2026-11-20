@@ -248,6 +248,7 @@ int main(void) {
         ok = ok && nodus_client_dnac_supply(c, r) == NODUS_ERR_RATE_LIMITED &&
                    nodus_client_dnac_roster(c, r) == NODUS_ERR_RATE_LIMITED &&
                    nodus_client_dnac_committee(c, r) == NODUS_ERR_RATE_LIMITED;
+        atomic_store(&g_mode, MODE_HONEST);   /* M1 below expects honest replies */
         free(r);
         CHECK(ok, "E6 supply/roster/committee: no-code/0/wrapped -> protocol error, valid code kept");
     }
