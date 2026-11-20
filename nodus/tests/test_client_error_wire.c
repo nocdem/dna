@@ -16,6 +16,9 @@
  *                                      narrowing read it as the valid code 5).
  *   E4  error code NODUS_ERR_RATE_LIMITED   returned unchanged.
  *   E5  honest reply                   0 (control).
+ *   E6  the same rule for nodus_client_dnac_supply / _roster / _committee
+ *       (three more of the dnac_* request functions; before the change each
+ *       returned the decoded code, 0 included, as success).
  *   M1  the reply buffer of the pending slot cannot be allocated
  *                                      (calloc of exactly one
  *                                      nodus_tier2_msg_t fails once, on the
@@ -104,7 +107,9 @@ static void fake_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     nodus_tier2_msg_t msg;
     memset(&msg, 0, sizeof(msg));
     if (nodus_t2_decode(payload, len, &msg) != 0) { nodus_t2_msg_free(&msg); return; }
-    if (strcmp(msg.method, "dnac_utxo") == 0) {
+    /* every dnac_* request is answered; only dnac_utxo is ever asked in
+     * MODE_HONEST (the error modes are method-agnostic) */
+    if (strncmp(msg.method, "dnac_", 5) == 0) {
         atomic_fetch_add(&g_requests, 1);
         cbor_encoder_t e;
         int mode = atomic_load(&g_mode);
@@ -219,6 +224,33 @@ int main(void) {
     rc = nodus_client_dnac_utxo(c, "owner", 10, &res);
     CHECK(rc == 0 && res.count == 1, "E5 honest reply decodes (control)");
     if (rc == 0) nodus_client_free_utxo_result(&res);
+
+    /* E6: the other dnac_* request functions share the rule. supply, roster,
+     * committee (each a separate request function that used to return the
+     * decoded code unchanged) answer a code-less / zero / wrapped error as a
+     * protocol error and a valid code unchanged. Result structs are large:
+     * heap. */
+    {
+        _Static_assert(sizeof(nodus_dnac_supply_result_t) <= (1u << 20) &&
+                       sizeof(nodus_dnac_roster_result_t) <= (1u << 20) &&
+                       sizeof(nodus_dnac_committee_result_t) <= (1u << 20),
+                       "one buffer must hold every result struct below");
+        void *r = calloc(1, 1u << 20);
+        int modes[3] = { MODE_ERR_NOCODE, MODE_ERR_ZERO, MODE_ERR_WRAP };
+        int ok = r != NULL;
+        for (int m = 0; ok && m < 3; m++) {
+            atomic_store(&g_mode, modes[m]);
+            ok = nodus_client_dnac_supply(c, r) == NODUS_ERR_PROTOCOL_ERROR &&
+                 nodus_client_dnac_roster(c, r) == NODUS_ERR_PROTOCOL_ERROR &&
+                 nodus_client_dnac_committee(c, r) == NODUS_ERR_PROTOCOL_ERROR;
+        }
+        atomic_store(&g_mode, MODE_ERR_RATE);
+        ok = ok && nodus_client_dnac_supply(c, r) == NODUS_ERR_RATE_LIMITED &&
+                   nodus_client_dnac_roster(c, r) == NODUS_ERR_RATE_LIMITED &&
+                   nodus_client_dnac_committee(c, r) == NODUS_ERR_RATE_LIMITED;
+        free(r);
+        CHECK(ok, "E6 supply/roster/committee: no-code/0/wrapped -> protocol error, valid code kept");
+    }
 
     /* M1: pending-slot reply buffer cannot be allocated. */
     int before = atomic_load(&g_requests);

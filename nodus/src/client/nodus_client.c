@@ -3148,7 +3148,7 @@ int nodus_client_dnac_spend_ex(nodus_client_t *client,
          * pending slot that owns `resp` is freed */
         if (err_msg && err_cap > 0)
             snprintf(err_msg, err_cap, "%s", resp->error_msg);
-        int rc = resp->error_code;
+        int rc = client_error_rc(resp);
         free_pending(client, req);
         return rc;
     }
@@ -3240,7 +3240,7 @@ int nodus_client_dnac_supply(nodus_client_t *client,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') { int rc = client_error_rc(resp); free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
@@ -3310,7 +3310,7 @@ int nodus_client_dnac_chain_id32(nodus_client_t *client, bool *has_out,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') { int rc = client_error_rc(resp); free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
@@ -3370,7 +3370,7 @@ int nodus_client_dnac_fee_info_ex(nodus_client_t *client,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') { int rc = client_error_rc(resp); free_pending(client, req); return rc; }
 
     int drc = nodus_dnac_fee_info_decode_ex(req->raw_response,
                                             req->raw_response_len, result_out,
@@ -4274,7 +4274,7 @@ int nodus_client_dnac_roster(nodus_client_t *client,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') { int rc = client_error_rc(resp); free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
@@ -4432,7 +4432,7 @@ int nodus_client_dnac_delegations(nodus_client_t *client,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
 
     cbor_decoder_t dec;
@@ -4550,7 +4550,7 @@ int nodus_client_dnac_token_list(nodus_client_t *client,
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
 
     cbor_decoder_t dec;
@@ -4767,7 +4767,7 @@ int nodus_client_dnac_token_info(nodus_client_t *client,
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
 
     int prc = dnac_token_info_decode(req->raw_response, req->raw_response_len,
@@ -4838,7 +4838,7 @@ int nodus_client_dnac_committee(nodus_client_t *client,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
 
     int drc = nodus_dnac_committee_decode(req->raw_response,
@@ -5073,7 +5073,7 @@ int nodus_client_dnac_cc_collect(nodus_client_t *client,
     if (resp->type == 'e') {
         QGP_LOG_WARN(LOG_TAG, "dnac_cc_collect refused by the node: %s",
                      resp->error_msg);
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
     int drc = nodus_dnac_cc_collect_decode(req->raw_response,
                                            req->raw_response_len, result_out);
@@ -5603,7 +5603,7 @@ int nodus_client_dnac_v3_block(nodus_client_t *client, uint64_t height,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
     int drc = nodus_dnac_v3_block_decode(req->raw_response,
                                          req->raw_response_len, result_out);
@@ -7037,7 +7037,7 @@ int nodus_client_dnac_supply_tip(nodus_client_t *client, bool *has_out,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') { int rc = client_error_rc(resp); free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
@@ -7163,7 +7163,7 @@ int nodus_client_dnac_supply_buckets(nodus_client_t *client,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') { int rc = client_error_rc(resp); free_pending(client, req); return rc; }
 
     int drc = nodus_dnac_supply_buckets_decode(req->raw_response,
                                                req->raw_response_len, out);
@@ -7310,7 +7310,7 @@ int nodus_client_dnac_balance(nodus_client_t *client, const char *owner_hex,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
     int drc = nodus_dnac_balance_decode(req->raw_response,
                                         req->raw_response_len, result_out);
@@ -7551,7 +7551,7 @@ int nodus_client_dnac_addr_history(nodus_client_t *client,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
     int drc = nodus_dnac_addr_history_decode(req->raw_response,
                                              req->raw_response_len,
@@ -7606,7 +7606,7 @@ int nodus_client_dnac_validator_list(nodus_client_t *client,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
 
     int prc = dnac_validator_list_parse(req->raw_response,
@@ -7926,7 +7926,7 @@ int nodus_client_dnac_query_raw(nodus_client_t *client, const char *method,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
     int drc = evm_reply_map(req->raw_response, req->raw_response_len,
                             reply_out, reply_len_out);
