@@ -529,6 +529,26 @@ test('quarantine releases only beyond its validated expiry and keeps every other
   }
 });
 
+// W-29: proves a released quarantine lock stays released after a real send is persisted (confirmSend persists before it
+// submits: persist re-reads the saved records as new objects). Observed without coins: once every record is released no
+// quarantine chain read is made any more; before the fix the save brought the lock back and the next reconcile reads the
+// chain again. Mock time and timers only; no network; lock at the end stops the timer.
+test('a released quarantine lock stays released after a send is saved', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let now = 0; t.mock.method(performance, 'now', () => now);
+  const { background, values, calls } = await setup(t);
+  await saveActivity(values, [], [savedRow({ amount: 'unreadable', expiryHeight: '9', hash: '3'.repeat(128) })]);
+  await unlockConnected(background); await background.nodus.reconcileQuarantine();
+  const reads = () => calls.filter(([op]) => op === 'list').length;
+  const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID });   // released: the tip 10 is past the expiry 9
+  await background.nodus.confirmSend(review.id);                                                               // src/background/nodus.js persist
+  assert.equal(calls.some(([op]) => op === 'submit'), true);
+  const before = reads(); now += 20000;
+  await background.nodus.reconcileQuarantine();
+  assert.equal(reads(), before, 'nothing is left to re-check: the released lock did not come back with the save');
+  await background.lock();
+});
+
 // Proves 15-second monotonic pacing, failed reads keeping locks, and both lock paths stopping polls; only mock time advances.
 test('quarantine polling follows web-wallet cadence and stops on manual or inactivity lock', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });

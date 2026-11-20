@@ -390,13 +390,34 @@ function quarantinedRow(row, addresses) {
   // the app can release the lock once it is certain the coins are free
   // (src/adapters/nodus.js quarantineReleasable): a well-formed intent id and
   // an expiry height, judged by the same validators a readable row uses
-  // (validHash; validNodusPending with the expiry as its own fromHeight).
+  // (validHash; validNodusPending). The expiry is judged against the row's own
+  // fromHeight when that is a well-formed height, so an expiry earlier than the
+  // row's start (a contradiction) is not kept and the lock stays (W-28); only
+  // a row without a well-formed fromHeight is judged with the expiry as its
+  // own fromHeight.
   // `tokenRow`: the record names a token (its coins are not all in the native
   // coin list, so "inputs no longer listed" proves nothing for it).
   const kept = { address: row.address, inputs: [...inputs], tokenRow: row.tokenId !== undefined, raw: row };
   if (validHash(NODUS_ASSET.chain, row.hash)) kept.hash = row.hash;
-  if (validNodusPending({ expiryHeight: row.expiryHeight, fromHeight: row.expiryHeight, inputs })) kept.expiryHeight = row.expiryHeight;
+  const fromHeight = typeof row.fromHeight === 'string' && /^[1-9]\d{0,19}$/.test(row.fromHeight) ? row.fromHeight : row.expiryHeight;
+  if (validNodusPending({ expiryHeight: row.expiryHeight, fromHeight, inputs })) kept.expiryHeight = row.expiryHeight;
   return kept;
+}
+// What makes a quarantine lock the same reservation across saves (W-29): its
+// whole lock-defining content — address, the inputs as a set, hash, expiry and
+// whether it is a token row. A changed reservation has a different key.
+export const quarantineLockKey = lock => JSON.stringify([lock.address, [...lock.inputs].sort(), lock.hash ?? null, lock.expiryHeight ?? null, lock.tokenRow === true]);
+// The lock rows for a fresh save: each reuses the object of the previous lock
+// with the same key (so a release recorded against that object, in
+// `released`, survives the save); a new or changed reservation keeps its new
+// object and is locked. Released entries whose lock is gone are dropped.
+// Records with equal keys are matched one to one, in order.
+export function reuseQuarantineLocks(previous, fresh, released) {
+  const pool = new Map();
+  for (const lock of previous) { const key = quarantineLockKey(lock); pool.set(key, [...(pool.get(key) ?? []), lock]); }
+  const next = fresh.map(lock => pool.get(quarantineLockKey(lock))?.shift() ?? lock);
+  for (const lock of [...released]) if (!next.includes(lock)) released.delete(lock);
+  return next;
 }
 function readActivityRow(row, addresses) {
     // A NODUS row: its address is derived after unlock (src/app.js
