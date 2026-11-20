@@ -326,7 +326,10 @@ static void test_pending_only_rearmed_by_poll(void) {
     conn->wcap = target + 8192;
 
     const int nframes = NODUS_DRAIN_PER_CALL + 5;
-    const size_t frame_size = 2048;     /* > the 1024 bytes left under the cap */
+    /* A non-session conn's write cap is NODUS_MAX_FRAME_TCP + header + 4096
+     * (conn_write_cap), so with wlen parked at MAX - 1024 about 5 KB is
+     * still free: a frame must exceed that to be routed to the FIFO. */
+    const size_t frame_size = 16 * 1024;
     uint8_t *frame = malloc(frame_size);
     memset(frame, 0x5A, frame_size);
     for (int i = 0; i < nframes; i++) {
