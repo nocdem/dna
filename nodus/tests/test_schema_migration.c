@@ -156,12 +156,78 @@ static void test_migration_idempotent(void) {
     sqlite3_close(db);
 }
 
+/* Z-18: a real SQLite failure in a migration step is an error RETURN, not an
+ * abort(). Each case makes exactly one rung's ALTER fail for real — the
+ * connection is put in `PRAGMA query_only = ON`, so a write is refused with
+ * SQLITE_READONLY while the no-op statements of the earlier rungs (an ALTER
+ * that finds its column present is a duplicate-column no-op; DROP / CREATE
+ * INDEX IF [NOT] EXISTS find nothing to do) still succeed.
+ *
+ * Proves, per rung (v12 tx_index, v13 client_pubkey, v14 chain_def_blob,
+ * v15 unlock_block): the migration returns a non-zero sqlite code and the
+ * process is alive to say so; after the fault is removed the same migration
+ * succeeds and the column is back (idempotent after a failure, no partial
+ * state kept). Today each case ends in SIGABRT, which the test runner sees as
+ * a crash of the whole test program.
+ * Flags/env: none. Leaves behind: nothing (in-memory databases); the
+ * "MIGRATION FAILURE: ..." lines on stderr are the pinned log literal.
+ * How it can falsely pass: query_only is the fault source, so it proves the
+ * return path of those four rungs, not that every possible SQLite error
+ * reaches it; the v17 / v18 supply_tracking rungs and the chain-config leg
+ * share the same return shape but are not driven (the fixture has no
+ * supply_tracking table). */
+static int exec_ok(sqlite3 *db, const char *sql) {
+    return sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
+}
+
+static void migration_failure_case(const char *label, const char *table,
+                                   const char *column) {
+    TEST(label);
+    sqlite3 *db = NULL;
+    if (setup_pre_v12(&db) != 0) { FAIL("setup"); return; }
+    static nodus_witness_t w;   /* multi-MB — static storage, not stack */
+    memset(&w, 0, sizeof(w));
+    w.db = db;
+
+    if (table) {
+        /* fully migrate, then remove the one column this rung adds */
+        char sql[160];
+        if (nodus_witness_db_migrate_v12(&w) != 0) { FAIL("first migration"); sqlite3_close(db); return; }
+        snprintf(sql, sizeof(sql), "ALTER TABLE %s DROP COLUMN %s", table, column);
+        if (exec_ok(db, sql) != 0) { FAIL("drop column"); sqlite3_close(db); return; }
+    }
+    if (exec_ok(db, "PRAGMA query_only = ON") != 0) { FAIL("query_only"); sqlite3_close(db); return; }
+
+    int rc = nodus_witness_db_migrate_v12(&w);
+    if (rc == 0) { FAIL("a failing step returned success"); sqlite3_close(db); return; }
+
+    if (exec_ok(db, "PRAGMA query_only = OFF") != 0) { FAIL("query_only off"); sqlite3_close(db); return; }
+    if (nodus_witness_db_migrate_v12(&w) != 0) { FAIL("migration after the fault is gone"); sqlite3_close(db); return; }
+    const char *t = table ? table : "committed_transactions";
+    const char *c = table ? column : "tx_index";
+    if (column_exists(db, t, c) != 1) { FAIL("column not restored"); sqlite3_close(db); return; }
+    PASS();
+    sqlite3_close(db);
+}
+
+static void test_migration_failure_returns(void) {
+    migration_failure_case("v12 tx_index ALTER fails: error return, no abort",
+                           NULL, NULL);
+    migration_failure_case("v13 client_pubkey ALTER fails: error return",
+                           "committed_transactions", "client_pubkey");
+    migration_failure_case("v14 chain_def_blob ALTER fails: error return",
+                           "blocks", "chain_def_blob");
+    migration_failure_case("v15 unlock_block ALTER fails: error return",
+                           "utxo_set", "unlock_block");
+}
+
 int main(void) {
     printf("\nNodus Witness Schema v12 Migration Tests\n");
     printf("==========================================\n\n");
 
     test_migration_adds_tx_index_and_composite_index();
     test_migration_idempotent();
+    test_migration_failure_returns();
 
     printf("\n==========================================\n");
     printf("Results: %d passed, %d failed\n\n", passed, failed);
