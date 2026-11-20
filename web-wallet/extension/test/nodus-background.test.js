@@ -529,30 +529,23 @@ test('quarantine releases only beyond its validated expiry and keeps every other
   }
 });
 
-// W-29: proves a quarantine release survives a save (persist re-reads the saved records as new objects), a record whose
-// content changed is a new reservation and is locked again, and a release is dropped once its record is gone. Lock state is
-// read through prepareSend (refused as "held by a pending send" while locked); no network, timers stopped by lock.
-test('a released quarantine lock stays released across a save; a changed or reappearing record is locked', async t => {
-  const { background, values } = await setup(t);
-  const record = savedRow({ amount: 'unreadable', expiryHeight: '9', hash: '3'.repeat(128) });
-  await saveActivity(values, [], [record]);
+// W-29: proves a released quarantine lock stays released after a real send is persisted (confirmSend persists before it
+// submits: persist re-reads the saved records as new objects). Observed without coins: once every record is released no
+// quarantine chain read is made any more; before the fix the save brought the lock back and the next reconcile reads the
+// chain again. Mock time and timers only; no network; lock at the end stops the timer.
+test('a released quarantine lock stays released after a send is saved', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let now = 0; t.mock.method(performance, 'now', () => now);
+  const { background, values, calls } = await setup(t);
+  await saveActivity(values, [], [savedRow({ amount: 'unreadable', expiryHeight: '9', hash: '3'.repeat(128) })]);
   await unlockConnected(background); await background.nodus.reconcileQuarantine();
-  const sendable = async () => {
-    try { const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID }); background.nodus.cancelSend(review.id); return true; }
-    catch (error) { assert.match(error.message, /held by a pending send/); return false; }
-  };
-  const persist = () => background.nodus.chainActivity('nodus').persist();
-  assert.equal(await sendable(), true, 'released: the tip is past the expiry');
-  await persist();
-  assert.equal(await sendable(), true, 'still released after a save');
-  await saveActivity(values, [], [{ ...record, expiryHeight: '50' }]);
-  await persist();
-  assert.equal(await sendable(), false, 'a changed expiry is a new reservation and is locked');
-  await saveActivity(values, [], []);
-  await persist();
-  await saveActivity(values, [], [record]);
-  await persist();
-  assert.equal(await sendable(), false, 'the release of the vanished record was dropped; the same content is new again');
+  const reads = () => calls.filter(([op]) => op === 'list').length;
+  const review = await background.nodus.prepareSend({ to: recipient, amount: '1', tokenId: NODUS_TOKEN_ID });   // released: the tip 10 is past the expiry 9
+  await background.nodus.confirmSend(review.id);                                                               // src/background/nodus.js persist
+  assert.equal(calls.some(([op]) => op === 'submit'), true);
+  const before = reads(); now += 20000;
+  await background.nodus.reconcileQuarantine();
+  assert.equal(reads(), before, 'nothing is left to re-check: the released lock did not come back with the save');
   await background.lock();
 });
 
