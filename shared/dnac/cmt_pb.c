@@ -1436,6 +1436,29 @@ void cmt_pb_header_init(cmt_pb_header_t *m)
     m->time = CMT_TIME_ZERO;
 }
 
+/* Every length the header writer hands to wf_bytes is a `size_t` the CALLER
+ * set next to a fixed array; the writer copies that many bytes out of the
+ * array. A length above the array reads past it, so the ten hash lengths of
+ * the header (the eight own fields and the two of last_block_id) are bounded
+ * here, before anything is written. cmt_pb_block_id_marshal makes the same
+ * test for its own two fields (:566-569). Decode cannot produce such a
+ * struct (r_copy_fixed bounds every copy); a valid header is at most
+ * CMT_PB_HASH_MAX in every field, so the bytes written for valid input do
+ * not change. */
+static int header_hash_lens_ok(const cmt_pb_header_t *m)
+{
+    return m->last_commit_hash_len      <= CMT_PB_HASH_MAX &&
+           m->data_hash_len             <= CMT_PB_HASH_MAX &&
+           m->validators_hash_len       <= CMT_PB_HASH_MAX &&
+           m->next_validators_hash_len  <= CMT_PB_HASH_MAX &&
+           m->consensus_hash_len        <= CMT_PB_HASH_MAX &&
+           m->app_hash_len              <= CMT_PB_HASH_MAX &&
+           m->last_results_hash_len     <= CMT_PB_HASH_MAX &&
+           m->evidence_hash_len         <= CMT_PB_HASH_MAX &&
+           m->last_block_id.hash_len    <= CMT_PB_HASH_MAX &&
+           m->last_block_id.part_set_header.hash_len <= CMT_PB_HASH_MAX;
+}
+
 /* types.pb.go:1426-1528 — fields 1 (version), 4 (time) and 5
  * (last_block_id) are (nullable) = false and are ALWAYS emitted. */
 static int header_wr(pb_w_t *w, const cmt_pb_header_t *m)
@@ -1480,7 +1503,8 @@ int cmt_pb_header_marshal(const cmt_pb_header_t *m, uint8_t *out, size_t cap,
         return CMT_FAULT;
     }
     if (m->chain_id_len > CMT_PB_CHAINID_MAX ||
-        m->proposer_address_len > CMT_PB_ADDRESS_MAX) {
+        m->proposer_address_len > CMT_PB_ADDRESS_MAX ||
+        !header_hash_lens_ok(m)) {
         return CMT_REJECT;
     }
     w_init(&w, out, cap);
@@ -5833,7 +5857,8 @@ int cmt_pb_block_marshal(const cmt_pb_block_t *m, uint8_t *out, size_t cap,
      * composite entries should gain their leaves' bounds is an R1-scope
      * question this wave's whitelist does not open. */
     if (m->header.chain_id_len > CMT_PB_CHAINID_MAX ||
-        m->header.proposer_address_len > CMT_PB_ADDRESS_MAX) {
+        m->header.proposer_address_len > CMT_PB_ADDRESS_MAX ||
+        !header_hash_lens_ok(&m->header)) {
         return CMT_REJECT;
     }
     w_init(&w, out, cap);

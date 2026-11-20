@@ -47,26 +47,9 @@ static bool go_bytes_equal(const uint8_t *a, size_t a_len,
  * cmt_pb_store.c:22-56: marshal into the free region [0, w->i), move the
  * result up to [w->i - n, w->i) and frame it. The bytes are those of the
  * generated in-place backward write. */
-#define W_EMBED_DEFINE(name, type, fn)                                      \
-    static void name(pb_w_t *w, uint32_t field, const type *m)              \
-    {                                                                       \
-        size_t n = 0;                                                       \
-        if (w->err != CMT_OK) {                                             \
-            return;                                                         \
-        }                                                                   \
-        if (fn(m, w->buf, w->i, &n) != CMT_OK) {                            \
-            w->err = CMT_REJECT;                                            \
-            return;                                                         \
-        }                                                                   \
-        if (n != 0) {                                                       \
-            memmove(w->buf + w->i - n, w->buf, n);                          \
-        }                                                                   \
-        w->i -= n;                                                          \
-        w_uvarint(w, (uint64_t)n);                                          \
-        w_tag(w, field, 2);                                                 \
-    }
+/* W_EMBED_DEFINE itself lives in cmt_pb_wire.h. */
 
-W_EMBED_DEFINE(w_embed_header,        cmt_pb_header_t,        cmt_pb_header_marshal)
+W_EMBED_DEFINE(w_embed_header,       cmt_pb_header_t,        cmt_pb_header_marshal)
 W_EMBED_DEFINE(w_embed_commit,        cmt_pb_commit_t,        cmt_pb_commit_marshal)
 W_EMBED_DEFINE(w_embed_validator_set, cmt_pb_validator_set_t, cmt_pb_validator_set_marshal)
 
