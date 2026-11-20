@@ -2191,7 +2191,12 @@ static int cmd_chain_config_propose(const char *server_ip, uint16_t server_port,
         return 1;
     }
     if (!has_nonce) {
-        nodus_random((uint8_t *)&proposal_nonce, sizeof(proposal_nonce));
+        /* A failed draw leaves the nonce unset: stop before building or
+         * signing anything rather than propose with an indeterminate one. */
+        if (nodus_random((uint8_t *)&proposal_nonce, sizeof(proposal_nonce)) != 0) {
+            fprintf(stderr, "random source failed - nothing proposed\n");
+            return 1;
+        }
         /* 63 bits: the chain refuses a nonce above INT64_MAX (decision
          * 2026-09-30-chain-config-int64-bounds.md), so a full 64-bit draw
          * would fail the step-9 pre-check below half of the time. */
