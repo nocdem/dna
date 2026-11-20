@@ -24,9 +24,11 @@
  *
  * ── WHAT EACH CASE PROVES ──────────────────────────────────────────────
  *  1. t_genesis_wait_and_peer_admission
- *     (a) BEFORE the document's genesis_time_ms, `cmt_live` stays false
- *         across real ticks — witness_cmt_tick's genesis-time gate
- *         (nodus_witness.c, node.go:518-524) starts no reactor;
+ *     (a) BEFORE the document's genesis_time_ms (on the node's gate clock,
+ *         held one millisecond before it by the test — HOW IT CAN LIE 3),
+ *         `cmt_live` stays false across real ticks — witness_cmt_tick's
+ *         genesis-time gate (nodus_witness.c, node.go:518-524) starts no
+ *         reactor;
  *     (b) a REAL p2p peer (key 1) that connected BEFORE that point is in
  *         the witness's switch but NOT in the consensus reactor's peer
  *         set — the host admits peers only once both reactors run
@@ -74,10 +76,18 @@
  *  2. The witness port is found free, closed, then bound by
  *     nodus_witness_init: another process taking it in between fails the
  *     init (a visible CHECK failure, never a pass).
- *  3. Case 1 needs the peer connected before genesis_time: GENESIS_LEAD_MS
- *     (8 s) must cover the chain derivation, the init and one loopback
- *     handshake. If it does not, the "connected before genesis" CHECK
- *     fails — the case never passes with (a)/(b) unobserved.
+ *  3. Case 1 holds the node's GATE clock (n->now, the one the genesis-time
+ *     check reads) one millisecond before genesis_time while it waits for
+ *     the peer, so the wait is an event and no longer depends on the
+ *     loopback handshake finishing inside GENESIS_LEAD_MS (8 s; a loaded
+ *     machine used to make the case red — never a false pass). The
+ *     consequence: (a)/(b) are observed against the TEST's gate clock, so
+ *     they do not by themselves prove the node reads the REAL clock; that
+ *     is what the (c) wait for the real genesis instant proves (the
+ *     production clock is restored before it), and a negative control keeps
+ *     the held gate clock on past the real genesis instant when the run is
+ *     fast enough to reach it. Why the handshake can exceed 8 s under load
+ *     was never measured — it is no longer load-bearing for this case.
  *  4. Case 2 needs the activation gate armed at open (the ingress
  *     precondition CHECK): a closed gate would refuse both claims alike.
  *
@@ -360,6 +370,36 @@ static int conr_in_set_count(const cmt_conr_t *c) {
 
 /* ══ CASE 1 ════════════════════════════════════════════════════════════ */
 
+/* The genesis gate reads the node's own clock (`n->now`, nodus_witness.c
+ * genesis-time check). While `hold` is set this test clock reports the
+ * smaller of the real time and one millisecond before the document's genesis
+ * time, so the gate is "before genesis" on every tick regardless of how long
+ * the loopback handshake took — the wait for the peer is an event, not a
+ * race against the real wall clock. After `hold` is cleared (or the original
+ * pointers restored) it is the real clock. */
+typedef struct {
+    cmt_now_fn real;
+    void      *real_ctx;
+    int64_t    genesis_ns;
+    bool       hold;
+} gate_clock_t;
+
+static int gate_now(void *ctx, cmt_time_t *out) {
+    gate_clock_t *g = (gate_clock_t *)ctx;
+    cmt_time_t t;
+    int rc = g->real(g->real_ctx, &t);
+    if (rc != CMT_OK) return rc;
+    if (g->hold && cmt_time_unix_nano(t) >= g->genesis_ns - 1000000) {
+        int64_t held = g->genesis_ns - 1000000;       /* 1 ms before */
+        cmt_time_t raw;
+        raw.seconds = held / 1000000000;
+        raw.nanos   = (int32_t)(held % 1000000000);
+        return cmt_time_canonical(raw, out);
+    }
+    *out = t;
+    return CMT_OK;
+}
+
 static int t_genesis_wait_and_peer_admission(void) {
     static live_t L;   /* static: g_live_open outlives this frame */
     uint64_t gt;
@@ -416,29 +456,57 @@ static int t_genesis_wait_and_peer_admission(void) {
                                                 &na) == CMT_P2P_ERR_NONE,
           "the peer dials the witness");
 
-    /* (a)(b) before genesis_time */
-    for (i = 0; i < WAIT_TICKS_MAX && now_ms() < gt; i++) {
+    /* (a)(b) before genesis_time — on the node's GATE clock, which this
+     * test holds one millisecond before genesis_time (gate_now): the loop
+     * ends on the EVENT "the peer is connected", not on the real clock, so
+     * a slow handshake (a loaded machine) can no longer turn it red. The
+     * production gate itself is unchanged and is the one under test: it
+     * reads n->now on every tick. */
+    gate_clock_t gate;
+    memset(&gate, 0, sizeof(gate));
+    gate.real       = n->now;
+    gate.real_ctx   = n->now_ctx;
+    gate.genesis_ns = cmt_time_unix_nano(n->doc.genesis_time);
+    gate.hold       = true;
+    n->now     = gate_now;
+    n->now_ctx = &gate;
+
+    for (i = 0; i < WAIT_TICKS_MAX && !connected; i++) {
         CHECK(L.w->running, "the node has not halted while waiting");
         nodus_witness_tick(L.w);
         nodus_witness_p2p_poll(P1, 1);
-        /* The loop head read the clock BEFORE the tick; the node reads its
-         * own inside it, after the p2p wait (nodus_witness.c genesis-time
-         * check). Under load genesis_time can pass in between and the node
-         * goes live correctly — the assertion must use a clock read AFTER
-         * the tick: live is wrong only if even that read is before gt
-         * (ORCHESTRATOR repair 2026-09-26, found under ctest -j4). */
-        CHECK(!L.w->cmt_live || now_ms() >= gt,
-              "(a) cmt_live stays false before genesis_time");
-        if (L.w->cmt_live) {
-            break;                  /* genesis passed inside this tick */
-        }
+        CHECK(!L.w->cmt_live,
+              "(a) cmt_live stays false while the gate clock is before "
+              "genesis_time");
         CHECK(conr_in_set_count(conr) == 0,
               "(b) no peer enters the consensus reactor before it runs");
         if (nodus_witness_p2p_peer_count(L.w->p2p) == 1) connected = true;
         usleep(TICK_SLEEP_US);
     }
-    CHECK(connected, "(b) the peer was connected at the switch BEFORE "
-          "genesis_time (HOW IT CAN LIE 3)");
+    CHECK(connected, "(b) the peer was connected at the switch while the "
+          "gate clock was before genesis_time");
+
+    /* Negative control: keep the gate clock held until the REAL clock has
+     * passed genesis_time as well. The node must still not go live — which
+     * shows the gate really reads n->now (an unloaded run reaches here
+     * before the real genesis instant; a loaded one may already be past it,
+     * where this loop is a no-op and the control is not exercised). */
+    for (i = 0; i < WAIT_TICKS_MAX && now_ms() < gt + 100; i++) {
+        CHECK(L.w->running, "the node has not halted while waiting");
+        nodus_witness_tick(L.w);
+        nodus_witness_p2p_poll(P1, 1);
+        CHECK(!L.w->cmt_live,
+              "(a) the held gate clock keeps the lane down past the real "
+              "genesis instant");
+        usleep(TICK_SLEEP_US);
+    }
+
+    /* The production clock again, BEFORE the next tick: the clock pointers
+     * the lane copies when it starts are then the production ones, so the
+     * test clock never reaches a record stamp. */
+    n->now     = gate.real;
+    n->now_ctx = gate.real_ctx;
+    gate.hold  = false;
 
     /* (c) the tick crossing genesis_time */
     for (i = 0; i < WAIT_TICKS_MAX && !L.w->cmt_live; i++) {
