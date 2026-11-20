@@ -380,10 +380,11 @@ int nodus_identity_save(const nodus_identity_t *id, const char *path) {
 }
 
 int nodus_identity_load(const char *path, nodus_identity_t *id_out) {
-    if (!path || !id_out)
+    if (!id_out)
         return -1;
-
     memset(id_out, 0, sizeof(*id_out));
+    if (!path)
+        return -1;
 
     char filepath[1024];
     FILE *f;
@@ -391,31 +392,31 @@ int nodus_identity_load(const char *path, nodus_identity_t *id_out) {
     /* Read public key */
     snprintf(filepath, sizeof(filepath), "%s/nodus.pk", path);
     f = fopen(filepath, "rb");
-    if (!f) return -1;
+    if (!f) goto fail;
     if (fread(id_out->pk.bytes, 1, NODUS_PK_BYTES, f) != NODUS_PK_BYTES) {
         fclose(f);
-        return -1;
+        goto fail;
     }
     fclose(f);
 
     /* Read secret key */
     snprintf(filepath, sizeof(filepath), "%s/nodus.sk", path);
     f = fopen(filepath, "rb");
-    if (!f) return -1;
+    if (!f) goto fail;
     if (fread(id_out->sk.bytes, 1, NODUS_SK_BYTES, f) != NODUS_SK_BYTES) {
         fclose(f);
-        return -1;
+        goto fail;
     }
     fclose(f);
 
     /* Derive node_id from public key */
     int rc = nodus_fingerprint(&id_out->pk, &id_out->node_id);
     if (rc != 0)
-        return -1;
+        goto fail;
 
     rc = nodus_fingerprint_hex(&id_out->pk, id_out->fingerprint);
     if (rc != 0)
-        return -1;
+        goto fail;
 
     /* Load Kyber keypair, or auto-generate if missing (migration from pre-Kyber identity) */
     snprintf(filepath, sizeof(filepath), "%s/nodus.kyber_pk", path);
@@ -539,6 +540,13 @@ int nodus_identity_load(const char *path, nodus_identity_t *id_out) {
     }
 
     return 0;
+
+fail:
+    /* Every failure after the output was cleared leaves nothing behind: a
+     * short read of nodus.sk would otherwise keep the bytes read so far in
+     * *id_out (same shape as nodus_identity_load_readonly). */
+    nodus_identity_clear(id_out);
+    return -1;
 }
 
 /* Read exactly `len` bytes of {dir}/{name} into `out`. Never creates,
