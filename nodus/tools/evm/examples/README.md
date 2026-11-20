@@ -64,8 +64,9 @@ nodus-cli -s <server> evm logs --from-height <H> --to-height <H> --address <toke
 
 `evm logs --pretty` prints a readable layout (one block per log: block, contract,
 transaction, topics, the data in 32-byte words); the default stays one line per log
-for scripts. The connection and debug lines (`Using random identity: …`, the
-`[NODUS_CLIENT] …` and `TCP_CONN: …` lines) go to stderr, so `2>/dev/null` hides
-them and leaves only the result.
+for scripts. The connection and debug lines (`Using random identity: …` and
+the `[NODUS_CLIENT] …` lines) go to stderr, so `2>/dev/null` hides them and
+leaves only the result. (The transport's `TCP_CONN: …` lines are no longer
+printed: they are debug-level log lines now.)
 
 Amounts are base units (`decimals` 18: 1 token = 10^18).
