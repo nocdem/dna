@@ -4076,6 +4076,78 @@ static void e47_one_sided_adds(void) {
     env_close(&b);
 }
 
+/* ── E48 the expiry is not decided while a matching payment is stored and unlinked ── */
+
+/* Proves (BUGS.md AMM-01 continuation; amm_nodus_watch.h / amm_eth_watch.h: the window predicates
+ * assume the caller matched the stored payments first): with round_rows_max = 1 (one add row per
+ * walk per round) and a decoy add ahead of the add under test, once both payment windows are
+ * observed an add whose counterpart payment is stored and not yet linked
+ *   v0 USDT linked, the NODUS row stored later and unlinked;
+ *   v1 NODUS linked, the USDT record stored later and unlinked;
+ *   v2 nothing linked, a NODUS row stored (the zero-side expiry)
+ * ends with that payment LINKED to the add (so it is never orphaned), never expired without it;
+ * v0 and v1 end committed or both-linked, never expired and never with a held record; v2 ends with
+ * nodus_height set (the add is then one-sided and held with its row). The decoy expires empty.
+ * FLAGS: none. LEAVES BEHIND: the temporary journal directory (removed by env_close).
+ * HOW IT COULD FALSELY PASS: the link walks and the expiry walk examine the same row in the same
+ * round in this fixture (their cursors move together), so the decision-time check is not the only
+ * thing that links the payment here; it is the check that holds when a walk has not linked it
+ * (an add signed while the walks run, the Ethereum records not readable in a step). The commit
+ * needs the receipts scripted as in E19. */
+static void e48_case(int v) {
+    env_t e;
+    env_open(&e);
+    e.cfg.round_rows_max = 1;
+    env_restart(&e);
+    {
+        amm_pool_t p0;
+        evm_u256_from_u64(&p0.depth_n, 3000000000000000ULL);
+        evm_u256_from_u64(&p0.depth_u, 3000000000ULL);
+        evm_u256_from_u64(&p0.units, 3000000000000000ULL);
+        amm_journal_pool_put(e.j, &p0);
+    }
+    amm_add_answer_t ad, ax;
+    W.rq[0] = 0x48000001; W.rq[1] = 0x48000002; W.rq_n = 2; W.rq_i = 0;
+    CHECK(amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &ad) == AMM_AQ_OK &&
+          amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &ax) == AMM_AQ_OK,
+          "two add questions: the decoy and the add under test");
+    amm_req_liq_add_t ld = add_req(&ad, 'd', 'd', 'd'), lx = add_req(&ax, 'b', 'c', 'b');
+    CHECK(amm_engine_accept_add(e.eng, &ld, NULL) == AMM_ACC_RECEIVED &&
+          amm_engine_accept_add(e.eng, &lx, NULL) == AMM_ACC_RECEIVED, "both signed, the decoy first");
+    amm_engine_step_t o;
+    W.eth_tip = 1400; W.nodus_tip = 1010;
+    W.rcpt_ok = 1; W.rcpt_block = 1001; W.rcpt_hash = 0x95;
+    uint8_t tx[32];
+    memset(tx, 0x95, 32);
+    if (v == 0) { e47_usdt_only(&e, &lx, 0x95, 1001, 1); (void)step(&e, &o); e47_nodus_only(&e, &lx, 0xbb, 1001); }
+    if (v == 1) { e47_nodus_only(&e, &lx, 0xbb, 1001); (void)step(&e, &o); e47_usdt_only(&e, &lx, 0x95, 1001, 1); }
+    if (v == 2) { e47_nodus_only(&e, &lx, 0xbb, 1001); }
+    e47_observe_windows(&e);
+    for (int i = 0; i < 8; i++) (void)step(&e, &o);
+    amm_add_t rowd, rowx;
+    amm_rec_t rg;
+    CHECK(amm_journal_add_by_botreq(e.j, ad.request_number, &rowd) == 0 && !strcmp(rowd.state, "expired") &&
+          !*rowd.eth_tx && rowd.nodus_height == 0, "the decoy (no payment) expired empty");
+    CHECK(amm_journal_add_by_botreq(e.j, ax.request_number, &rowx) == 0 && rowx.nodus_height == 1001,
+          "the stored NODUS payment is linked to the add");
+    if (v == 2) {
+        CHECK(!strcmp(rowx.state, "expired") && !*rowx.eth_tx,
+              "v2: the add is one-sided (held with its row), not expired without the payment");
+    } else {
+        CHECK(*rowx.eth_tx && strcmp(rowx.state, "expired") != 0 &&
+              amm_journal_rec_get(e.j, tx, 0, &rg) == 0 && strcmp(rg.state, "held") != 0,
+              "the stored USDT payment is linked too: the add is not expired, nothing held");
+    }
+    env_close(&e);
+}
+
+static void e48_unlinked_counterpart(void) {
+    printf("E48 the expiry waits for a stored, unlinked payment (round_rows_max 1)\n");
+    e48_case(0);
+    e48_case(1);
+    e48_case(2);
+}
+
 int main(void) {
     printf("test_amm_engine\n");
     e1_quote();
@@ -4124,6 +4196,7 @@ int main(void) {
     e44_immediate_step_error();
     e45_question_during_round();
     e47_one_sided_adds();
+    e48_unlinked_counterpart();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

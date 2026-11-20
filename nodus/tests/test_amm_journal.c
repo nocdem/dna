@@ -3738,6 +3738,23 @@ static void j35_add_expire_onesided(void) {
           "  an add that is only approved: refused");
     CHECK(amm_journal_add_expire_onesided(g_j, 999999) == AMM_J_ILLEGAL, "  an unknown add: refused");
 
+    /* (f) amm_journal_rec_list_unconsumed_from: the payments that can still be linked to an add */
+    {
+        amm_rec_t lr[4];
+        int ln = -1;
+        uint8_t from[20], val[32], other[32];
+        memset(from, 0x0f, 20); memset(val, 0, 32); val[31] = 5; memset(other, 0, 32); other[31] = 6;
+        amm_rec_t r9 = mkrec(0x39, 0, 100, "seen");
+        CHECK(amm_journal_rec_put(g_j, &r9) == 0, "setup: a free seen record");
+        CHECK(amm_journal_rec_list_unconsumed_from(g_j, from, val, NULL, lr, 4, &ln) == 0 && ln == 1 &&
+              !memcmp(lr[0].tx, r9.tx, 32),
+              "(f) the free record is listed; the linked records (consumed) and the held ones are not");
+        CHECK(amm_journal_rec_list_unconsumed_from(g_j, from, other, NULL, lr, 4, &ln) == 0 && ln == 0,
+              "  another value: none");
+        CHECK(amm_journal_rec_list_unconsumed_from(g_j, from, val, &r9, lr, 4, &ln) == 0 && ln == 0,
+              "  paged after the last record: none");
+    }
+
     /* (e) the purge and a reopen */
     int ps = 0, pa = 0;
     CHECK(amm_journal_purge_expired_questions(g_j, 100, &ps, &pa) == 0 && pa == 0 &&

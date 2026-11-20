@@ -632,6 +632,13 @@ int amm_journal_rec_other_live(amm_journal_t *j, const uint8_t tx[32],
 int amm_journal_rec_list_unconsumed(amm_journal_t *j, const char *state,
                                     const amm_rec_t *after,
                                     amm_rec_t *out, int cap, int *n);
+/** The records of amm_journal_rec_list_unconsumed (state seen or deep, not
+ *  consumed) that are from `from` with exactly `value`: the payments that could
+ *  still be linked to a signed add of that sender and amount. Same order and
+ *  paging as that list (`after` NULL: from the start). 0 / -1. */
+int amm_journal_rec_list_unconsumed_from(amm_journal_t *j, const uint8_t from[20],
+                                         const uint8_t value[32], const amm_rec_t *after,
+                                         amm_rec_t *out, int cap, int *n);
 /** A deep record whose payment no longer matches the approval that carries it
  *  (a reorganisation moved it outside the approval's validity): ONE
  *  transaction returns the carrying paid_waiting_depth swap to approved (link

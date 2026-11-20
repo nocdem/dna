@@ -1790,6 +1790,46 @@ int amm_journal_rec_list_unconsumed(amm_journal_t *j, const char *state,
     return ret;
 }
 
+int amm_journal_rec_list_unconsumed_from(amm_journal_t *j, const uint8_t from[20],
+                                         const uint8_t value[32], const amm_rec_t *after,
+                                         amm_rec_t *out, int cap, int *n) {
+    if (!j || !from || !value || !out || !n || cap <= 0) return -1;
+    const int64_t ab = after ? (int64_t)after->block_number : -1;
+    static const uint8_t ZERO_TX[32];
+    const uint8_t *at = after ? after->tx : ZERO_TX;
+    const int64_t al = after ? (int64_t)after->log_index : -1;
+    lock(j);
+    sqlite3_stmt *st;
+    int ret = -1;
+    *n = 0;
+    /* the same consumption rule as amm_journal_rec_list_unconsumed */
+    if (prep(j, "SELECT " REC_COLS " FROM eth_records r WHERE r.state IN ('seen','deep') AND "
+                "r.from_addr=?1 AND r.value=?2 AND ("
+                "NOT EXISTS (SELECT 1 FROM swaps s WHERE s.incoming_id="
+                "'eth:' || lower(hex(r.tx))) OR "
+                "EXISTS (SELECT 1 FROM swaps s WHERE s.incoming_id="
+                "'eth:' || lower(hex(r.tx)) AND s.state='paid_waiting_depth')) "
+                "AND NOT EXISTS (SELECT 1 FROM liq_adds a WHERE a.eth_tx="
+                "'eth:' || lower(hex(r.tx))) "
+                "AND (r.block_number > ?3 OR (r.block_number = ?3 AND "
+                "(r.tx > ?4 OR (r.tx = ?4 AND r.log_index > ?5)))) "
+                "ORDER BY r.block_number, r.tx, r.log_index LIMIT ?6",
+             (arg_t[]){AB(from, 20), AB(value, 32), AI(ab), AB(at, 32), AI(al), AI(cap)}, 6,
+             &st) == 0) {
+        int cnt = 0, rc;
+        ret = 0;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            if (cnt >= cap || load_rec_row(st, &out[cnt]) != 0) { ret = -1; break; }
+            cnt++;
+        }
+        if (ret == 0 && rc != SQLITE_DONE) ret = -1;
+        if (ret == 0) *n = cnt;
+        sqlite3_finalize(st);
+    }
+    unlock(j);
+    return ret;
+}
+
 int amm_journal_payment_unmatched(amm_journal_t *j, const uint8_t tx[32],
                                   uint32_t log_index) {
     if (!j || !tx) return -1;
