@@ -75,6 +75,7 @@ static int  resubscribe_all(nodus_client_t *client);
 static int  try_reconnect(nodus_client_t *client);
 static int  find_response_map(const uint8_t *raw, size_t raw_len,
                               cbor_decoder_t *dec, size_t *map_count);
+static int  envelope_strict(const uint8_t *raw, size_t raw_len);
 
 /* ── Cross-platform millisecond sleep ──────────────────────────── */
 
@@ -429,6 +430,17 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
      * would zero the response data before the caller reads it. */
     nodus_tier2_msg_t tmp;
     memset(&tmp, 0, sizeof(tmp));
+    /* A frame from the node is read only when its outer map is well formed
+     * (text keys, "r" once, every declared pair present, nothing after it):
+     * the Tier-2 decoder's own outer walk accepts a container key (its
+     * children are read as pairs), a short map and trailing bytes, and this
+     * frame's decoded fields are what the waiting caller reads (C-09, C-10).
+     * Applied to the client's response path only: nodus_t2_decode also
+     * parses the node's REQUESTS, whose acceptance is not changed here. */
+    if (envelope_strict(payload, len) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "frame with a malformed envelope dropped (%zu bytes)", len);
+        return;
+    }
     if (nodus_t2_decode(payload, len, &tmp) != 0) {
         /* nodus_t2_decode() already freed a refused frame; this keeps the
          * server's "free after every decode" pattern and is a no-op. */
@@ -7873,27 +7885,36 @@ static int evm_reply_map(const uint8_t *raw, size_t raw_len, uint8_t **out,
                          size_t *out_len) {
     cbor_decoder_t d;
     cbor_item_t top, k;
+    size_t r_start = 0, r_len = 0;
+    bool have_r = false;
     cbor_decoder_init(&d, raw, raw_len);
     if (v3d_next(&d, &top) != 0 || top.type != CBOR_ITEM_MAP) return -1;
+    /* The WHOLE envelope is walked (C-09, C-10), not just up to "r": every
+     * key a text string (a container key would otherwise be read as a header
+     * and its children taken for pairs), "r" once and a map, every value
+     * skipped whole, and nothing after the outer map. Bounded by bytes only
+     * (the v3d helpers), as the reply decoders of this RPC are. */
     for (size_t i = 0; i < top.count; i++) {
-        if (v3d_next(&d, &k) != 0) return -1;
-        if (k.type == CBOR_ITEM_TSTR && k.tstr.len == 1 &&
-            k.tstr.ptr[0] == 'r') {
-            const size_t start = d.pos;
-            if (start >= raw_len || (raw[start] >> 5) != 5)  /* a map */
+        if (v3d_next(&d, &k) != 0 || k.type != CBOR_ITEM_TSTR) return -1;
+        if (k.tstr.len == 1 && k.tstr.ptr[0] == 'r') {
+            if (have_r) return -1;                       /* repeated "r" */
+            r_start = d.pos;
+            if (r_start >= raw_len || (raw[r_start] >> 5) != 5)  /* a map */
                 return -1;
             if (v3d_skip(&d, 0) != 0 || d.error) return -1;
-            const size_t n = d.pos - start;
-            uint8_t *c = malloc(n ? n : 1);
-            if (!c) return -1;
-            memcpy(c, raw + start, n);
-            *out = c;
-            *out_len = n;
-            return 0;
+            r_len = d.pos - r_start;
+            have_r = true;
+        } else if (v3d_skip(&d, 0) != 0) {
+            return -1;
         }
-        if (v3d_skip(&d, 0) != 0) return -1;
     }
-    return -1;
+    if (!have_r || d.error || d.pos != raw_len) return -1;
+    uint8_t *c = malloc(r_len ? r_len : 1);
+    if (!c) return -1;
+    memcpy(c, raw + r_start, r_len);
+    *out = c;
+    *out_len = r_len;
+    return 0;
 }
 
 int nodus_client_dnac_query_raw(nodus_client_t *client, const char *method,
@@ -8724,6 +8745,10 @@ static void ch_conn_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
 
     nodus_tier2_msg_t tmp;
     memset(&tmp, 0, sizeof(tmp));
+    if (envelope_strict(payload, len) != 0) {      /* as client_on_frame */
+        QGP_LOG_WARN(LOG_TAG_CH, "frame with a malformed envelope dropped (%zu bytes)", len);
+        return;
+    }
     if (nodus_t2_decode(payload, len, &tmp) != 0) {
         nodus_t2_msg_free(&tmp);   /* no-op: the decoder freed it already */
         return;
@@ -9801,5 +9826,16 @@ nodus_pending_t *nodus_client_test_alloc_pending(nodus_client_t *client,
 nodus_ch_pending_t *nodus_client_test_ch_alloc_pending(nodus_ch_conn_t *ch,
                                                        uint32_t txn) {
     return ch_conn_alloc_pending(ch, txn);
+}
+#endif /* NODUS_CLIENT_TEST_SEAM */
+
+#ifdef NODUS_CLIENT_TEST_SEAM
+/* tests/test_client_dup_array.c — the EVM reply envelope walk over raw bytes. */
+int nodus_client_test_evm_reply_map(const uint8_t *raw, size_t raw_len,
+                                    uint8_t **out, size_t *out_len);
+
+int nodus_client_test_evm_reply_map(const uint8_t *raw, size_t raw_len,
+                                    uint8_t **out, size_t *out_len) {
+    return evm_reply_map(raw, raw_len, out, out_len);
 }
 #endif /* NODUS_CLIENT_TEST_SEAM */

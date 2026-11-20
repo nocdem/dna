@@ -1809,7 +1809,12 @@ static int t2_decode_body(const uint8_t *buf, size_t len, nodus_tier2_msg_t *msg
 
     for (size_t i = 0; i < map_count; i++) {
         cbor_item_t key = cbor_decode_next(&dec);
-        if (key.type != CBOR_ITEM_TSTR) { cbor_decode_skip(&dec); continue; }
+        /* A declared pair that is not there (END) is a short map, and a
+         * key that is not a text string is not an envelope key: no honest
+         * encoder emits either. The old handling skipped ONE item after such
+         * a key — for a container key its children were then read as further
+         * keys, so a nested "r" could stand in for the real one (C-09, C-10). */
+        if (key.type != CBOR_ITEM_TSTR) return -1;
         T2_KEY_ONCE(top_ks, key);
 
         /* "t" → transaction ID */

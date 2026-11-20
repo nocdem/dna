@@ -54,6 +54,7 @@
 #include "nodus/nodus.h"
 #include "transport/nodus_tcp.h"
 #include "protocol/nodus_tier2.h"
+#include "protocol/nodus_cbor.h"
 #include "crypto/nodus_identity.h"
 #include "nodus_log_shim.h"
 
@@ -297,6 +298,79 @@ int main(void) {
         free(dc);
         free(id);
         printf("[ok] T8 the keepalive pong is not written as a late reply\n");
+    }
+
+    /* ── T9 (C-09, C-10): a frame with a malformed outer envelope never
+     * answers a request. Proves: through the real client_on_frame, a frame
+     * with a trailing byte, a container key whose child "t" would stand in
+     * for the real one, or fewer pairs than declared leaves the pending slot
+     * NOT answered; the honest frame then answers it. Today the three
+     * malformed frames decode and answer the slot. Falsely passes only if a
+     * frame is dropped for another reason (the honest control rules that out
+     * for the same txn). */
+    {
+        nodus_client_t *dc = calloc(1, sizeof(*dc));
+        nodus_identity_t *id = calloc(1, sizeof(*id));
+        nodus_client_config_t cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.server_count = 1;
+        snprintf(cfg.servers[0].ip, sizeof(cfg.servers[0].ip), "127.0.0.1");
+        cfg.servers[0].port = 1;
+        static const nodus_key_t k_unused_pin9 = {{0x01}};
+        cfg.pinned_server_fps = &k_unused_pin9;
+        cfg.pinned_server_fp_count = 1;
+        cfg.has_chain_id = true;
+        CHECK(dc && id);
+        CHECK_EQ(nodus_client_init(dc, &cfg, id), 0);
+        nodus_pending_t *slot = &dc->pending[0];
+        slot->txn = 55;
+        slot->response = calloc(1, sizeof(nodus_tier2_msg_t));
+        CHECK(slot->response != NULL);
+        slot->in_use = true;
+        nodus_tcp_t *tcp = (nodus_tcp_t *)dc->tcp;
+
+        uint8_t f[256];
+        size_t l = 0;
+        CHECK_EQ(nodus_t2_pong(55, f, sizeof(f), &l), 0);
+
+        /* trailing byte */
+        uint8_t ft[260];
+        memcpy(ft, f, l); ft[l] = 0x00;
+        tcp->on_frame(NULL, ft, l + 1, tcp->cb_ctx);
+        CHECK(!atomic_load(&slot->ready));
+
+        /* container key: { ["x","t",55]: null, "y":"r", "q":"pong" } — the
+         * old walk read the array key as a header and its child "t" as the
+         * transaction id */
+        cbor_encoder_t e;
+        uint8_t fc[256];
+        cbor_encoder_init(&e, fc, sizeof(fc));
+        cbor_encode_map(&e, 4);
+        cbor_encode_array(&e, 3);
+        cbor_encode_cstr(&e, "x"); cbor_encode_cstr(&e, "t"); cbor_encode_uint(&e, 55);
+        cbor_encode_null(&e);
+        cbor_encode_cstr(&e, "y"); cbor_encode_cstr(&e, "r");
+        cbor_encode_cstr(&e, "q"); cbor_encode_cstr(&e, "pong");
+        tcp->on_frame(NULL, fc, cbor_encoder_len(&e), tcp->cb_ctx);
+        CHECK(!atomic_load(&slot->ready));
+
+        /* five pairs declared, three carried */
+        cbor_encoder_init(&e, fc, sizeof(fc));
+        cbor_encode_map(&e, 5);
+        cbor_encode_cstr(&e, "t"); cbor_encode_uint(&e, 55);
+        cbor_encode_cstr(&e, "y"); cbor_encode_cstr(&e, "r");
+        cbor_encode_cstr(&e, "q"); cbor_encode_cstr(&e, "pong");
+        tcp->on_frame(NULL, fc, cbor_encoder_len(&e), tcp->cb_ctx);
+        CHECK(!atomic_load(&slot->ready));
+
+        /* control: the honest frame answers the same slot */
+        tcp->on_frame(NULL, f, l, tcp->cb_ctx);
+        CHECK(atomic_load(&slot->ready));
+
+        nodus_client_close(dc);
+        free(dc);
+        free(id);
+        printf("[ok] T9 a malformed envelope never answers a request\n");
     }
 
     free(c);
