@@ -3887,6 +3887,195 @@ static void e45_question_during_round(void) {
     env_close(&e);
 }
 
+/* ── E47 a signed add with ONE side paid (BUGS.md AMM-01, second part) ───────── */
+
+/* Proves (plan line 653 "one side only ... held as a payment that matches no approval", givens
+ * item 32; operator choice 2026-11-20): a liquidity add in `signed` whose USDT deposit (or whose
+ * NODUS payment) alone is linked
+ *   - stays `signed` while the payment window of the MISSING side is not fully observed (control),
+ *     and for a USDT record that is only `seen` waits for it to be deep, then
+ *   - once the missing side's window is fully observed becomes `expired`, its link columns kept;
+ *     the Ethereum record becomes `held` (the Nodus row stays `held`); the pool depths and units
+ *     are as before, no swap or payout row is made, and a later step and a restart change nothing;
+ *   - after that a new add of the same Ethereum address and amount is accepted;
+ *   - control: an add with BOTH sides linked is committed by the existing path and its record is
+ *     not held.
+ * FLAGS: none. LEAVES BEHIND: the temporary journal directory (removed by env_close).
+ * HOW IT COULD FALSELY PASS: the windows are scripted exactly as E18 does (the Nodus cursors, the
+ * stored block, the Ethereum cursor); the deposits are placed by the test (the watchers' own
+ * writes are their tests'). On the base code (the blanket `continue` for a linked add) the add
+ * stays signed and the record stays deep, so the expiry checks fail there. */
+static void e47_observe_windows(env_t *e) {
+    W.now = 10301;
+    amm_journal_cursor_reset(e->j, "nodus_scan", 1000);
+    amm_journal_cursor_reset(e->j, "nodus_scan_ts", 10400);
+    amm_blk_t blk;
+    memset(&blk, 0, sizeof(blk));
+    blk.height = 990; blk.ts = 10400; memset(blk.hash, 5, 32); memset(blk.parent, 4, 32);
+    amm_journal_block_put(e->j, &blk);
+    amm_journal_cursor_reset(e->j, "eth_scan", 995);
+}
+
+/* the USDT deposit alone: a record of the add's sender, `state` seen or deep */
+static void e47_usdt_only(env_t *e, const amm_req_liq_add_t *r, uint8_t eth_byte, uint64_t block, int deep) {
+    amm_rec_t rec = mkrec(eth_byte, block, 10100, (uint8_t)0xaa, r->usdt_amount, e->foundation, "seen");
+    memset(rec.from, 0, 20);
+    for (int i = 0; i < 20; i++) {
+        char hx[3] = { r->ethereum_address[2 * i], r->ethereum_address[2 * i + 1], 0 };
+        rec.from[i] = (uint8_t)strtoul(hx, NULL, 16);
+    }
+    amm_journal_rec_put(e->j, &rec);
+    if (deep) {
+        snprintf(rec.state, sizeof(rec.state), "deep");
+        amm_journal_rec_put(e->j, &rec);
+    }
+}
+
+static void e47_nodus_only(env_t *e, const amm_req_liq_add_t *r, uint8_t wire_byte, uint64_t height) {
+    amm_nrow_t nr;
+    memset(&nr, 0, sizeof(nr));
+    nr.height = height; memset(nr.wire, wire_byte, 64);
+    memcpy(nr.peer, r->nodus_address, 128);
+    nr.amount = r->nodus_amount; nr.ts = 10100;
+    snprintf(nr.state, sizeof(nr.state), "%s", AMM_NR_HELD);
+    snprintf(nr.reason, sizeof(nr.reason), "matches no approval");
+    amm_journal_nrow_put(e->j, &nr);
+}
+
+static int e47_pool_unchanged(env_t *e) {
+    amm_pool_t p;
+    uint64_t units = 0;
+    return pool_is(e, POOL_N, POOL_U) && amm_journal_pool_get(e->j, &p) == 0 &&
+           amm_to_u64(&units, &p.units) == 0 && units == 1;
+}
+
+/* a new add of the same Ethereum address and USDT amount as `first` (another Nodus transfer id) */
+static int e47_new_add_accepted(env_t *e, uint32_t req) {
+    amm_add_answer_t aa2;
+    W.rq[0] = req; W.rq_n = 1; W.rq_i = 0;
+    if (amm_engine_add_question(e->eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa2) != AMM_AQ_OK) return 0;
+    amm_req_liq_add_t l2 = add_req(&aa2, 'a', 'c', 'b');
+    return amm_engine_accept_add(e->eng, &l2, NULL) == AMM_ACC_RECEIVED;
+}
+
+static void e47_one_sided_adds(void) {
+    printf("E47 a signed add with one side paid expires, the paid deposit is held\n");
+    amm_engine_step_t o;
+    amm_add_t row;
+    amm_rec_t rg;
+    uint8_t tx[32];
+
+    /* the USDT side alone */
+    env_t e;
+    env_open(&e);
+    amm_add_answer_t aa;
+    W.rq[0] = 0x47010101; W.rq_n = 1; W.rq_i = 0;
+    CHECK(amm_engine_add_question(e.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK &&
+          aa.usdt_amount == 10000000ULL, "add question: 10 USDT + 100,000 NODUS");
+    amm_req_liq_add_t lr = add_req(&aa, 'a', 'c', 'a');
+    CHECK(amm_engine_accept_add(e.eng, &lr, NULL) == AMM_ACC_RECEIVED, "signed");
+    e47_usdt_only(&e, &lr, 0x91, 1001, 1);
+    memset(tx, 0x91, 32);
+    W.eth_tip = 1400;
+    CHECK(step(&e, &o) == 0 && o.adds_linked == 1, "the USDT deposit is linked (positive control)");
+    CHECK(step(&e, &o) == 0 && o.adds_expired == 0 && amm_journal_add_by_botreq(e.j, aa.request_number, &row) == 0 &&
+          !strcmp(row.state, "signed") && *row.eth_tx,
+          "control: the NODUS window is not fully observed: the add stays signed");
+    e47_observe_windows(&e);
+    CHECK(step(&e, &o) == 0 && o.adds_expired == 1 && o.held_records == 1,
+          "both windows observed: the add expires and one record is held");
+    CHECK(amm_journal_add_by_botreq(e.j, aa.request_number, &row) == 0 && !strcmp(row.state, "expired") &&
+          *row.eth_tx && row.nodus_height == 0, "  the add is expired and keeps its link");
+    CHECK(amm_journal_rec_get(e.j, tx, 0, &rg) == 0 && !strcmp(rg.state, "held"), "  the USDT record is held");
+    CHECK(e47_pool_unchanged(&e), "  the pool depths and units are unchanged");
+    CHECK(e47_new_add_accepted(&e, 0x47010102), "  a new add of the same address and amount is accepted");
+    CHECK(step(&e, &o) == 0 && o.adds_expired == 0 && o.held_records == 0, "  a later step changes nothing");
+    env_restart(&e);
+    CHECK(step(&e, &o) == 0 && amm_journal_add_by_botreq(e.j, aa.request_number, &row) == 0 &&
+          !strcmp(row.state, "expired") && *row.eth_tx && amm_journal_rec_get(e.j, tx, 0, &rg) == 0 &&
+          !strcmp(rg.state, "held") && e47_pool_unchanged(&e),
+          "  after a restart: still expired and held, nothing credited");
+    env_close(&e);
+
+    /* the USDT record is only seen: the hold waits for it to be deep */
+    env_t s;
+    env_open(&s);
+    W.rq[0] = 0x47030303; W.rq_n = 1; W.rq_i = 0;
+    CHECK(amm_engine_add_question(s.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK, "add question");
+    lr = add_req(&aa, 'a', 'c', 'a');
+    CHECK(amm_engine_accept_add(s.eng, &lr, NULL) == AMM_ACC_RECEIVED, "signed");
+    e47_usdt_only(&s, &lr, 0x92, 1001, 0);
+    memset(tx, 0x92, 32);
+    W.eth_tip = 1400;
+    CHECK(step(&s, &o) == 0 && o.adds_linked == 1, "a seen (not deep) USDT record is linked");
+    e47_observe_windows(&s);
+    CHECK(step(&s, &o) == 0 && o.adds_expired == 0 && amm_journal_add_by_botreq(s.j, aa.request_number, &row) == 0 &&
+          !strcmp(row.state, "signed") && amm_journal_rec_get(s.j, tx, 0, &rg) == 0 && !strcmp(rg.state, "seen"),
+          "windows observed but the record is not deep: it waits, nothing changed");
+    {
+        amm_rec_t d = rg;
+        snprintf(d.state, sizeof(d.state), "deep");
+        CHECK(amm_journal_rec_put(s.j, &d) == 0, "the record becomes deep");
+    }
+    CHECK(step(&s, &o) == 0 && o.adds_expired == 1 && o.held_records == 1 &&
+          amm_journal_add_by_botreq(s.j, aa.request_number, &row) == 0 && !strcmp(row.state, "expired") &&
+          amm_journal_rec_get(s.j, tx, 0, &rg) == 0 && !strcmp(rg.state, "held"),
+          "in a later round: the add expires and the record is held");
+    env_close(&s);
+
+    /* the NODUS side alone */
+    env_t f;
+    env_open(&f);
+    W.rq[0] = 0x47020202; W.rq_n = 1; W.rq_i = 0;
+    CHECK(amm_engine_add_question(f.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK, "add question");
+    lr = add_req(&aa, 'a', 'c', 'a');
+    CHECK(amm_engine_accept_add(f.eng, &lr, NULL) == AMM_ACC_RECEIVED, "signed");
+    e47_nodus_only(&f, &lr, 0xaa, 1001);
+    W.eth_tip = 1400;
+    CHECK(step(&f, &o) == 0 && o.adds_linked == 1, "the NODUS payment is linked (positive control)");
+    CHECK(step(&f, &o) == 0 && o.adds_expired == 0 && amm_journal_add_by_botreq(f.j, aa.request_number, &row) == 0 &&
+          !strcmp(row.state, "signed") && row.nodus_height == 1001,
+          "control: the USDT window is not fully observed: the add stays signed");
+    e47_observe_windows(&f);
+    CHECK(step(&f, &o) == 0 && o.adds_expired == 1, "both windows observed: the add expires");
+    amm_nrow_t nr;
+    CHECK(amm_journal_add_by_botreq(f.j, aa.request_number, &row) == 0 && !strcmp(row.state, "expired") &&
+          row.nodus_height == 1001 && !*row.eth_tx && amm_journal_nrow_get(f.j, 1001, 0, 0, &nr) == 0 &&
+          !strcmp(nr.state, "held"), "  the add is expired and keeps its height, the Nodus row is held");
+    CHECK(e47_pool_unchanged(&f), "  the pool depths and units are unchanged");
+    CHECK(e47_new_add_accepted(&f, 0x47020203), "  a new add of the same address and amount is accepted");
+    env_restart(&f);
+    CHECK(step(&f, &o) == 0 && amm_journal_add_by_botreq(f.j, aa.request_number, &row) == 0 &&
+          !strcmp(row.state, "expired") && row.nodus_height == 1001, "  after a restart: still expired");
+    env_close(&f);
+
+    /* control: both sides linked, committed by the existing path, nothing held */
+    env_t b;
+    env_open(&b);
+    {   /* as E18: the pool carries units equal to the NODUS side so the commit's formula is defined */
+        amm_pool_t p0;
+        evm_u256_from_u64(&p0.depth_n, 3000000000000000ULL);
+        evm_u256_from_u64(&p0.depth_u, 3000000000ULL);
+        evm_u256_from_u64(&p0.units, 3000000000000000ULL);
+        amm_journal_pool_put(b.j, &p0);
+    }
+    W.rq[0] = 0x47040404; W.rq_n = 1; W.rq_i = 0;
+    CHECK(amm_engine_add_question(b.eng, AMM_SIDE_NODUS, 10000000000000ULL, 0, &aa) == AMM_AQ_OK, "add question");
+    lr = add_req(&aa, 'a', 'c', 'a');
+    CHECK(amm_engine_accept_add(b.eng, &lr, NULL) == AMM_ACC_RECEIVED, "signed");
+    add_deposits(&b, &lr, 0x93, 0xaa, 1001, 1001);
+    memset(tx, 0x93, 32);
+    W.eth_tip = 1400; W.nodus_tip = 1010;
+    W.rcpt_ok = 1; W.rcpt_block = 1001; W.rcpt_hash = 0x93;
+    e47_observe_windows(&b);
+    CHECK(step(&b, &o) == 0 && o.adds_linked == 2 && o.adds_committed == 1 && o.adds_expired == 0 &&
+          o.held_records == 0 && amm_journal_add_by_botreq(b.j, aa.request_number, &row) == 0 &&
+          !strcmp(row.state, "committed") && amm_journal_rec_get(b.j, tx, 0, &rg) == 0 &&
+          strcmp(rg.state, "held") != 0,
+          "control: both sides linked: committed by the existing path, no record held");
+    env_close(&b);
+}
+
 int main(void) {
     printf("test_amm_engine\n");
     e1_quote();
@@ -3934,6 +4123,7 @@ int main(void) {
     e43_recovery();
     e44_immediate_step_error();
     e45_question_during_round();
+    e47_one_sided_adds();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

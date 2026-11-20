@@ -934,7 +934,9 @@ static int liquidity_adds(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
         if (rc == 0) e->adds_after[sti] = after;
         o->adds_examined += (int)examined;
     }
-    /* a signed add with no deposit matched whose windows are fully observed */
+    /* a signed add with no deposit matched whose windows are fully observed;
+     * a signed add with exactly one deposit matched whose missing side's window
+     * is fully observed (it expires, the paid deposit is held) */
     {
         int64_t after = e->adds_after[2];
         uint64_t examined = 0;
@@ -951,10 +953,40 @@ static int liquidity_adds(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
                 const amm_add_t *a = &l[i];
                 after = a->seq;
                 examined++;
-                if (*a->eth_tx || a->nodus_height != 0) continue;
+                const int eth_paid = *a->eth_tx != '\0';
+                const int nodus_paid = a->nodus_height != 0;
+                if (eth_paid && nodus_paid) continue;    /* the commit path owns it */
                 uint8_t sender[20], amt[32];
                 if (from_hex(a->eth_addr, sender, 20) != 0) continue;
                 be32_of_u64(a->usdt_amount, amt);
+                if (eth_paid || nodus_paid) {
+                    /* exactly ONE side paid: it is a payment that matches no
+                     * approval (plan line 653, givens items 32, 35). Once the
+                     * payment window of the MISSING side is fully observed the
+                     * add expires and the paid deposit is held for manual
+                     * handling. The window predicate of the side that paid is
+                     * not asked (amm_eth_watch.h: it answers for a payment not
+                     * yet seen). */
+                    const int missing = eth_paid
+                        ? amm_nodus_watch_window_observed(e->c.nodus_watch, a->expiry)
+                        : amm_eth_watch_window_observed(e->c.eth_watch, a->eth_tip, a->expiry,
+                                                        sender, amt);
+                    if (missing != 1) continue;
+                    int xr = amm_journal_add_expire_onesided(e->c.journal, a->seq);
+                    if (xr == AMM_J_OK) {
+                        o->adds_expired++;
+                        if (eth_paid) o->held_records++;  /* a Nodus row is held already */
+                        QGP_LOG_INFO(LOG_TAG, "add %lld: only the %s payment arrived; held for "
+                                     "manual handling (the other payment window is fully "
+                                     "observed)", (long long)a->seq,
+                                     eth_paid ? "USDT" : "NODUS");
+                    } else if (xr == AMM_J_NOT_YET) {
+                        QGP_LOG_INFO(LOG_TAG, "add %lld: only the USDT payment arrived; its "
+                                     "record is not deep yet, held for manual handling in a "
+                                     "later round", (long long)a->seq);
+                    } else if (xr != AMM_J_ILLEGAL) rc = -1;
+                    continue;
+                }
                 int we = amm_eth_watch_window_observed(e->c.eth_watch, a->eth_tip, a->expiry,
                                                        sender, amt);
                 int wn = amm_nodus_watch_window_observed(e->c.nodus_watch, a->expiry);

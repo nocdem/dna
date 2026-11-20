@@ -220,6 +220,8 @@ typedef enum {
                                 * item 98); nothing written                  */
     AMM_J_NO_POSITION   = 16,  /* a withdrawal: the two addresses are not a
                                 * stored position with units (plan 6.4.6)    */
+    AMM_J_NOT_YET       = 17,  /* a one-sided add's paid USDT record is not
+                                * deep yet: nothing changed, ask again later */
     AMM_J_ILLEGAL       = -2,  /* illegal transition / unknown row          */
     AMM_J_ERR           = -1
 } amm_jrc_t;
@@ -1017,7 +1019,10 @@ int amm_journal_swap_page_usdt_owed(amm_journal_t *j, int64_t after_seq,
 #define AMM_L_APPROVED   "approved"   /* the add question answered, nothing signed */
 #define AMM_L_SIGNED     "signed"     /* both halves verified and accepted         */
 #define AMM_L_COMMITTED  "committed"  /* both sides counted: units added            */
-#define AMM_L_EXPIRED    "expired"    /* no side seen and both windows observed     */
+#define AMM_L_EXPIRED    "expired"    /* both windows observed and no add made of the payments: no
+                                       * side paid, or ONE side paid (that deposit is held for manual
+                                       * handling, amm_journal_add_expire_onesided; its link columns
+                                       * are kept)                                  */
 #define AMM_L_REVERSED   "reversed"   /* a payment of a committed add was reversed  */
 
 /** One liquidity add: the exact pair the bot answered at the add question
@@ -1077,7 +1082,8 @@ int amm_journal_open_questions(amm_journal_t *j, int64_t *n);
  *  liquidity adds per call, in ONE transaction: a swap in `expired` that never
  *  received a signed request or a payment (empty sender, incoming id and
  *  destination, no seen_seq, no room) and an add in `expired` that was never
- *  signed (no addresses, transfer id, deposit). The bot request number of each
+ *  signed (no addresses, transfer id, deposit; a one-sided expired add is
+ *  signed and linked, so it is never deleted). The bot request number of each
  *  deleted row is first written to bot_req_used, so it is never given out again
  *  (the quote and add approvals refuse it: AMM_J_NUMBER_TAKEN). *swaps / *adds
  *  = the rows deleted (either may be NULL). 0 / -1. */
@@ -1144,6 +1150,18 @@ int amm_journal_add_commit(amm_journal_t *j, int64_t seq, evm_u256 *units_out);
 /** The add moves to expired (no deposit linked, state approved or signed).
  *  0 / AMM_J_ILLEGAL / -1. */
 int amm_journal_add_expire(amm_journal_t *j, int64_t seq);
+/** A signed add with exactly ONE deposit linked, whose other side's payment
+ *  window the caller has seen fully observed: ONE transaction holds the linked
+ *  deposit for manual handling (its Ethereum record becomes `held`; its Nodus
+ *  row must already be `held`, which the watcher writes for a payment that
+ *  matches no approval, givens item 32) and moves the add to `expired`. The
+ *  link columns stay, so the deposit can never be linked to another add and
+ *  the trail is kept. The pool, the units, the markers and the in-flight room
+ *  do not change; nothing is paid back or credited. AMM_J_NOT_YET: the linked
+ *  Ethereum record is not `deep` (nor already `held`) yet, nothing changed.
+ *  0 / AMM_J_NOT_YET / AMM_J_ILLEGAL (not signed, no link or both linked, or a
+ *  Nodus row that is not held) / -1. */
+int amm_journal_add_expire_onesided(amm_journal_t *j, int64_t seq);
 /** The units of the position (eth address 40 hex, nodus address 128 hex);
  *  0 found / 1 none / -1. */
 int amm_journal_position_get(amm_journal_t *j, const char *eth_addr,

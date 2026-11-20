@@ -3412,6 +3412,53 @@ done:
     return op_end(j, rc);
 }
 
+int amm_journal_add_expire_onesided(amm_journal_t *j, int64_t seq) {
+    if (!j) return -1;
+    if (op_begin(j) != 0) return -1;
+    int rc = -1;
+    amm_add_t a;
+    int g = add_query(j, "seq=?1", (arg_t[]){AI(seq)}, 1, &a);
+    if (g < 0) goto done;
+    const int eth_side = *a.eth_tx != '\0';
+    const int nodus_side = a.nodus_height != 0;
+    if (g == 1 || strcmp(a.state, AMM_L_SIGNED) != 0 || eth_side == nodus_side) {
+        rc = AMM_J_ILLEGAL;
+        goto done;
+    }
+    if (eth_side) {
+        /* the paid USDT record is held (record state table: deep -> held); one
+         * already held stays. A record not deep yet waits for a later round. */
+        int held = exists_q(j, "SELECT 1 FROM eth_records WHERE 'eth:' || lower(hex(tx))=?1 "
+                               "AND log_index=?2 AND state='held'",
+                            (arg_t[]){AT(a.eth_tx), AI(a.eth_log)}, 2);
+        if (held < 0) goto done;
+        if (held == 1) {
+            int deep = exists_q(j, "SELECT 1 FROM eth_records WHERE 'eth:' || lower(hex(tx))=?1 "
+                                   "AND log_index=?2 AND state='deep'",
+                                (arg_t[]){AT(a.eth_tx), AI(a.eth_log)}, 2);
+            if (deep < 0) goto done;
+            if (deep == 1) { rc = AMM_J_NOT_YET; goto done; }
+            if (run(j, "UPDATE eth_records SET state='held' WHERE 'eth:' || lower(hex(tx))=?1 "
+                       "AND log_index=?2 AND state='deep'",
+                    (arg_t[]){AT(a.eth_tx), AI(a.eth_log)}, 2, NULL) != 0) goto done;
+        }
+    } else {
+        /* the Nodus row of the deposit (its wire id is the add's transfer id)
+         * is held already: the watcher stores a payment that matches no
+         * approval as held and no function changes a stored row */
+        int nh = exists_q(j, "SELECT 1 FROM nodus_rows WHERE lower(hex(wire))=?1 AND "
+                             "height=?2 AND state='held'",
+                          (arg_t[]){AT(a.transfer_id + 6), AI(a.nodus_height)}, 2);
+        if (nh < 0) goto done;
+        if (nh == 1) { rc = AMM_J_ILLEGAL; goto done; }
+    }
+    if (run(j, "UPDATE liq_adds SET state='expired' WHERE seq=?1 AND state='signed'",
+            (arg_t[]){AI(seq)}, 1, NULL) != 0) goto done;
+    rc = AMM_J_OK;
+done:
+    return op_end(j, rc);
+}
+
 int amm_journal_position_get(amm_journal_t *j, const char *eth_addr,
                              const char *nodus_addr, evm_u256 *units) {
     if (!j || !eth_addr || !nodus_addr || !units) return -1;
