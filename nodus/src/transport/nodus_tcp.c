@@ -276,8 +276,8 @@ static nodus_tcp_conn_t *conn_alloc(nodus_tcp_t *tcp) {
      * Reader correlates tcp ptr to inter/client/witness pool. Captures slot
      * reuse + memory address recycling so we can detect cached stale conn
      * pointers being aliased to fresh allocations. */
-    fprintf(stderr, "TCP_CONN: ALLOC slot=%d tcp=%p conn=%p\n",
-            slot, (void *)tcp, (void *)conn);
+    QGP_LOG_DEBUG(LOG_TAG_TCP, "TCP_CONN: ALLOC slot=%d tcp=%p conn=%p",
+                  slot, (void *)tcp, (void *)conn);
     return conn;
 }
 
@@ -385,7 +385,12 @@ static void wl_leave(nodus_tcp_t *tcp) {
  * event; read under the lock like every other wbuf access. */
 static bool conn_has_unsent(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     wl_enter(tcp);
-    bool unsent = conn->wlen > conn->wpos || (conn->session && conn->pending_head);
+    /* The pending FIFO counts for EVERY connection: handle_write_locked
+     * drains at most NODUS_DRAIN_PER_CALL frames per call and, when that
+     * empties wbuf, no new write edge arrives for the frames still queued.
+     * A non-session connection (AF_UNIX, or a transport without a session
+     * module) holds overflow frames in the same FIFO. */
+    bool unsent = conn->wlen > conn->wpos || conn->pending_head != NULL;
     wl_leave(tcp);
     return unsent;
 }
@@ -443,13 +448,13 @@ static void conn_free(nodus_tcp_t *tcp, nodus_tcp_conn_t *conn) {
     /* Phase 3.2b-inv: conn lifecycle visibility at TCP layer.
      * B3 fix — read crypto state from inline channel_crypto field. */
     int had_crypto = conn->channel_crypto.established ? 1 : 0;
-    fprintf(stderr,
-            "TCP_CONN: FREE slot=%d peer=%s:%u had_crypto=%d "
-            "send_ok=%llu send_full=%llu pending=%zu\n",
-            conn->slot, conn->ip, (unsigned)conn->port, had_crypto,
-            (unsigned long long)conn->send_ok_count,
-            (unsigned long long)conn->send_full_count,
-            conn->pending_count);
+    QGP_LOG_DEBUG(LOG_TAG_TCP,
+                  "TCP_CONN: FREE slot=%d peer=%s:%u had_crypto=%d "
+                  "send_ok=%llu send_full=%llu pending=%zu",
+                  conn->slot, conn->ip, (unsigned)conn->port, had_crypto,
+                  (unsigned long long)conn->send_ok_count,
+                  (unsigned long long)conn->send_full_count,
+                  conn->pending_count);
 
     /* B3 fix — secure-zero the per-conn AES-GCM key + counters before the
      * struct is freed. Defensive even though the entire struct is about to
@@ -576,10 +581,10 @@ static void pending_drain_to_wbuf(nodus_tcp_conn_t *conn) {
     /* Phase 3.2b-inv2: first-drain visibility */
     if (!conn->drain_logged && conn->pending_head) {
         conn->drain_logged = true;
-        fprintf(stderr,
-                "PENDING_DRAIN slot=%d peer=%s:%u count=%zu bytes=%zu\n",
-                conn->slot, conn->ip, (unsigned)conn->port,
-                conn->pending_count, conn->pending_bytes);
+        QGP_LOG_DEBUG(LOG_TAG_TCP,
+                      "PENDING_DRAIN slot=%d peer=%s:%u count=%zu bytes=%zu",
+                      conn->slot, conn->ip, (unsigned)conn->port,
+                      conn->pending_count, conn->pending_bytes);
     }
     int drained = 0;
     const size_t max_cap = conn_write_cap(conn);
@@ -1363,9 +1368,9 @@ static void handle_accept(nodus_tcp_t *tcp) {
 
     /* Phase 3.2d: bind fd to slot, log it. Match this fd against
      * INTER_FRAME_FIRST and TCP_SEND_FIRST to detect any fd alias. */
-    fprintf(stderr, "TCP_CONN: FD_SET slot=%d fd=%d direction=accept "
-            "peer=%s:%u conn=%p\n",
-            conn->slot, fd, new_ip, (unsigned)conn->port, (void *)conn);
+    QGP_LOG_DEBUG(LOG_TAG_TCP, "TCP_CONN: FD_SET slot=%d fd=%d direction=accept "
+                  "peer=%s:%u conn=%p",
+                  conn->slot, fd, new_ip, (unsigned)conn->port, (void *)conn);
 
 #ifdef NODUS_TCP_EPOLL
     epoll_add(tcp->epoll_fd, fd, EPOLLIN | EPOLLRDHUP | (tcp->level_triggered ? 0 : EPOLLET), conn);
@@ -2542,9 +2547,9 @@ static nodus_tcp_conn_t *connect_pinned(nodus_tcp_t *tcp,
     }
 
     /* Phase 3.2d: bind fd to slot, log it. */
-    fprintf(stderr, "TCP_CONN: FD_SET slot=%d fd=%d direction=connect "
-            "peer=%s:%u conn=%p\n",
-            conn->slot, fd, ip, (unsigned)port, (void *)conn);
+    QGP_LOG_DEBUG(LOG_TAG_TCP, "TCP_CONN: FD_SET slot=%d fd=%d direction=connect "
+                  "peer=%s:%u conn=%p",
+                  conn->slot, fd, ip, (unsigned)port, (void *)conn);
 
     /* Inherit auth requirement from transport IMMEDIATELY so gated send
      * queues frames even before TCP handshake completes. Without this,
@@ -2955,14 +2960,14 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
         /* B3 fix — read inline channel_crypto state. */
         int established = conn->channel_crypto.established ? 1 : 0;
         int has_crypto = established;
-        fprintf(stderr,
-                "TCP_SEND_FIRST: slot=%d fd=%d peer=%s:%u len=%zu "
-                "has_crypto=%d est=%d state=%d auth_state=%d "
-                "tcp=%p conn=%p\n",
-                conn->slot, conn->fd, conn->ip, (unsigned)conn->port, len,
-                has_crypto, established, (int)conn->state,
-                (int)conn->auth_state,
-                (void *)conn->tcp_parent, (void *)conn);
+        QGP_LOG_DEBUG(LOG_TAG_TCP,
+                      "TCP_SEND_FIRST: slot=%d fd=%d peer=%s:%u len=%zu "
+                      "has_crypto=%d est=%d state=%d auth_state=%d "
+                      "tcp=%p conn=%p",
+                      conn->slot, conn->fd, conn->ip, (unsigned)conn->port, len,
+                      has_crypto, established, (int)conn->state,
+                      (int)conn->auth_state,
+                      (void *)conn->tcp_parent, (void *)conn);
     }
 
     /* Encrypt payload if channel crypto is established.
@@ -2979,10 +2984,10 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
              * matching receiver's conn state at the same moment. */
             if (!conn->tx_encrypt_logged) {
                 conn->tx_encrypt_logged = true;
-                fprintf(stderr,
-                        "TX_ENCRYPT_FIRST slot=%d peer=%s:%u tx_counter=%llu len=%zu\n",
-                        conn->slot, conn->ip, (unsigned)conn->port,
-                        (unsigned long long)cc->tx_counter, len);
+                QGP_LOG_DEBUG(LOG_TAG_TCP,
+                              "TX_ENCRYPT_FIRST slot=%d peer=%s:%u tx_counter=%llu len=%zu",
+                              conn->slot, conn->ip, (unsigned)conn->port,
+                              (unsigned long long)cc->tx_counter, len);
             }
             /* Phase 3.2b-inv2+inv3: milestone encrypt log. First 3 catch
              * fresh handshake; 100/500/1000/2000k milestones catch long-lived
@@ -2991,12 +2996,12 @@ static int send_progress_locked(nodus_tcp_conn_t *conn,
             if (cc->tx_counter < 3 ||
                 cc->tx_counter == 100 || cc->tx_counter == 500 ||
                 cc->tx_counter == 1000 || (cc->tx_counter % 2000) == 0) {
-                fprintf(stderr,
-                        "ENCRYPT_CALL slot=%d peer=%s:%u tx_counter=%llu "
-                        "cc=%p conn_crypto=%p len=%zu\n",
-                        conn->slot, conn->ip, (unsigned)conn->port,
-                        (unsigned long long)cc->tx_counter,
-                        (void *)cc, (void *)cc, len);
+                QGP_LOG_DEBUG(LOG_TAG_TCP,
+                              "ENCRYPT_CALL slot=%d peer=%s:%u tx_counter=%llu "
+                              "cc=%p conn_crypto=%p len=%zu",
+                              conn->slot, conn->ip, (unsigned)conn->port,
+                              (unsigned long long)cc->tx_counter,
+                              (void *)cc, (void *)cc, len);
             }
             size_t enc_needed = len + NODUS_CHANNEL_OVERHEAD;
             enc_buf = malloc(enc_needed);
@@ -3560,10 +3565,10 @@ nodus_tcp_conn_t *nodus_tcp_find_by_addr(nodus_tcp_t *tcp,
         }
     }
     if (match_count > 1) {
-        fprintf(stderr,
-                "FIND_DUP: %s:%u matches=%d first_slot=%d second_slot=%d\n",
-                ip, (unsigned)port, match_count,
-                first ? first->slot : -1, second_slot);
+        QGP_LOG_DEBUG(LOG_TAG_TCP,
+                      "FIND_DUP: %s:%u matches=%d first_slot=%d second_slot=%d",
+                      ip, (unsigned)port, match_count,
+                      first ? first->slot : -1, second_slot);
     }
     return first;
 }

@@ -7583,9 +7583,10 @@ void nsw_cancel(void) {
 
 /* Close the session and wipe every secret this file holds. With an async
  * export suspended mid-wait (g_busy), nothing it may still hold is freed:
- * nodus_client_force_disconnect only closes the socket (SOCKFS closes the
- * WebSocket) and clears client->conn, which ends its wait loop on the next
- * wake-up (wait_response / do_connect_one). The JS side then zeroes the
+ * nodus_client_force_disconnect (browser build: no read thread, no wait)
+ * releases the connection through the transport (nodus_tcp_disconnect; SOCKFS
+ * closes the WebSocket) and clears client->conn, which ends its wait loop on
+ * the next wake-up (wait_response / do_connect_one). The JS side then zeroes the
  * whole linear memory and aborts the instance, so no wake-up resumes. */
 void nsw_lock(void) {
     g_cancel = 1;

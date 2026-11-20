@@ -67,8 +67,9 @@
  * (shared with nodus_client_get_all / get_batch). Values are unsigned test
  * rows; the client does not verify signatures, so nothing here depends on
  * that. The hand-built error frames are first checked to decode as 'e' with
- * error_code 0 / negative, so a PROTOCOL_ERROR there is the guard's, not a
- * decode refusal's.
+ * error_code 0 (code absent / 0) or PROTOCOL_ERROR (a code past INT_MAX, which
+ * the decoder no longer narrows), so a PROTOCOL_ERROR there is the guard's or
+ * the decoder's range check, not a decode refusal's.
  */
 
 #include "nodus/nodus.h"
@@ -596,7 +597,8 @@ static void test_page_strict(void) {
 /* ── error replies ─────────────────────────────────────────────────── */
 
 /* {t, y:"e", r:{msg:"x"}} — an error frame with no "code". With
- * code_kind 1: r:{code: 0xFFFFFFFF, msg} (a uint past INT_MAX). */
+ * code_kind 1: r:{code: 0xFFFFFFFF, msg} (a uint past INT_MAX); with
+ * code_kind 2: r:{code: 2^32 + 5, msg}. */
 static void build_error_frame(uint32_t txn, int code_kind) {
     cbor_encoder_t e;
     cbor_encoder_init(&e, g_frame, sizeof(g_frame));
@@ -604,9 +606,11 @@ static void build_error_frame(uint32_t txn, int code_kind) {
     cbor_encode_cstr(&e, "t"); cbor_encode_uint(&e, txn);
     cbor_encode_cstr(&e, "y"); cbor_encode_cstr(&e, "e");
     cbor_encode_cstr(&e, "r");
-    if (code_kind == 1) {
+    if (code_kind == 1 || code_kind == 2) {
         cbor_encode_map(&e, 2);
-        cbor_encode_cstr(&e, "code"); cbor_encode_uint(&e, 0xFFFFFFFFULL);
+        cbor_encode_cstr(&e, "code");
+        /* kind 2: 2^32 + 5 — narrowed to int it would be the valid code 5 */
+        cbor_encode_uint(&e, code_kind == 1 ? 0xFFFFFFFFULL : 0x100000005ULL);
     } else {
         cbor_encode_map(&e, 1);
     }
@@ -681,17 +685,30 @@ static void test_error_without_valid_code(void) {
     check_all_handlers(NODUS_ERR_PROTOCOL_ERROR, "nocode: protocol error, not 0");
     check_lenient_unchanged(0, "nocode: lenient getter unchanged");
 
-    /* code past INT_MAX lands negative in the decoder's int. */
+    /* code past INT_MAX: the decoder no longer narrows it (C-10) — it
+     * reports NODUS_ERR_PROTOCOL_ERROR, a code every caller treats as the
+     * failure it is (narrowing used to land on 0, a negative number, or —
+     * for 2^32 + k — on the valid code k). */
     build_error_frame(42, 1);
     memset(&m, 0, sizeof(m));
     CHECK(nodus_t2_decode(g_frame, g_len, &m) == 0 && m.type == 'e' &&
-          m.error_code <= 0, "bigcode: decodes as 'e' with code <= 0");
+          m.error_code == NODUS_ERR_PROTOCOL_ERROR,
+          "bigcode: decodes as 'e' with the protocol-error code");
     {
         int decoded = m.error_code;
         nodus_t2_msg_free(&m);
         check_all_handlers(NODUS_ERR_PROTOCOL_ERROR, "bigcode: protocol error");
-        check_lenient_unchanged(decoded, "bigcode: lenient getter unchanged");
+        check_lenient_unchanged(decoded, "bigcode: lenient getter returns the decoded code");
     }
+
+    /* 2^32 + 5 must not wrap into the valid code 5 (C-10). */
+    build_error_frame(43, 2);
+    memset(&m, 0, sizeof(m));
+    CHECK(nodus_t2_decode(g_frame, g_len, &m) == 0 && m.type == 'e' &&
+          m.error_code == NODUS_ERR_PROTOCOL_ERROR,
+          "wrapcode: 2^32+5 is not read as code 5");
+    nodus_t2_msg_free(&m);
+    check_all_handlers(NODUS_ERR_PROTOCOL_ERROR, "wrapcode: protocol error");
 }
 
 /* ── get_owner ─────────────────────────────────────────────────────── */

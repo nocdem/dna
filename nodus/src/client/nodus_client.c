@@ -75,6 +75,7 @@ static int  resubscribe_all(nodus_client_t *client);
 static int  try_reconnect(nodus_client_t *client);
 static int  find_response_map(const uint8_t *raw, size_t raw_len,
                               cbor_decoder_t *dec, size_t *map_count);
+static int  envelope_strict(const uint8_t *raw, size_t raw_len);
 
 /* ── Cross-platform millisecond sleep ──────────────────────────── */
 
@@ -330,6 +331,14 @@ static nodus_pending_t *alloc_pending(nodus_client_t *client, uint32_t txn) {
                 memset(p, 0, sizeof(*p));
                 p->txn = txn;
                 p->response = calloc(1, sizeof(nodus_tier2_msg_t));
+                if (!p->response) {
+                    /* Out of memory: the slot stays free (zeroed above) and
+                     * is never published with a NULL response that
+                     * client_on_frame would write through. */
+                    pthread_mutex_unlock(&client->pending_mutex);
+                    QGP_LOG_ERROR(LOG_TAG, "Pending slot: response allocation failed");
+                    return NULL;
+                }
                 p->in_use = true;
                 pthread_mutex_unlock(&client->pending_mutex);
                 if (attempt > 0) {
@@ -421,6 +430,17 @@ static void client_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
      * would zero the response data before the caller reads it. */
     nodus_tier2_msg_t tmp;
     memset(&tmp, 0, sizeof(tmp));
+    /* A frame from the node is read only when its outer map is well formed
+     * (text keys, "r" once, every declared pair present, nothing after it):
+     * the Tier-2 decoder's own outer walk accepts a container key (its
+     * children are read as pairs), a short map and trailing bytes, and this
+     * frame's decoded fields are what the waiting caller reads (C-09, C-10).
+     * Applied to the client's response path only: nodus_t2_decode also
+     * parses the node's REQUESTS, whose acceptance is not changed here. */
+    if (envelope_strict(payload, len) != 0) {
+        QGP_LOG_WARN(LOG_TAG, "frame with a malformed envelope dropped (%zu bytes)", len);
+        return;
+    }
     if (nodus_t2_decode(payload, len, &tmp) != 0) {
         /* nodus_t2_decode() already freed a refused frame; this keeps the
          * server's "free after every decode" pattern and is a no-op. */
@@ -1232,24 +1252,52 @@ void nodus_client_force_disconnect(nodus_client_t *client) {
     if (!client) return;
     /* Signal read thread to stop */
     atomic_store(&client->read_thread_stop, true);
-    /* Close socket FIRST — breaks epoll_wait so read thread exits quickly */
-    if (client->conn) {
-        nodus_tcp_conn_t *conn = (nodus_tcp_conn_t *)client->conn;
-        if (conn->fd >= 0) {
-#ifdef _WIN32
-            shutdown(conn->fd, SD_BOTH);
-            closesocket(conn->fd);
-#else
-            shutdown(conn->fd, SHUT_RDWR);
-            close(conn->fd);
-#endif
-            conn->fd = -1;
-        }
-        client->conn = NULL;
-    }
+    /* The state is set before the socket is woken: the read thread may see
+     * the shutdown below as an end of stream and run client_on_disconnect,
+     * and with the state already DISCONNECTED that callback neither
+     * schedules a reconnect nor reports a state change for this deliberate
+     * close. */
     client->state = NODUS_CLIENT_DISCONNECTED;
-    /* Now join the read thread (it should exit fast since socket is closed) */
+
+#ifndef __EMSCRIPTEN__
+    /* Wake the read thread out of its wait: shutdown only, never close — the
+     * descriptor stays owned by the transport until the connection object is
+     * released below, so its number cannot be handed to another socket while
+     * the transport still lists it. The connection is read only under
+     * poll_mutex (the lock every release of it runs under); when the read
+     * thread holds that lock it is inside a poll that ends within its own
+     * 100 ms bound and sees the stop flag, so a failed trylock only means
+     * the join below waits that long. */
+    if (pthread_mutex_trylock(&client->poll_mutex) == 0) {
+        nodus_tcp_conn_t *c = (nodus_tcp_conn_t *)client->conn;
+        if (c && c->fd >= 0) {
+#ifdef _WIN32
+            shutdown(c->fd, SD_BOTH);
+#else
+            shutdown(c->fd, SHUT_RDWR);
+#endif
+        }
+        pthread_mutex_unlock(&client->poll_mutex);
+    }
     stop_read_thread(client);
+    pthread_mutex_lock(&client->poll_mutex);
+#endif
+    /* Browser build: no read thread to wait for, and no wait here — an async
+     * export may be suspended holding poll_mutex (nsw_lock aborts the whole
+     * instance right after this returns), so the lock is not taken there. */
+
+    /* Tear the connection down through the transport — the same call
+     * nodus_client_suspend / nodus_client_close make — so the pool slot and
+     * the poll registration are released (the state is already DISCONNECTED,
+     * set above). */
+    if (client->conn && client->tcp) {
+        nodus_tcp_disconnect((nodus_tcp_t *)client->tcp,
+                              (nodus_tcp_conn_t *)client->conn);
+    }
+    client->conn = NULL;
+#ifndef __EMSCRIPTEN__
+    pthread_mutex_unlock(&client->poll_mutex);
+#endif
 }
 
 void nodus_client_close(nodus_client_t *client) {
@@ -2923,8 +2971,47 @@ int nodus_client_media_exists(nodus_client_t *client,
  * On success, decoder is positioned at first entry of "r" map.
  * Returns 0 on success, -1 if "r" not found or not a map.
  */
+/* The reply envelope, checked whole before any field is read from it (C-09,
+ * C-10): the outer map must be well formed from its first byte to its last.
+ *   - every key is a text string (a container key would otherwise be read as
+ *     a header only, and its children taken for further envelope pairs: a
+ *     nested "r" could then shadow the real one);
+ *   - "r" appears once;
+ *   - every value is stepped over whole (negative integers included, as the
+ *     skip below allows them: an honest reply may carry one in an unknown
+ *     key), and the declared pairs are all present: END where a key or a
+ *     value is owed is an error;
+ *   - nothing follows the outer map.
+ * The decoder limit is raised to the largest any reply decoder uses (the
+ * dnac_state_proof reply carries more than the default item count); a raised
+ * decoder also turns END inside a value into an error. Returns 0 or -1. */
+static int envelope_strict(const uint8_t *raw, size_t raw_len) {
+    cbor_decoder_t dec;
+    cbor_decoder_init(&dec, raw, raw_len);
+    cbor_decoder_set_max_items(&dec, NODUS_CBOR_MAX_ITEMS_STATE_PROOF);
+
+    cbor_item_t top = cbor_decode_next(&dec);
+    if (top.type != CBOR_ITEM_MAP) return -1;
+
+    bool seen_r = false;
+    for (size_t i = 0; i < top.count; i++) {
+        cbor_item_t key = cbor_decode_next(&dec);
+        if (key.type != CBOR_ITEM_TSTR) return -1;
+        if (key.tstr.len == 1 && key.tstr.ptr[0] == 'r') {
+            if (seen_r) return -1;
+            seen_r = true;
+        }
+        cbor_decode_skip_signed(&dec, NULL);
+        if (dec.error) return -1;
+    }
+    if (dec.error || dec.pos != dec.len) return -1;
+    return 0;
+}
+
 static int find_response_map(const uint8_t *raw, size_t raw_len,
                               cbor_decoder_t *dec, size_t *map_count) {
+    if (envelope_strict(raw, raw_len) != 0) return -1;
+
     cbor_decoder_init(dec, raw, raw_len);
     cbor_item_t top = cbor_decode_next(dec);
     if (top.type != CBOR_ITEM_MAP) return -1;
@@ -2938,7 +3025,7 @@ static int find_response_map(const uint8_t *raw, size_t raw_len,
             *map_count = rmap.count;
             return 0;
         }
-        cbor_decode_skip(dec);
+        cbor_decode_skip_signed(dec, NULL);
     }
     return -1;
 }
@@ -2951,6 +3038,10 @@ int nodus_client_reply_value_shape(const uint8_t *raw, size_t raw_len,
     cbor_decoder_t top_dec;
     cbor_decoder_init(&top_dec, raw, raw_len);
     if (cbor_decode_peek(&top_dec) != CBOR_ITEM_MAP) return -1;
+    /* find_response_map answers -1 for a malformed envelope too, which
+     * below reads as "a map without r: no result" — a malformed envelope is
+     * an error, not an empty result. */
+    if (envelope_strict(raw, raw_len) != 0) return -1;
 
     cbor_decoder_t dec;
     size_t n = 0;
@@ -3073,7 +3164,7 @@ int nodus_client_dnac_spend_ex(nodus_client_t *client,
          * pending slot that owns `resp` is freed */
         if (err_msg && err_cap > 0)
             snprintf(err_msg, err_cap, "%s", resp->error_msg);
-        int rc = resp->error_code;
+        int rc = client_error_rc(resp);
         free_pending(client, req);
         return rc;
     }
@@ -3165,7 +3256,7 @@ int nodus_client_dnac_supply(nodus_client_t *client,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') { int rc = client_error_rc(resp); free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
@@ -3235,7 +3326,7 @@ int nodus_client_dnac_chain_id32(nodus_client_t *client, bool *has_out,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') { int rc = client_error_rc(resp); free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
@@ -3295,7 +3386,7 @@ int nodus_client_dnac_fee_info_ex(nodus_client_t *client,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') { int rc = client_error_rc(resp); free_pending(client, req); return rc; }
 
     int drc = nodus_dnac_fee_info_decode_ex(req->raw_response,
                                             req->raw_response_len, result_out,
@@ -3546,7 +3637,10 @@ static int dnac_utxo_request(nodus_client_t *client, const char *owner,
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') {
         QGP_LOG_ERROR(LOG_TAG, "dnac_utxo: error response code=%d", resp->error_code);
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        /* An error frame without a positive code must not read as success
+         * with an empty result (C-10): client_error_rc maps it to a
+         * protocol error. */
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
 
     QGP_LOG_DEBUG(LOG_TAG, "dnac_utxo: got response raw_len=%zu", req->raw_response_len);
@@ -4196,7 +4290,7 @@ int nodus_client_dnac_roster(nodus_client_t *client,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') { int rc = client_error_rc(resp); free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
@@ -4354,7 +4448,7 @@ int nodus_client_dnac_delegations(nodus_client_t *client,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
 
     cbor_decoder_t dec;
@@ -4472,7 +4566,7 @@ int nodus_client_dnac_token_list(nodus_client_t *client,
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
 
     cbor_decoder_t dec;
@@ -4689,7 +4783,7 @@ int nodus_client_dnac_token_info(nodus_client_t *client,
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
 
     int prc = dnac_token_info_decode(req->raw_response, req->raw_response_len,
@@ -4760,7 +4854,7 @@ int nodus_client_dnac_committee(nodus_client_t *client,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
 
     int drc = nodus_dnac_committee_decode(req->raw_response,
@@ -4995,7 +5089,7 @@ int nodus_client_dnac_cc_collect(nodus_client_t *client,
     if (resp->type == 'e') {
         QGP_LOG_WARN(LOG_TAG, "dnac_cc_collect refused by the node: %s",
                      resp->error_msg);
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
     int drc = nodus_dnac_cc_collect_decode(req->raw_response,
                                            req->raw_response_len, result_out);
@@ -5525,7 +5619,7 @@ int nodus_client_dnac_v3_block(nodus_client_t *client, uint64_t height,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
     int drc = nodus_dnac_v3_block_decode(req->raw_response,
                                          req->raw_response_len, result_out);
@@ -6959,7 +7053,7 @@ int nodus_client_dnac_supply_tip(nodus_client_t *client, bool *has_out,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') { int rc = client_error_rc(resp); free_pending(client, req); return rc; }
 
     cbor_decoder_t dec;
     size_t mc;
@@ -7085,7 +7179,7 @@ int nodus_client_dnac_supply_buckets(nodus_client_t *client,
 
     nodus_tier2_msg_t *resp = (nodus_tier2_msg_t *)req->response;
     if (!wait_response(client, req, client->config.request_timeout_ms)) { free_pending(client, req); return NODUS_ERR_TIMEOUT; }
-    if (resp->type == 'e') { int rc = resp->error_code; free_pending(client, req); return rc; }
+    if (resp->type == 'e') { int rc = client_error_rc(resp); free_pending(client, req); return rc; }
 
     int drc = nodus_dnac_supply_buckets_decode(req->raw_response,
                                                req->raw_response_len, out);
@@ -7232,7 +7326,7 @@ int nodus_client_dnac_balance(nodus_client_t *client, const char *owner_hex,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
     int drc = nodus_dnac_balance_decode(req->raw_response,
                                         req->raw_response_len, result_out);
@@ -7473,7 +7567,7 @@ int nodus_client_dnac_addr_history(nodus_client_t *client,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
     int drc = nodus_dnac_addr_history_decode(req->raw_response,
                                              req->raw_response_len,
@@ -7528,7 +7622,7 @@ int nodus_client_dnac_validator_list(nodus_client_t *client,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
 
     int prc = dnac_validator_list_parse(req->raw_response,
@@ -7791,27 +7885,36 @@ static int evm_reply_map(const uint8_t *raw, size_t raw_len, uint8_t **out,
                          size_t *out_len) {
     cbor_decoder_t d;
     cbor_item_t top, k;
+    size_t r_start = 0, r_len = 0;
+    bool have_r = false;
     cbor_decoder_init(&d, raw, raw_len);
     if (v3d_next(&d, &top) != 0 || top.type != CBOR_ITEM_MAP) return -1;
+    /* The WHOLE envelope is walked (C-09, C-10), not just up to "r": every
+     * key a text string (a container key would otherwise be read as a header
+     * and its children taken for pairs), "r" once and a map, every value
+     * skipped whole, and nothing after the outer map. Bounded by bytes only
+     * (the v3d helpers), as the reply decoders of this RPC are. */
     for (size_t i = 0; i < top.count; i++) {
-        if (v3d_next(&d, &k) != 0) return -1;
-        if (k.type == CBOR_ITEM_TSTR && k.tstr.len == 1 &&
-            k.tstr.ptr[0] == 'r') {
-            const size_t start = d.pos;
-            if (start >= raw_len || (raw[start] >> 5) != 5)  /* a map */
+        if (v3d_next(&d, &k) != 0 || k.type != CBOR_ITEM_TSTR) return -1;
+        if (k.tstr.len == 1 && k.tstr.ptr[0] == 'r') {
+            if (have_r) return -1;                       /* repeated "r" */
+            r_start = d.pos;
+            if (r_start >= raw_len || (raw[r_start] >> 5) != 5)  /* a map */
                 return -1;
             if (v3d_skip(&d, 0) != 0 || d.error) return -1;
-            const size_t n = d.pos - start;
-            uint8_t *c = malloc(n ? n : 1);
-            if (!c) return -1;
-            memcpy(c, raw + start, n);
-            *out = c;
-            *out_len = n;
-            return 0;
+            r_len = d.pos - r_start;
+            have_r = true;
+        } else if (v3d_skip(&d, 0) != 0) {
+            return -1;
         }
-        if (v3d_skip(&d, 0) != 0) return -1;
     }
-    return -1;
+    if (!have_r || d.error || d.pos != raw_len) return -1;
+    uint8_t *c = malloc(r_len ? r_len : 1);
+    if (!c) return -1;
+    memcpy(c, raw + r_start, r_len);
+    *out = c;
+    *out_len = r_len;
+    return 0;
 }
 
 int nodus_client_dnac_query_raw(nodus_client_t *client, const char *method,
@@ -7848,7 +7951,7 @@ int nodus_client_dnac_query_raw(nodus_client_t *client, const char *method,
         free_pending(client, req); return NODUS_ERR_TIMEOUT;
     }
     if (resp->type == 'e') {
-        int rc = resp->error_code; free_pending(client, req); return rc;
+        int rc = client_error_rc(resp); free_pending(client, req); return rc;
     }
     int drc = evm_reply_map(req->raw_response, req->raw_response_len,
                             reply_out, reply_len_out);
@@ -8564,6 +8667,12 @@ static nodus_ch_pending_t *ch_conn_alloc_pending(nodus_ch_conn_t *ch, uint32_t t
                 memset(p, 0, sizeof(*p));
                 p->txn = txn;
                 p->response = calloc(1, sizeof(nodus_tier2_msg_t));
+                if (!p->response) {
+                    /* Out of memory: leave the slot free, never publish it. */
+                    pthread_mutex_unlock(&ch->pending_mutex);
+                    QGP_LOG_ERROR(LOG_TAG_CH, "Pending slot: response allocation failed");
+                    return NULL;
+                }
                 p->in_use = true;
                 pthread_mutex_unlock(&ch->pending_mutex);
                 return p;
@@ -8636,6 +8745,10 @@ static void ch_conn_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
 
     nodus_tier2_msg_t tmp;
     memset(&tmp, 0, sizeof(tmp));
+    if (envelope_strict(payload, len) != 0) {      /* as client_on_frame */
+        QGP_LOG_WARN(LOG_TAG_CH, "frame with a malformed envelope dropped (%zu bytes)", len);
+        return;
+    }
     if (nodus_t2_decode(payload, len, &tmp) != 0) {
         nodus_t2_msg_free(&tmp);   /* no-op: the decoder freed it already */
         return;
@@ -8681,6 +8794,18 @@ static void ch_conn_on_frame(nodus_tcp_conn_t *conn, const uint8_t *payload,
     if (!slot) {
         pthread_mutex_unlock(&ch->pending_mutex);
         QGP_LOG_WARN(LOG_TAG_CH, "Response for unknown txn %u", tmp.txn_id);
+        nodus_t2_msg_free(&tmp);
+        return;
+    }
+
+    /* A second reply for a txn that is already answered (peer retry or
+     * hostile server) must not free or overwrite the first one: the waiter
+     * may be reading it unlocked. Drop it (same rule as client_on_frame). */
+    if (atomic_load(&slot->ready)) {
+        pthread_mutex_unlock(&ch->pending_mutex);
+        QGP_LOG_WARN(LOG_TAG_CH,
+                     "Duplicate response for txn %u dropped (slot already answered)",
+                     tmp.txn_id);
         nodus_t2_msg_free(&tmp);
         return;
     }
@@ -9682,3 +9807,35 @@ int nodus_circuit_close(nodus_circuit_handle_t *h) {
     }
     return 0;
 }
+
+#ifdef NODUS_CLIENT_TEST_SEAM
+/* tests/test_client_alloc_dup.c — the two pending-slot allocators (static
+ * above), called directly so an allocation failure can be injected. They
+ * allocate and publish exactly as the request functions do; compiled only
+ * when a test target builds this TU itself. */
+nodus_pending_t *nodus_client_test_alloc_pending(nodus_client_t *client,
+                                                 uint32_t txn);
+nodus_ch_pending_t *nodus_client_test_ch_alloc_pending(nodus_ch_conn_t *ch,
+                                                       uint32_t txn);
+
+nodus_pending_t *nodus_client_test_alloc_pending(nodus_client_t *client,
+                                                 uint32_t txn) {
+    return alloc_pending(client, txn);
+}
+
+nodus_ch_pending_t *nodus_client_test_ch_alloc_pending(nodus_ch_conn_t *ch,
+                                                       uint32_t txn) {
+    return ch_conn_alloc_pending(ch, txn);
+}
+#endif /* NODUS_CLIENT_TEST_SEAM */
+
+#ifdef NODUS_CLIENT_TEST_SEAM
+/* tests/test_client_dup_array.c — the EVM reply envelope walk over raw bytes. */
+int nodus_client_test_evm_reply_map(const uint8_t *raw, size_t raw_len,
+                                    uint8_t **out, size_t *out_len);
+
+int nodus_client_test_evm_reply_map(const uint8_t *raw, size_t raw_len,
+                                    uint8_t **out, size_t *out_len) {
+    return evm_reply_map(raw, raw_len, out, out_len);
+}
+#endif /* NODUS_CLIENT_TEST_SEAM */

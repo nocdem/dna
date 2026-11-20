@@ -294,7 +294,10 @@ int nodus_chain_config_db_migrate(nodus_witness_t *w) {
                     "sqlite error %d: %s\n",
                     i, rc, err ? err : "(null)");
             if (err) sqlite3_free(err);
-            abort();
+            /* A failed step is returned, not aborted on: the open path
+             * refuses the database on a non-zero result. The sqlite code
+             * is positive; mapped to -1 only when it carries none. */
+            return rc != SQLITE_OK ? rc : -1;
         }
         if (err) sqlite3_free(err);
     }
@@ -531,8 +534,17 @@ int nodus_chain_config_get_u64(nodus_witness_t *w,
                       (unsigned)param_id, sqlite3_errmsg(w->db));
         return -1;
     }
-    sqlite3_bind_int(stmt, 1, (int)param_id);
-    sqlite3_bind_int64(stmt, 2, (sqlite3_int64)current_block);
+    /* A failed bind leaves the parameter NULL: the query would find no row
+     * and the answer would read as "no override" (the default). A DB failure
+     * is never a value — it is the same -1 as a prepare or step fault. */
+    if (sqlite3_bind_int(stmt, 1, (int)param_id) != SQLITE_OK ||
+        sqlite3_bind_int64(stmt, 2, (sqlite3_int64)current_block) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "get_u64 bind failed (param %u): %s — "
+                      "the active override cannot be determined",
+                      (unsigned)param_id, sqlite3_errmsg(w->db));
+        sqlite3_finalize(stmt);
+        return -1;
+    }
 
     int rc = sqlite3_step(stmt);
     int ret;

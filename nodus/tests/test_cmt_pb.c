@@ -1189,6 +1189,78 @@ static int test_header(void)
     return 0;
 }
 
+/* Z-40: a header whose caller-set hash length is above its array is REFUSED
+ * before anything is written, on the direct header marshal and on the Block
+ * marshal that reaches the same writer.
+ *
+ * Proves: for each of the ten hash lengths of a header (the eight own
+ * fields, last_block_id.hash and last_block_id.part_set_header.hash) a
+ * length of CMT_PB_HASH_MAX + 1 and of SIZE_MAX makes cmt_pb_header_marshal
+ * AND cmt_pb_block_marshal return CMT_REJECT and leave *out_len untouched;
+ * a length of exactly CMT_PB_HASH_MAX (and every valid header the other
+ * cases already encode) is still CMT_OK. Flags/env: none; leaves behind:
+ * nothing. How it can falsely pass: only the return code and *out_len are
+ * observed, not memory — MAX + 1 reads inside the enclosing struct, so a
+ * sanitizer would usually not flag the old code either; today the return
+ * code is CMT_OK for every case below and the check fails there. */
+static void header_hash_len_ptrs(cmt_pb_header_t *h, size_t *p[10])
+{
+    p[0] = &h->last_commit_hash_len;
+    p[1] = &h->data_hash_len;
+    p[2] = &h->validators_hash_len;
+    p[3] = &h->next_validators_hash_len;
+    p[4] = &h->consensus_hash_len;
+    p[5] = &h->app_hash_len;
+    p[6] = &h->last_results_hash_len;
+    p[7] = &h->evidence_hash_len;
+    p[8] = &h->last_block_id.hash_len;
+    p[9] = &h->last_block_id.part_set_header.hash_len;
+}
+
+static int test_header_hash_lens(void)
+{
+    static cmt_pb_header_t h;
+    static cmt_pb_block_t  b;
+    size_t                 *p[10];
+    size_t                 n;
+    size_t                 bad[2] = { (size_t)CMT_PB_HASH_MAX + 1u, (size_t)-1 };
+
+    cmt_pb_header_init(&h);
+    h.height = 5;
+    header_hash_len_ptrs(&h, p);
+    for (int i = 0; i < 10; i++) {
+        *p[i] = CMT_PB_HASH_MAX;                 /* the boundary: still valid */
+    }
+    n = 12345;
+    CHECK(cmt_pb_header_marshal(&h, g_buf, sizeof(g_buf), &n) == CMT_OK,
+          "ten hash lengths of exactly CMT_PB_HASH_MAX encode");
+
+    memset(&b, 0, sizeof(b));
+    cmt_pb_data_init(&b.data);
+    b.header = h;
+    n = 12345;
+    CHECK(cmt_pb_block_marshal(&b, g_buf, sizeof(g_buf), &n) == CMT_OK,
+          "the same header inside a Block encodes");
+
+    for (int i = 0; i < 10; i++) {
+        for (int k = 0; k < 2; k++) {
+            *p[i] = bad[k];
+            n = 12345;
+            CHECK(cmt_pb_header_marshal(&h, g_buf, sizeof(g_buf), &n)
+                  == CMT_REJECT && n == 12345,
+                  "a hash length above CMT_PB_HASH_MAX is refused (header)");
+            b.header = h;
+            n = 12345;
+            CHECK(cmt_pb_block_marshal(&b, g_buf, sizeof(g_buf), &n)
+                  == CMT_REJECT && n == 12345,
+                  "a hash length above CMT_PB_HASH_MAX is refused (Block)");
+            *p[i] = CMT_PB_HASH_MAX;
+        }
+    }
+    OK();
+    return 0;
+}
+
 /* ══ Vote / CommitSig / Commit / Proposal ════════════════════════════ */
 
 static int test_vote_commit_proposal(void)
@@ -3707,6 +3779,7 @@ int main(void)
     if (test_public_key() != 0)            { return 1; }
     if (test_validators() != 0)            { return 1; }
     if (test_header() != 0)                { return 1; }
+    if (test_header_hash_lens() != 0)      { return 1; }
     if (test_vote_commit_proposal() != 0)  { return 1; }
     if (test_canonical() != 0)             { return 1; }
     if (test_proof_and_part() != 0)        { return 1; }

@@ -1911,6 +1911,16 @@ static int part2(void) {
                   nodus_witness_v2_join_is_excluded(wJ, s) &&
                   wJ->v2_join.src[0] == '\0' && wJ->v2_join.acc_len == 0,
                   "(2g) a bundle that fails at adopt: its source is excluded");
+            /* Z-16: the adoption's scratch directory is removed whole,
+             * its nested archive directory included (it used to survive
+             * every adopt attempt as .v2join.tmp/archive). */
+            {
+                char scratch[640];
+                struct stat sst;
+                snprintf(scratch, sizeof(scratch), "%s/.v2join.tmp", wJ->data_path);
+                CHECK(stat(scratch, &sst) != 0,
+                      "(2g) a rejected bundle leaves no .v2join.tmp scratch directory");
+            }
 
             /* (2e) starts a fresh join attempt */
             wJ->v2_join.n_excl = 0;
@@ -1925,6 +1935,13 @@ static int part2(void) {
         CHECK(wJ->db != NULL && memcmp(wJ->v2_chain32, g.chain32, 32) == 0,
               "(2e) the adopted chain is the pinned one");
         CHECK(wJ->cmt_node != NULL, "(2e) the consensus binding was built on J's host");
+        {
+            char scratch[640];
+            struct stat sst;
+            snprintf(scratch, sizeof(scratch), "%s/.v2join.tmp", wJ->data_path);
+            CHECK(stat(scratch, &sst) != 0,
+                  "(2e) the adopted join leaves no .v2join.tmp scratch directory");
+        }
         CHECK(nodus_witness_p2p_is_bonded(wJ->p2p, idb),
               "(2e) J's host now reads the adopted chain's bonded set");
         /* RT2 B-F2: B served from its in-memory copy, the database's

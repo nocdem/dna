@@ -156,8 +156,13 @@ int nodus_witness_stprobe_report_committed(nodus_witness_t *w, uint64_t H,
             "WHERE epoch_start = ?1 AND seat = ?2", -1, &st, NULL)
             != SQLITE_OK)
         return -1;
-    sqlite3_bind_int64(st, 1, (sqlite3_int64)H);
-    sqlite3_bind_int64(st, 2, (sqlite3_int64)seat);
+    /* A failed bind would read as "no report committed" (0): a fault, not a
+     * value. */
+    if (sqlite3_bind_int64(st, 1, (sqlite3_int64)H) != SQLITE_OK ||
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)seat) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return -1;
+    }
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     if (rc == SQLITE_ROW) return 1;

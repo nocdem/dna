@@ -35,18 +35,21 @@
 #define LOG_TAG "WITNESS_DB"
 
 /*
- * Pinned migration failure log literal for rollback trigger #9.
- * Phase 1.1 will introduce a real schema migration path that invokes this
- * macro from every ALTER/CREATE step. The literal MIGRATION FAILURE is the
- * exact pattern operators grep journalctl for when deciding whether to roll
- * back a deploy. Keep this macro in sync with nodus/docs/DEPLOY_RUNBOOK.md.
+ * Pinned migration failure log literal for rollback trigger #9: every
+ * migration step that fails logs a line starting "MIGRATION FAILURE:" and
+ * returns the sqlite error code to its caller (it no longer aborts the
+ * process); the open path refuses the database on a non-zero result. The
+ * literal is the exact pattern operators grep journalctl for when deciding
+ * whether to roll back a deploy.
  */
-#define WITNESS_DB_MIGRATION_FATAL(step_name, rc)                                  \
-    do {                                                                           \
-        fprintf(stderr, "MIGRATION FAILURE: %s failed with sqlite error %d: %s\n", \
-                (step_name), (int)(rc), sqlite3_errmsg(w->db));                    \
-        abort();                                                                   \
-    } while (0)
+
+/* The code a failed migration step returns: the sqlite result code, or
+ * SQLITE_ERROR when the failure was a probe fault that carries none. The
+ * caller (witness_db_open_attempt) classifies it like every other open
+ * failure, so a transient class (SQLITE_BUSY) keeps its retry. */
+static int mig_fail_rc(int rc) {
+    return rc != SQLITE_OK ? rc : SQLITE_ERROR;
+}
 
 /* ── Nullifier operations ────────────────────────────────────────── */
 
@@ -1185,17 +1188,20 @@ int nodus_witness_db_rollback_to_savepoint(nodus_witness_t *w, const char *name)
  * column errors so a second run on an already-migrated DB succeeds.
  * Index DROP/CREATE both use IF EXISTS / IF NOT EXISTS for the same
  * reason. Real SQLite errors (out of memory, disk full, lock contention)
- * trigger WITNESS_DB_MIGRATION_FATAL → abort().
+ * log "MIGRATION FAILURE: ..." and make the migration return the sqlite
+ * code: the ladder stops at the first failure and the open path refuses the
+ * database (it never continues on a partly migrated schema, and it no
+ * longer dumps core).
  */
-static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w);
-static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w);
-static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w);
+static int nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w);
+static int nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w);
+static int nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w);
 /* R3 W4 — nodus_witness_db_migrate_v16_pbft_state (schema v16, the
  * singleton pbft_state table) is DELETED with the closed consensus lane:
  * nodus_witness_db_save_pbft_state / _load_pbft_state, its only writer
  * and reader, are both deleted below and the table is never read again. */
-static void nodus_witness_db_migrate_v17_supply_total_minted(nodus_witness_t *w);
-static void nodus_witness_db_migrate_v18_supply_reward_pool(nodus_witness_t *w);
+static int nodus_witness_db_migrate_v17_supply_total_minted(nodus_witness_t *w);
+static int nodus_witness_db_migrate_v18_supply_reward_pool(nodus_witness_t *w);
 
 /* Does `table` already have a column called `column`? 1 / 0 / -1 fault.
  *
@@ -1252,20 +1258,21 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
      *
      * Asking removes the dependency entirely: with the column present we
      * skip the ALTER, so any ALTER failure that does happen is a genuine
-     * one and the abort() below means what it says. A probe FAULT is also
-     * fatal rather than assumed-absent — running an ALTER because we could
-     * not tell would put the guess back. */
+     * one and the failure return below means what it says. A probe FAULT is
+     * also a failure rather than assumed-absent — running an ALTER because
+     * we could not tell would put the guess back. */
+    int rc;
     {
         int have = db_column_exists(w, "committed_transactions", "tx_index");
         if (have < 0) {
             fprintf(stderr, "MIGRATION FAILURE: could not determine whether "
                             "committed_transactions.tx_index exists: %s\n",
                     sqlite3_errmsg(w->db));
-            abort();
+            return mig_fail_rc(sqlite3_errcode(w->db));
         }
         if (have == 0) {
             char *err = NULL;
-            int rc = sqlite3_exec(w->db,
+            rc = sqlite3_exec(w->db,
                 "ALTER TABLE committed_transactions "
                 "ADD COLUMN tx_index INTEGER NOT NULL DEFAULT 0",
                 NULL, NULL, &err);
@@ -1274,7 +1281,7 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
                                 "with sqlite error %d: %s\n",
                         rc, err ? err : "(null)");
                 if (err) sqlite3_free(err);
-                abort();
+                return mig_fail_rc(rc);
             }
             if (err) sqlite3_free(err);
         }
@@ -1283,21 +1290,21 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
     /* Drop legacy single-column index — IF EXISTS makes it safe on fresh DBs */
     {
         char *err = NULL;
-        int rc = sqlite3_exec(w->db,
+        rc = sqlite3_exec(w->db,
             "DROP INDEX IF EXISTS idx_ctx_height",
             NULL, NULL, &err);
         if (rc != SQLITE_OK) {
             fprintf(stderr, "MIGRATION FAILURE: DROP INDEX idx_ctx_height failed "
                             "with sqlite error %d: %s\n", rc, err ? err : "(null)");
             if (err) sqlite3_free(err);
-            abort();
+            return mig_fail_rc(rc);
         }
     }
 
     /* Create composite index — IF NOT EXISTS for idempotence */
     {
         char *err = NULL;
-        int rc = sqlite3_exec(w->db,
+        rc = sqlite3_exec(w->db,
             "CREATE INDEX IF NOT EXISTS idx_ctx_block "
             "ON committed_transactions(block_height, tx_index)",
             NULL, NULL, &err);
@@ -1305,25 +1312,30 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
             fprintf(stderr, "MIGRATION FAILURE: CREATE INDEX idx_ctx_block failed "
                             "with sqlite error %d: %s\n", rc, err ? err : "(null)");
             if (err) sqlite3_free(err);
-            abort();
+            return mig_fail_rc(rc);
         }
     }
 
     /* Phase 11 follow-up — client_pubkey + client_sig columns. */
-    nodus_witness_db_migrate_v13_client_fields(w);
+    rc = nodus_witness_db_migrate_v13_client_fields(w);
+    if (rc != 0) return rc;
 
     /* Phase 2 / Task 7 (anchored merkle proofs) — chain_def_blob column. */
-    nodus_witness_db_migrate_v14_chain_def(w);
+    rc = nodus_witness_db_migrate_v14_chain_def(w);
+    if (rc != 0) return rc;
 
     /* Task 11 (stake delegation) — utxo_set.unlock_block column. */
-    nodus_witness_db_migrate_v15_stake_delegation(w);
+    rc = nodus_witness_db_migrate_v15_stake_delegation(w);
+    if (rc != 0) return rc;
 
     /* Hard-Fork v1 — chain_config_history table (CREATE TABLE IF NOT EXISTS). */
-    nodus_chain_config_db_migrate(w);
+    rc = nodus_chain_config_db_migrate(w);
+    if (rc != 0) return mig_fail_rc(rc < 0 ? sqlite3_errcode(w->db) : rc);
 
     /* 2026-07-31 — supply_tracking.total_minted back-fill, made reachable
      * on every open (it was unreachable inside supply_init). */
-    nodus_witness_db_migrate_v17_supply_total_minted(w);
+    rc = nodus_witness_db_migrate_v17_supply_total_minted(w);
+    if (rc != 0) return rc;
 
     /* tokenomics-v3 P2 — supply_tracking.reward_pool back-fill, on every
      * open, for the same reason as the v17 leg above: supply_get now
@@ -1331,7 +1343,8 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
      * every supply read. The version-3 lane's own S16 rung
      * (nodus_witness_v2_schema.c) adds and VERIFIES the same column; this
      * leg is what keeps every other lane's supply read working. */
-    nodus_witness_db_migrate_v18_supply_reward_pool(w);
+    rc = nodus_witness_db_migrate_v18_supply_reward_pool(w);
+    if (rc != 0) return rc;
 
     /* 2026-10-01 — the node-local address history index tables
      * (decision 2026-10-01-node-address-history-index.md rev 2 item 6):
@@ -1346,7 +1359,7 @@ int nodus_witness_db_migrate_v12(nodus_witness_t *w) {
 
 /* Phase 11 follow-up — additive ALTER for client_pubkey + client_sig.
  * Split out so the migration body in v12 stays focused. */
-static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w) {
+static int nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w) {
     static const char *cols[2];
     cols[0] = "ALTER TABLE committed_transactions ADD COLUMN client_pubkey BLOB";
     cols[1] = "ALTER TABLE committed_transactions ADD COLUMN client_sig BLOB";
@@ -1360,11 +1373,12 @@ static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w) {
                         "MIGRATION FAILURE: ALTER ADD client field [%d] "
                         "sqlite error %d: %s\n", i, rc, msg);
                 if (err) sqlite3_free(err);
-                abort();
+                return mig_fail_rc(rc);
             }
             if (err) sqlite3_free(err);
         }
     }
+    return 0;
 }
 
 /* Schema v14 migration (Phase 2 / Task 7 - anchored merkle proofs).
@@ -1372,8 +1386,8 @@ static void nodus_witness_db_migrate_v13_client_fields(nodus_witness_t *w) {
  * Adds the chain_def_blob column to the blocks table. Nullable; only
  * populated for genesis blocks (height=0) and stores the serialized
  * dnac_chain_definition_t. Idempotent via duplicate-column tolerance. */
-static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w) {
-    if (!w || !w->db) return;
+static int nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
     char *err = NULL;
     int rc = sqlite3_exec(w->db,
         "ALTER TABLE blocks ADD COLUMN chain_def_blob BLOB",
@@ -1385,10 +1399,11 @@ static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w) {
                     "MIGRATION FAILURE: ALTER ADD chain_def_blob "
                     "sqlite error %d: %s\n", rc, msg);
             if (err) sqlite3_free(err);
-            abort();
+            return mig_fail_rc(rc);
         }
         if (err) sqlite3_free(err);
     }
+    return 0;
 }
 
 /* Schema v15 migration (Task 11 — stake/delegation).
@@ -1398,8 +1413,8 @@ static void nodus_witness_db_migrate_v14_chain_def(nodus_witness_t *w) {
  * cooldown). Default 0 means "already spendable"; zero value preserves
  * pre-Task-11 semantics for every existing UTXO. Idempotent via
  * duplicate-column tolerance. */
-static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w) {
-    if (!w || !w->db) return;
+static int nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
     char *err = NULL;
     int rc = sqlite3_exec(w->db,
         "ALTER TABLE utxo_set "
@@ -1412,10 +1427,11 @@ static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w) {
                     "MIGRATION FAILURE: ALTER ADD unlock_block "
                     "sqlite error %d: %s\n", rc, msg);
             if (err) sqlite3_free(err);
-            abort();
+            return mig_fail_rc(rc);
         }
         if (err) sqlite3_free(err);
     }
+    return 0;
 }
 
 /* Schema v17 migration (2026-07-31) — supply_tracking.total_minted.
@@ -1460,8 +1476,8 @@ static void nodus_witness_db_migrate_v15_stake_delegation(nodus_witness_t *w) {
  *                             would be a far worse failure than skipping
  *                             a back-fill that has nothing to back-fill.
  */
-static void nodus_witness_db_migrate_v17_supply_total_minted(nodus_witness_t *w) {
-    if (!w || !w->db) return;
+static int nodus_witness_db_migrate_v17_supply_total_minted(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
     char *err = NULL;
     int rc = sqlite3_exec(w->db,
         "ALTER TABLE supply_tracking "
@@ -1475,10 +1491,11 @@ static void nodus_witness_db_migrate_v17_supply_total_minted(nodus_witness_t *w)
                     "MIGRATION FAILURE: ALTER ADD supply_tracking.total_minted "
                     "sqlite error %d: %s\n", rc, msg);
             if (err) sqlite3_free(err);
-            abort();
+            return mig_fail_rc(rc);
         }
         if (err) sqlite3_free(err);
     }
+    return 0;
 }
 
 /* tokenomics-v3 P2 — supply_tracking.reward_pool (P2-1). The v17 leg
@@ -1488,8 +1505,8 @@ static void nodus_witness_db_migrate_v17_supply_total_minted(nodus_witness_t *w)
  * table" a hand-built fixture that has no supply_tracking at all. The
  * DEFAULT 0 is the honest back-fill: a chain that predates the reward
  * pool never had one. */
-static void nodus_witness_db_migrate_v18_supply_reward_pool(nodus_witness_t *w) {
-    if (!w || !w->db) return;
+static int nodus_witness_db_migrate_v18_supply_reward_pool(nodus_witness_t *w) {
+    if (!w || !w->db) return -1;
     char *err = NULL;
     int rc = sqlite3_exec(w->db,
         "ALTER TABLE supply_tracking "
@@ -1503,10 +1520,11 @@ static void nodus_witness_db_migrate_v18_supply_reward_pool(nodus_witness_t *w) 
                           "supply_tracking.reward_pool sqlite error %d: %s",
                           rc, msg);
             if (err) sqlite3_free(err);
-            abort();
+            return mig_fail_rc(rc);
         }
         if (err) sqlite3_free(err);
     }
+    return 0;
 }
 
 /* R3 W4 — nodus_witness_db_save_pbft_state and nodus_witness_db_load_

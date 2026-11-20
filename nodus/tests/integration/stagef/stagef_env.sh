@@ -1310,6 +1310,23 @@ stagef_cmt_pump_ready() {
     return 0
 }
 
+# stagef_dust_flag CLI — prints `--no-dust-sweep` when CLI's `v2-envelope
+# spend` accepts it, nothing otherwise. Since 0.25.2 the spend planner sweeps
+# the sender's small coins into an `--amount all --count 1` spend, so the
+# "one input, one output" shape a scenario measures or pumps with needs the
+# flag; a CLI built before the flag existed (the OLD side of an upgrade
+# scenario) neither sweeps nor knows it, and an unknown option is a usage
+# error — so the flag is passed only to a binary that names it in its own
+# usage text (printed by a spend call with no arguments: no node is
+# contacted). Used as `$(stagef_dust_flag "$cli")`, unquoted: empty or one word.
+stagef_dust_flag() {
+    local out
+    out=$("$1" v2-envelope spend 2>&1 < /dev/null) || true
+    case "$out" in
+        *--no-dust-sweep*) printf '%s' --no-dust-sweep ;;
+    esac
+}
+
 # stagef_pump_claim DB — claim the funder's genesis leaf (`v2-claim`,
 # submitted to the submit node) and wait for the claimed coin as a
 # LEDGER EFFECT: an unlocked native coin above the fee owned by the

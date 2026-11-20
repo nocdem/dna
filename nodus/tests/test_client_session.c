@@ -1154,6 +1154,28 @@ static void real_client(void) {
     CHECK(nodus_client_connect(c) == 0 && nodus_client_is_ready(c));
     CHECK(nodus_client_conn_generation(c) > gen1);
     CHECK(nodus_client_get_servers(c, eps, 8, &n) == 0);
+
+    /* C-06: a force disconnect releases the connection through the
+     * transport. Proves: after every force_disconnect the transport holds no
+     * connection (its pool slot and poll registration are released) and the
+     * client reports DISCONNECTED with no connection; after each reconnect
+     * it holds exactly one, so repeated cycles never accumulate pool slots.
+     * Native build: also exercises the read-thread join (the thread is
+     * running after connect). Flags/env: none; leaves behind: nothing (the
+     * client is closed below). Falsely passes only if tcp->count stops being
+     * the pool's live-connection count. Today (close + fd = -1 behind the
+     * transport) the count is still 1 after the disconnect and rises by one
+     * per cycle. */
+    nodus_tcp_t *ctcp = (nodus_tcp_t *)c->tcp;
+    CHECK(ctcp != NULL && ctcp->count == 1);
+    for (int cycle = 0; cycle < 8; cycle++) {
+        nodus_client_force_disconnect(c);
+        CHECK(ctcp->count == 0);
+        CHECK(c->conn == NULL);
+        CHECK(nodus_client_state(c) == NODUS_CLIENT_DISCONNECTED);
+        CHECK(nodus_client_connect(c) == 0 && nodus_client_is_ready(c));
+        CHECK(ctcp->count == 1);
+    }
     nodus_client_close(c);
     free(c);
 }

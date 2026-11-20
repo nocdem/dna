@@ -119,7 +119,15 @@ int nodus_witness_vset_insert(nodus_witness_t *w,
                       sqlite3_errmsg(w->db));
         return -1;
     }
-    sqlite3_bind_int64(st, 1, (sqlite3_int64)epoch_start);
+    /* A failed bind leaves epoch_start NULL: no row would be found and the
+     * snapshot would be stored as if none existed. A DB failure is never a
+     * value. */
+    if (sqlite3_bind_int64(st, 1, (sqlite3_int64)epoch_start) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: snapshot select bind failed: %s",
+                      (unsigned long long)epoch_start, sqlite3_errmsg(w->db));
+        sqlite3_finalize(st);
+        return -1;
+    }
 
     int step = sqlite3_step(st);
     if (step == SQLITE_ROW) {
@@ -221,7 +229,13 @@ int nodus_witness_vset_get(nodus_witness_t *w,
                       sqlite3_errmsg(w->db));
         return -1;
     }
-    sqlite3_bind_int64(st, 1, (sqlite3_int64)epoch_start);
+    /* A failed bind would read as "absent" (return 1): fault, not absence. */
+    if (sqlite3_bind_int64(st, 1, (sqlite3_int64)epoch_start) != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "epoch %llu: snapshot get bind failed: %s",
+                      (unsigned long long)epoch_start, sqlite3_errmsg(w->db));
+        sqlite3_finalize(st);
+        return -1;                                  /* fault ≠ absent */
+    }
 
     int step = sqlite3_step(st);
     if (step == SQLITE_DONE) { sqlite3_finalize(st); return 1; } /* absent */

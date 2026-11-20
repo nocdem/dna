@@ -29,26 +29,9 @@
  * generated code makes none; the bytes are identical.
  * ═══════════════════════════════════════════════════════════════════════ */
 
-#define W_EMBED_DEFINE(name, type, fn)                                      \
-    static void name(pb_w_t *w, uint32_t field, const type *m)              \
-    {                                                                       \
-        size_t n = 0;                                                       \
-        if (w->err != CMT_OK) {                                             \
-            return;                                                         \
-        }                                                                   \
-        if (fn(m, w->buf, w->i, &n) != CMT_OK) {                            \
-            w->err = CMT_REJECT;                                            \
-            return;                                                         \
-        }                                                                   \
-        if (n != 0) {                                                       \
-            memmove(w->buf + w->i - n, w->buf, n);                          \
-        }                                                                   \
-        w->i -= n;                                                          \
-        w_uvarint(w, (uint64_t)n);                                          \
-        w_tag(w, field, 2);                                                 \
-    }
+/* W_EMBED_DEFINE itself lives in cmt_pb_wire.h. */
 
-W_EMBED_DEFINE(w_embed_block_id,      cmt_pb_block_id_t,      cmt_pb_block_id_marshal)
+W_EMBED_DEFINE(w_embed_block_id,     cmt_pb_block_id_t,      cmt_pb_block_id_marshal)
 W_EMBED_DEFINE(w_embed_header,        cmt_pb_header_t,        cmt_pb_header_marshal)
 W_EMBED_DEFINE(w_embed_consensus,     cmt_pb_consensus_t,     cmt_pb_consensus_marshal)
 W_EMBED_DEFINE(w_embed_validator_set, cmt_pb_validator_set_t, cmt_pb_validator_set_marshal)

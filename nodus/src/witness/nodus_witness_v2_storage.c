@@ -482,7 +482,14 @@ int nodus_witness_storage_set_get(nodus_witness_t *w, uint64_t epoch_start,
             "SELECT set_hash, member_count FROM v2_storage_sets "
             "WHERE epoch_start = ?1", -1, &st, NULL) != SQLITE_OK)
         return -1;
-    sqlite3_bind_int64(st, 1, (sqlite3_int64)epoch_start);
+    /* A failed bind would make the query find no row and the set read as
+     * "absent" (1): a fault, not a value. */
+    if (sqlite3_bind_int64(st, 1, (sqlite3_int64)epoch_start) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        QGP_LOG_ERROR(LOG_TAG, "storage set %llu: header bind failed",
+                      (unsigned long long)epoch_start);
+        return -1;
+    }
     int rc = sqlite3_step(st);
     if (rc == SQLITE_DONE) { sqlite3_finalize(st); return 1; }
     sqlite3_int64 cnt = 0;
@@ -504,7 +511,14 @@ int nodus_witness_storage_set_get(nodus_witness_t *w, uint64_t epoch_start,
             "v2_storage_set_members WHERE epoch_start = ?1 "
             "ORDER BY node_fp ASC", -1, &st, NULL) != SQLITE_OK)
         return -1;
-    sqlite3_bind_int64(st, 1, (sqlite3_int64)epoch_start);
+    /* Same rule: no member rows because the bind failed must not pass for a
+     * set without members. */
+    if (sqlite3_bind_int64(st, 1, (sqlite3_int64)epoch_start) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        QGP_LOG_ERROR(LOG_TAG, "storage set %llu: members bind failed",
+                      (unsigned long long)epoch_start);
+        return -1;
+    }
     uint32_t n = 0;
     int bad = 0;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {

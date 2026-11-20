@@ -295,6 +295,86 @@ static void test_cleanup_on_close(void) {
     PASS();
 }
 
+/* ── Test 5 (D-21): frames left in the FIFO after a full drain batch ─
+ *
+ * Proves: on a NON-session connection, when more than NODUS_DRAIN_PER_CALL
+ *   frames are queued and the first handle_write batch empties wbuf, the
+ *   frames still queued are re-armed by nodus_tcp_poll alone (conn_has_unsent
+ *   counts the pending FIFO for every connection) — the application sends
+ *   nothing more. The wait is "no progress for N poll rounds", not a clock.
+ * Flags/env: none.  Leaves behind: nothing (both transports are closed).
+ * How it can falsely pass: if a later nodus_tcp_send were issued the send
+ *   path itself would drain the remainder and hide the stall; this case
+ *   makes no send after the park. A transport without NODUS_TCP_EPOLL
+ *   (portable poll back end) re-arms every round and cannot show the stall.
+ * Today (before the fix) the case ends with pending_count == 5. */
+static void test_pending_only_rearmed_by_poll(void) {
+    TEST("pending-only non-session conn drains by poll alone (D-21)");
+
+    nodus_tcp_t server, client;
+    nodus_tcp_conn_t *conn = setup_pair(&server, &client);
+    if (!conn || conn->state != NODUS_CONN_CONNECTED) {
+        FAIL("setup failed");
+        nodus_tcp_close(&client); nodus_tcp_close(&server);
+        return;
+    }
+
+    const size_t target = NODUS_MAX_FRAME_TCP - 1024;
+    uint8_t *nb = realloc(conn->wbuf, target + 8192);
+    if (!nb) { FAIL("realloc"); nodus_tcp_close(&client); nodus_tcp_close(&server); return; }
+    conn->wbuf = nb;
+    conn->wcap = target + 8192;
+
+    const int nframes = NODUS_DRAIN_PER_CALL + 5;
+    /* A non-session conn's write cap is NODUS_MAX_FRAME_TCP + header + 4096
+     * (conn_write_cap), so with wlen parked at MAX - 1024 about 5 KB is
+     * still free: a frame must exceed that to be routed to the FIFO. */
+    const size_t frame_size = 16 * 1024;
+    uint8_t *frame = malloc(frame_size);
+    memset(frame, 0x5A, frame_size);
+    for (int i = 0; i < nframes; i++) {
+        conn->wlen = target;
+        conn->wpos = 0;
+        nodus_tcp_send(conn, frame, frame_size);
+    }
+    free(frame);
+
+    if (conn->session != NULL || conn->pending_count != (size_t)nframes) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "setup: session=%p pending=%zu",
+                 (void *)conn->session, conn->pending_count);
+        FAIL(msg);
+        nodus_tcp_close(&client); nodus_tcp_close(&server); return;
+    }
+
+    /* The socket consumed everything; no further application send. */
+    conn->wlen = 0;
+    conn->wpos = 0;
+
+    size_t last = conn->pending_count;
+    int idle = 0;
+    for (int i = 0; i < 200 && conn->pending_count > 0 && idle < 20; i++) {
+        nodus_tcp_poll(&client, 5);
+        nodus_tcp_poll(&server, 5);
+        if (conn->pending_count == last) idle++;
+        else { idle = 0; last = conn->pending_count; }
+    }
+
+    if (conn->pending_count == 0 &&
+        conn->pending_drained_count == (uint64_t)nframes) {
+        PASS();
+    } else {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "pending_count=%zu drained=%llu (want 0/%d)",
+                 conn->pending_count,
+                 (unsigned long long)conn->pending_drained_count, nframes);
+        FAIL(msg);
+    }
+
+    nodus_tcp_close(&client);
+    nodus_tcp_close(&server);
+}
+
 int main(void) {
     printf("Pending queue / backpressure tests (Phase 3)\n");
     printf("============================================\n");
@@ -303,6 +383,7 @@ int main(void) {
     test_fifo_order_on_drain();
     test_pending_cap_fires_callback();
     test_cleanup_on_close();
+    test_pending_only_rearmed_by_poll();
 
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;

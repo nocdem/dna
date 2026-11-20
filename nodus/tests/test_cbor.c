@@ -292,6 +292,48 @@ static void test_decode_tstr(void) {
         FAIL("decoded tstr doesn't match");
 }
 
+/* W-03: a BSTR/TSTR whose 64-bit length does not fit (or exceeds the bytes
+ * that remain) is an error BEFORE any size_t conversion.
+ *
+ * Proves: for both string kinds, an 8-byte length of 2^32+4 followed by
+ *   exactly 4 payload bytes (the value a 32-bit size_t would truncate to 4)
+ *   and a length of UINT64_MAX are refused with CBOR_ITEM_ERROR + dec.error,
+ *   while the honest 4-byte string is still decoded.
+ * Flags/env: none.  Leaves behind: nothing.
+ * How it can falsely pass: on a 64-bit host (size_t == uint64_t) the old
+ *   code already rejected these vectors, so this case pins the contract
+ *   there and cannot show the wasm32 truncation; the defect itself needs a
+ *   32-bit size_t build of this file (wasm32 or -m32), which a 64-bit run
+ *   of this test does not exercise. */
+static void test_decode_len64_rejected(void) {
+    TEST("decode rejects 64-bit string length (W-03)");
+    static const uint8_t pay[4] = { 'a', 'b', 'c', 'd' };
+    int ok = 1;
+    for (int kind = 0; kind < 2 && ok; kind++) {
+        uint8_t mt = (uint8_t)(kind == 0 ? 0x40 : 0x60); /* BSTR / TSTR */
+        uint8_t wrap[9 + 4] = { (uint8_t)(mt | 27), 0, 0, 0, 1, 0, 0, 0, 4,
+                                pay[0], pay[1], pay[2], pay[3] };
+        cbor_decoder_t dec;
+        cbor_decoder_init(&dec, wrap, sizeof(wrap));
+        cbor_item_t it = cbor_decode_next(&dec);
+        if (it.type != CBOR_ITEM_ERROR || !dec.error) ok = 0;
+
+        uint8_t huge[9] = { (uint8_t)(mt | 27), 0xFF, 0xFF, 0xFF, 0xFF,
+                            0xFF, 0xFF, 0xFF, 0xFF };
+        cbor_decoder_init(&dec, huge, sizeof(huge));
+        it = cbor_decode_next(&dec);
+        if (it.type != CBOR_ITEM_ERROR || !dec.error) ok = 0;
+
+        uint8_t good[1 + 4] = { (uint8_t)(mt | 4), pay[0], pay[1], pay[2], pay[3] };
+        cbor_decoder_init(&dec, good, sizeof(good));
+        it = cbor_decode_next(&dec);
+        size_t len = kind == 0 ? it.bstr.len : it.tstr.len;
+        if (dec.error || len != 4) ok = 0;
+    }
+    if (ok) PASS();
+    else FAIL("64-bit length not rejected / honest string not decoded");
+}
+
 static void test_decode_map(void) {
     TEST("decode map and find key");
     uint8_t buf[128];
@@ -814,6 +856,7 @@ int main(void) {
     test_decode_uint();
     test_decode_bstr();
     test_decode_tstr();
+    test_decode_len64_rejected();
     test_decode_map();
     test_decode_nested();
     test_decode_skip();

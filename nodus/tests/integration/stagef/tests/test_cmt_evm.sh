@@ -820,6 +820,7 @@ pump_to() {
         cli=$(cli_for "$node")
         "$cli" -s 127.0.0.1 -p "$port" v2-envelope spend --keys "$PUMP_KEYS" \
             --to "$(fp_of "$PUMP_KEYS")" --amount all --count 1 \
+            $(stagef_dust_flag "$cli") \
             --submit "127.0.0.1:$port" > "$log" 2>&1 \
             || { cat "$log" >&2; die "pump spend $PUMP_SEQ ($cli) was refused/failed on node$node (see $log)"; }
         intent=$(spend_intent "$log")

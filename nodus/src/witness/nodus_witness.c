@@ -857,9 +857,14 @@ static int witness_db_open_attempt(nodus_witness_t *witness,
         return rc;
     }
 
-    /* Schema v12 migration (Phase 1 / Task 1.1). Idempotent; aborts on
-     * unrecoverable error. */
-    nodus_witness_db_migrate_v12(witness);
+    /* Schema v12 migration (Phase 1 / Task 1.1). Idempotent. A real failure
+     * (it logs "MIGRATION FAILURE: ...") refuses the open like every other
+     * step above: the database is never used on a partly migrated schema. */
+    rc = nodus_witness_db_migrate_v12(witness);
+    if (rc != SQLITE_OK) {
+        witness_db_open_fail(witness);
+        return rc;
+    }
 
     /* R3 W4 — the H-5 restore of the pbft_state singleton row
      * (last_prepared + the discarded current_view) stood here. Both the
@@ -1677,8 +1682,9 @@ int nodus_witness_create_chain_db(nodus_witness_t *witness,
      * (db != NULL, chain_id = STALE) — an identity belonging to the chain
      * we just closed, presented as the identity of the one we just
      * opened. Both live callers happen to enter with chain_id == 0
-     * today (nodus_witness_bft.c commit_genesis and
-     * nodus_witness_bootstrap.c handle_genesis_rsp), so it is latent
+     * today (the genesis derivation in nodus_witness_v2_gen.c and the
+     * joiner's adoption in nodus_witness_v2_join.c, both on a freshly
+     * zeroed scratch handle), so it is latent
      * rather than live; the two paths must still read the same way or the
      * next reader re-derives the bug.
      *

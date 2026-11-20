@@ -347,6 +347,30 @@ static inline int r_tag(const uint8_t *in, size_t len, size_t *off,
     return CMT_OK;
 }
 
+/* Embedding a cmt_pb message through its PUBLIC marshal: marshal into the
+ * free region [0, w->i), move the result up to [w->i - n, w->i) and frame it.
+ * The bytes are those of the generated in-place backward write. ONE
+ * definition for every codec TU that embeds a message this way (it was a
+ * word-for-word copy in cmt_pb_store.c and cmt_light_block.c). */
+#define W_EMBED_DEFINE(name, type, fn)                                      \
+    static void name(pb_w_t *w, uint32_t field, const type *m)              \
+    {                                                                       \
+        size_t n = 0;                                                       \
+        if (w->err != CMT_OK) {                                             \
+            return;                                                         \
+        }                                                                   \
+        if (fn(m, w->buf, w->i, &n) != CMT_OK) {                            \
+            w->err = CMT_REJECT;                                            \
+            return;                                                         \
+        }                                                                   \
+        if (n != 0) {                                                       \
+            memmove(w->buf + w->i - n, w->buf, n);                          \
+        }                                                                   \
+        w->i -= n;                                                          \
+        w_uvarint(w, (uint64_t)n);                                          \
+        w_tag(w, field, 2);                                                 \
+    }
+
 #ifdef __cplusplus
 }
 #endif

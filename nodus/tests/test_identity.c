@@ -346,6 +346,76 @@ static bool id_equal(const nodus_identity_t *a, const nodus_identity_t *b) {
            memcmp(a->mlkem_sk, b->mlkem_sk, NODUS_MLKEM_SK_BYTES) == 0;
 }
 
+/* C-13: nodus_identity_load leaves nothing of a failed load in *id_out.
+ *
+ * Proves: with a valid nodus.pk and a nodus.sk cut to half its length, or
+ * with nodus.sk absent, or with an unreadable (missing) directory, the load
+ * fails and EVERY byte of the output struct is zero — in particular the
+ * half of the secret key the short read had already copied. The output is
+ * pre-filled with 0xAA so an untouched struct cannot read as zeroed.
+ * Flags/env: none. Leaves behind: mkdtemp dirs under /tmp, removed here.
+ * How it can falsely pass: if the loader zeroed the struct only on the paths
+ * tested but not on some other failing path (fingerprint derivation cannot
+ * be made to fail from a file fixture, so that exit is covered by the source
+ * change, not by this case). Today the first case leaves the file's bytes
+ * in id.sk. */
+static bool identity_all_zero(const nodus_identity_t *id) {
+    const uint8_t *p = (const uint8_t *)id;
+    for (size_t i = 0; i < sizeof(*id); i++)
+        if (p[i] != 0) return false;
+    return true;
+}
+
+static void load_failure_zeroes(const char *label, const char *file,
+                                bool truncate_to_half) {
+    TEST(label);
+    char dir[64];
+    nodus_identity_t orig;
+    if (make_identity_dir(dir, sizeof(dir), &orig) != 0) {
+        FAIL("fixture failed");
+        return;
+    }
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", dir, file);
+    if (truncate_to_half) {
+        if (truncate(path, NODUS_SK_BYTES / 2) != 0) {
+            FAIL("truncate failed");
+            remove_identity_dir(dir);
+            nodus_identity_clear(&orig);
+            return;
+        }
+    } else if (unlink(path) != 0) {
+        FAIL("unlink failed");
+        remove_identity_dir(dir);
+        nodus_identity_clear(&orig);
+        return;
+    }
+
+    nodus_identity_t id;
+    memset(&id, 0xAA, sizeof(id));
+    int rc = nodus_identity_load(dir, &id);
+    if (rc != 0 && identity_all_zero(&id)) PASS();
+    else FAIL(rc == 0 ? "load of a damaged identity succeeded"
+                      : "failed load left bytes in the output");
+    remove_identity_dir(dir);
+    nodus_identity_clear(&orig);
+}
+
+static void test_load_failure_leaves_nothing(void) {
+    load_failure_zeroes("load: short nodus.sk leaves the output zeroed",
+                        "nodus.sk", true);
+    load_failure_zeroes("load: missing nodus.sk leaves the output zeroed",
+                        "nodus.sk", false);
+    {
+        TEST("load: missing directory leaves the output zeroed");
+        nodus_identity_t id;
+        memset(&id, 0xAA, sizeof(id));
+        int rc = nodus_identity_load("/tmp/nodus_idro_no_such_dir_c13", &id);
+        if (rc != 0 && identity_all_zero(&id)) PASS();
+        else FAIL("failed load left bytes in the output");
+    }
+}
+
 static void test_readonly_full_load(void) {
     TEST("readonly load: full identity matches, dir unchanged");
     char dir[64];
@@ -474,6 +544,7 @@ int main(void) {
     readonly_refuses("readonly load: mismatched ML-KEM pair refused",
                      "nodus.mlkem_pk", true);
     test_readonly_control_old_loader_writes();
+    test_load_failure_leaves_nothing();
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed > 0 ? 1 : 0;
