@@ -146,7 +146,14 @@
  *     113 "3 a"; the depth requirement is a READING, so that a receipt that a
  *     reorganisation could still replace is never final);
  *   no receipt of any attempt at the quorum and the confirmed nonce (`latest`
- *     count, Q-th largest) above the stored nonce -> the head is ORPHANED, the
+ *     count, Q-th largest) above the stored nonce -> the step first WAITS: it
+ *     writes and sends nothing and returns AMM_EP_OK until the head has been
+ *     seen so in AMM_EP_ORPHAN_BLOCKS new blocks (a latest block above the one
+ *     of its previous sighting) after the first sighting, because the block that
+ *     used the nonce may hold this very attempt and the count can show it before
+ *     the receipt does; a receipt found, or the nonce no longer used, ends the
+ *     wait. The count is kept in memory only: a restart begins it again. Seen
+ *     so for that many new blocks -> the head is ORPHANED, the
  *     attempts it replaced are `voided` and the swap becomes `unknown` (plan
  *     line 268; "the bot stops": unknown refuses new approvals, plan section
  *     17);
@@ -203,6 +210,16 @@
 #include "amm_journal.h"
 
 #define AMM_EP_ITER_MAX 4
+
+/* New blocks a head must be seen with no receipt at the quorum and its nonce
+ * used before it is judged orphaned (see the step rules above): the count a
+ * mature wallet's pending-transaction tracker uses before it calls a
+ * transaction dropped. That tracker counts its checks; this one counts only
+ * checks at a latest block above the previous sighting's, and starts again when
+ * the nonce is seen unused, so a verdict can come later than there, never
+ * sooner. At most 64 heads are counted at once (amm_eth_pay.c); a head beyond
+ * that waits without a verdict until a slot is free. */
+#define AMM_EP_ORPHAN_BLOCKS 3
 
 typedef struct amm_eth_pay amm_eth_pay_t;
 

@@ -52,9 +52,20 @@
  *       125 is UNKNOWN with nothing stored and the price never asked; exactly
  *       at the bound it does not wrap;
  *   E5  ORPHANED NONCE -> unknown: no receipt at the quorum and the confirmed
- *       nonce above the stored nonce -> attempt orphaned, swap `unknown`, and
- *       the journal then refuses new approvals (the bot stops); the confirmed
- *       nonce equal to the stored nonce is not an orphan;
+ *       nonce above the stored nonce -> first a WAIT (nothing written, nothing
+ *       sent, a signed head not broadcast) until the head has been seen so in
+ *       AMM_EP_ORPHAN_BLOCKS new blocks (the same latest block twice counts
+ *       once), then attempt orphaned, swap `unknown`, and the journal then
+ *       refuses new approvals (the bot stops); the confirmed nonce equal to the
+ *       stored nonce is not an orphan; the 2026-11-20 live case: the count shows
+ *       the nonce used before the receipt of the same attempt, which then
+ *       appears -> confirmed and paid, never unknown; the nonce unused again
+ *       ends the wait and a later sighting counts from the start. False pass:
+ *       the stub tip moves only when the test sets it, so a wait that counted
+ *       steps instead of blocks would pass the per-block loops too; the "same
+ *       latest block again" step is what tells them apart;
+ *   E5b THE WAIT TABLE FULL: 64 heads counted, a 65th gets no verdict and
+ *       disturbs no count until a verdict frees a slot, then counts its own blocks;
  *   E6  BALANCE SHORT IS REFUSED before signing: USDT balanceOf minus the
  *       bot's own pending payouts (journal rows), and ether for gas
  *       (gas limit x max fee); nothing stored; the smallest answer of the
@@ -816,6 +827,8 @@ static void e4_receipts(void) {
     amm_eth_pay_free(p);
 }
 
+static int att_is(int64_t seq, int n, const char *state);
+
 static void e5_orphaned(void) {
     printf("E5 orphaned nonce\n");
     fresh();
@@ -828,7 +841,21 @@ static void e5_orphaned(void) {
     CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && o.worked == 0 && swap_state_is(s.seq, "payout_pending"),
           "no receipt and the confirmed nonce == the stored nonce: still pending, not an orphan");
     g_st[0].cnt_latest = 1;                                              /* the nonce was used by another transaction */
-    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_ORPHANED && o.worked == 1, "no receipt and the confirmed nonce above the stored one: ORPHANED");
+    g_st[0].tip = 1000;
+    int sd5 = sends();
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && o.worked == 0 && swap_state_is(s.seq, "payout_pending") &&
+          att_is(s.seq, 1, "submitted") && sends() == sd5,
+          "no receipt and the nonce used, first sighting: waits, nothing written, nothing sent");
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && swap_state_is(s.seq, "payout_pending"),
+          "the same latest block again: no new block counted, still waiting");
+    for (int b = 1; b < AMM_EP_ORPHAN_BLOCKS; b++) {
+        g_st[0].tip = 1000 + (uint64_t)b;
+        CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && o.worked == 0 && swap_state_is(s.seq, "payout_pending") &&
+              sends() == sd5, "seen so in fewer than AMM_EP_ORPHAN_BLOCKS new blocks: still waiting");
+    }
+    g_st[0].tip = 1000 + AMM_EP_ORPHAN_BLOCKS;
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_ORPHANED && o.worked == 1,
+          "no receipt and the nonce used for AMM_EP_ORPHAN_BLOCKS new blocks: ORPHANED");
     amm_eattempt_t a;
     CHECK(amm_journal_eth_attempt_latest(g_j, s.seq, &a) == 0 && !strcmp(a.state, "orphaned"), "the attempt is orphaned");
     amm_eattempt_free(&a);
@@ -849,8 +876,89 @@ static void e5_orphaned(void) {
     p = new_pay_n(1, 1, 3, 0);
     CHECK(p && new_swap(1, 'c', '1', 0, &s) && amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_OK, "setup: signed only");
     g_st[0].cnt_latest = 5;
+    g_st[0].tip = 2000;
+    for (int b = 0; b < AMM_EP_ORPHAN_BLOCKS; b++) {
+        g_st[0].tip = 2000 + (uint64_t)b;
+        CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && sends() == 0 && att_is(s.seq, 1, "signed"),
+              "a signed head with its nonce used: waits, and is not broadcast meanwhile");
+    }
+    g_st[0].tip = 2000 + AMM_EP_ORPHAN_BLOCKS;
     CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_ORPHANED && sends() == 0 && swap_state_is(s.seq, "unknown"),
           "orphaned without any broadcast: nothing is sent");
+    amm_eth_pay_free(p);
+
+    /* the live case of 2026-11-20: the count shows the nonce used before the
+     * receipt of THIS attempt is visible; the receipt then appears -> paid */
+    fresh();
+    p = new_pay_n(1, 1, 3, 0);
+    CHECK(p && new_swap(1, 'c', '1', 0, &s) && amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_OK &&
+          amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK, "setup: a payout with nonce 0, broadcast");
+    g_st[0].cnt_latest = 1;
+    g_st[0].tip = 1000;
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && swap_state_is(s.seq, "payout_pending") && att_is(s.seq, 1, "submitted"),
+          "the nonce used, no receipt yet: waits instead of orphaning its own payout");
+    g_st[0].rc_mode = 1;
+    g_st[0].rc.status = 1; g_st[0].rc.block_number = 998; memset(g_st[0].rc.block_hash, 0x77, 32);
+    g_st[0].tip = 1001;                                                  /* depth 3 */
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && o.confirmed == 1 && swap_state_is(s.seq, "paid") &&
+          att_is(s.seq, 1, "confirmed"), "the receipt appears at the final depth: confirmed and paid, not unknown");
+    amm_eth_pay_free(p);
+
+    /* a wait ends when the nonce is no longer used (a reorganisation): the
+     * count starts again at the next sighting */
+    fresh();
+    p = new_pay_n(1, 1, 3, 0);
+    CHECK(p && new_swap(1, 'c', '1', 0, &s) && amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_OK &&
+          amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK, "setup: a payout broadcast");
+    g_st[0].cnt_latest = 1;
+    for (int b = 0; b < AMM_EP_ORPHAN_BLOCKS; b++) {
+        g_st[0].tip = 3000 + (uint64_t)b;
+        CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK, "waiting");
+    }
+    g_st[0].cnt_latest = 0;
+    g_st[0].tip = 3000 + AMM_EP_ORPHAN_BLOCKS;
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && swap_state_is(s.seq, "payout_pending"), "the nonce unused again: pending");
+    g_st[0].cnt_latest = 1;
+    g_st[0].tip = 3001 + AMM_EP_ORPHAN_BLOCKS;
+    CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_OK && swap_state_is(s.seq, "payout_pending"),
+          "used again: a new first sighting, not the old count");
+    amm_eth_pay_free(p);
+}
+
+/* E5b: the wait table holds 64 heads; a 65th head in the same state gets no
+ * verdict while the table is full and disturbs no other head's count; once a
+ * verdict frees a slot it starts its own count. Leaves nothing (temp journal). */
+static void e5b_full_table(void) {
+    printf("E5b orphan wait table full\n");
+    fresh();
+    amm_eth_pay_t *p = new_pay_n(1, 1, 3, 0);
+    enum { NH = 65 };
+    amm_swap_t s[NH];
+    amm_ep_step_t o;
+    int ok = p != NULL;
+    for (int i = 0; i < NH && ok; i++)
+        ok = new_swap(1, 'c', '1', 0, &s[i]) && amm_eth_pay_sign(p, s[i].seq, 1000000, 0, &o) == AMM_EP_OK &&
+             amm_eth_pay_step(p, s[i].seq, 0, &o) == AMM_EP_OK;
+    CHECK(ok, "setup: 65 payouts signed and broadcast");
+    g_st[0].cnt_latest = 1000;                                           /* every nonce used, no receipt */
+    for (int b = 0; b < AMM_EP_ORPHAN_BLOCKS; b++) {
+        g_st[0].tip = 5000 + (uint64_t)b;
+        int all = 1;
+        for (int i = 0; i < NH; i++) all &= amm_eth_pay_step(p, s[i].seq, 0, &o) == AMM_EP_OK;
+        CHECK(all, "every head waits while it is counted (or has no slot)");
+    }
+    g_st[0].tip = 5000 + AMM_EP_ORPHAN_BLOCKS;
+    int orphaned = 0;
+    for (int i = 0; i < NH - 1; i++) orphaned += amm_eth_pay_step(p, s[i].seq, 0, &o) == AMM_EP_ORPHANED;
+    CHECK(orphaned == NH - 1, "the 64 counted heads get their verdict after AMM_EP_ORPHAN_BLOCKS new blocks");
+    CHECK(amm_eth_pay_step(p, s[NH - 1].seq, 0, &o) == AMM_EP_OK && swap_state_is(s[NH - 1].seq, "payout_pending"),
+          "the 65th head, with no slot until now, starts its own count: no verdict yet");
+    for (int b = 1; b < AMM_EP_ORPHAN_BLOCKS; b++) {
+        g_st[0].tip = 5000 + AMM_EP_ORPHAN_BLOCKS + (uint64_t)b;
+        CHECK(amm_eth_pay_step(p, s[NH - 1].seq, 0, &o) == AMM_EP_OK, "the 65th head waits its own blocks");
+    }
+    g_st[0].tip = 5000 + 2 * AMM_EP_ORPHAN_BLOCKS;
+    CHECK(amm_eth_pay_step(p, s[NH - 1].seq, 0, &o) == AMM_EP_ORPHANED, "then it gets its verdict too");
     amm_eth_pay_free(p);
 }
 
@@ -1774,6 +1882,21 @@ static void price_conv(uint64_t p_e6) { g_price.mode = 2; g_price.p_e6 = p_e6; }
 
 static void all_base_fee(uint64_t v) { for (int i = 0; i < NP; i++) g_st[i].base_fee = v; }
 
+/* AMM_EP_ORPHAN_BLOCKS sightings of a head with no receipt and its nonce used,
+ * one per new latest block (every stub provider moves together from `base`):
+ * each step waits (AMM_EP_OK); the tip is left at base + AMM_EP_ORPHAN_BLOCKS
+ * so the caller's next step is the verdict. @return 1 when every step waited. */
+static int wait_orphan_blocks(amm_eth_pay_t *p, int64_t seq, uint64_t base) {
+    amm_ep_step_t o;
+    int ok = 1;
+    for (int b = 0; b < AMM_EP_ORPHAN_BLOCKS; b++) {
+        for (int i = 0; i < NP; i++) g_st[i].tip = base + (uint64_t)b;
+        if (amm_eth_pay_step(p, seq, 0, &o) != AMM_EP_OK) ok = 0;
+    }
+    for (int i = 0; i < NP; i++) g_st[i].tip = base + AMM_EP_ORPHAN_BLOCKS;
+    return ok;
+}
+
 /* attempt (swap, n) is in `state`, read from the state column through a second connection */
 static int att_is(int64_t seq, int n, const char *state) {
     char sql[200];
@@ -2120,6 +2243,8 @@ static void e24_stuck_replace(void) {
           "a receipt for TWO attempts of one nonce cannot both be true: UNKNOWN, nothing changes");
     g_st[0].rc_mode = 0;
     g_st[0].cnt_latest = 1;
+    CHECK(wait_orphan_blocks(p, s.seq, 5000) && att_is(s.seq, 2, "signed") && att_is(s.seq, 1, "replaced"),
+          "no receipt and the nonce used: the group waits AMM_EP_ORPHAN_BLOCKS new blocks, nothing changes");
     CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_ORPHANED && att_is(s.seq, 2, "orphaned") && att_is(s.seq, 1, "voided") &&
           swap_state_is(s.seq, "unknown"), "no receipt and the nonce used: the head orphaned, the replaced attempt voided, the swap unknown");
     amm_eth_pay_free(p);
@@ -2230,6 +2355,7 @@ static void e25_resend(void) {
     p = new_pay_n(1, 1, 3, 0);
     CHECK(p && new_swap(1, 'c', '1', 0, &s) && amm_eth_pay_sign(p, s.seq, 1000000, 0, &o) == AMM_EP_OK, "setup: a payout, signed");
     g_st[0].cnt_latest = 5;
+    CHECK(wait_orphan_blocks(p, s.seq, 5000), "the wait before the verdict");
     CHECK(amm_eth_pay_step(p, s.seq, 0, &o) == AMM_EP_ORPHANED && amm_eth_pay_resend(p, s.seq, 0, &o) == AMM_EP_ERR &&
           count_attempts(s.seq) == 0, "an orphaned head (the swap unknown) is not re-sent");
     amm_eth_pay_free(p);
@@ -2374,6 +2500,7 @@ int main(void) {
     e3_estimate_failure();
     e4_receipts();
     e5_orphaned();
+    e5b_full_table();
     e6_balances();
     e7_fee();
     e8_price();

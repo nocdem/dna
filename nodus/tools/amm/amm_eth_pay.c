@@ -17,13 +17,52 @@
 
 #define LOG_TAG "AMM_PAY"
 
+/* A head seen with no receipt at the quorum while its nonce is already used
+ * (see AMM_EP_ORPHAN_BLOCKS in amm_eth_pay.h): the latest block when it was last
+ * seen so, and how many new blocks it has been seen so since the first time. */
+typedef struct {
+    int      used;
+    uint8_t  hash[32];
+    uint64_t last_tip;
+    unsigned blocks;
+} orphan_watch_t;
+
+#define ORPHAN_WATCH_MAX 64
+
 struct amm_eth_pay {
     amm_eth_pay_cfg_t  cfg;
     amm_eth_provider_t prov[AMM_ETH_MAX_PROVIDERS];
     amm_signer_t      *signer;
     uint8_t            self[20];
     pthread_mutex_t    mu;        /* the one lock of nonce allocation (plan l.265) */
+    orphan_watch_t     ow[ORPHAN_WATCH_MAX];   /* under mu; memory only */
 };
+
+static orphan_watch_t *ow_find(amm_eth_pay_t *p, const uint8_t hash[32]) {
+    for (int i = 0; i < ORPHAN_WATCH_MAX; i++)
+        if (p->ow[i].used && !memcmp(p->ow[i].hash, hash, 32)) return &p->ow[i];
+    return NULL;
+}
+
+static void ow_drop(amm_eth_pay_t *p, const uint8_t hash[32]) {
+    orphan_watch_t *w = ow_find(p, hash);
+    if (w) memset(w, 0, sizeof(*w));
+}
+
+/* The first sighting of a head in this state: a free slot. A full table takes
+ * no new head (NULL): that head gets no verdict until a slot is free, and no
+ * other head's count is disturbed. */
+static orphan_watch_t *ow_add(amm_eth_pay_t *p, const uint8_t hash[32], uint64_t tip) {
+    orphan_watch_t *w = NULL;
+    for (int i = 0; i < ORPHAN_WATCH_MAX && !w; i++)
+        if (!p->ow[i].used) w = &p->ow[i];
+    if (!w) return NULL;
+    memset(w, 0, sizeof(*w));
+    w->used = 1;
+    memcpy(w->hash, hash, 32);
+    w->last_tip = tip;
+    return w;
+}
 
 /* ── construction ─────────────────────────────────────────────────────── */
 
@@ -784,7 +823,7 @@ static int step_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
         rc = AMM_EP_UNKNOWN;
         goto done;
     }
-    if (nfound == 1) rr = RR_FOUND;
+    if (nfound == 1) { rr = RR_FOUND; ow_drop(p, head.hash); }
 
     if (rr == RR_FOUND) {
         if (!deep) { rc = AMM_EP_OK; goto done; }              /* waiting for the final depth (joint vote) */
@@ -860,7 +899,32 @@ static int step_locked(amm_eth_pay_t *p, int64_t swap_seq, uint64_t deadline_ms,
     /* no receipt at the quorum: is its nonce used by another transaction? */
     uint64_t confirmed = 0;
     if (qth(p, &rd, R_COUNT_LATEST, &confirmed) != 0) { say(out, "the confirmed nonce is not readable"); rc = AMM_EP_UNKNOWN; goto done; }
+    if (confirmed <= a.nonce) ow_drop(p, head.hash);
     if (confirmed > a.nonce) {
+        /* The receipts and the nonce are separate reads: the block that used
+         * the nonce may be the one that holds THIS attempt, shown by the count
+         * before its receipt. The verdict waits until the head has been seen
+         * so in AMM_EP_ORPHAN_BLOCKS new blocks after the first sighting;
+         * until then nothing is written and nothing is sent. */
+        orphan_watch_t *w = ow_find(p, head.hash);
+        if (!w) w = ow_add(p, head.hash, tip);
+        else if (tip > w->last_tip) { w->blocks++; w->last_tip = tip; }
+        if (!w) {
+            say(out, "no receipt yet and the nonce is used: no room to count the blocks, waiting");
+            rc = AMM_EP_OK;
+            goto done;
+        }
+        if (w->blocks < AMM_EP_ORPHAN_BLOCKS) {
+            char th[65];
+            QGP_LOG_INFO(LOG_TAG, "swap %s: USDT transaction 0x%s (nonce %llu): no receipt at the quorum and the "
+                         "nonce is used (confirmed count %llu); seen so in %u of %d new blocks, latest block %llu: waiting",
+                         s.id, hash_hex(a.hash, th), (unsigned long long)a.nonce, (unsigned long long)confirmed,
+                         w->blocks, AMM_EP_ORPHAN_BLOCKS, (unsigned long long)tip);
+            say(out, "no receipt yet and the nonce is used: waiting for more blocks before any verdict");
+            rc = AMM_EP_OK;
+            goto done;
+        }
+        ow_drop(p, head.hash);
         if (finish_and_move(p, &s, a.n, AMM_EA_ORPHANED, AMM_S_UNKNOWN,
                             "payout transaction orphaned: its nonce was used by another transaction") != 0) {
             rc = AMM_EP_ERR;

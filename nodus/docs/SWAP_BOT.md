@@ -169,6 +169,19 @@ the engine.
   nonce can be included: every step reads the receipt of every attempt of the
   nonce, settles the one that landed with its own amount, and marks the others
   `voided`.
+- **A used nonce with no receipt is not judged at once.** When no attempt of the
+  nonce has a receipt at the quorum but the bot's confirmed transaction count
+  (`latest`, Q-th largest) is already above the nonce, the step writes and sends
+  nothing and waits until it has seen this in `AMM_EP_ORPHAN_BLOCKS` (3) new
+  blocks after the first sighting; only then is the attempt `orphaned` and the
+  swap `unknown` (the bot stops). The receipts and the count are separate reads,
+  and the block that used the nonce may hold the payout itself: on 2026-11-20 a
+  payout mined in block 12172896 was judged orphaned one step after it was sent,
+  because the count showed the nonce used before the providers returned its
+  receipt. A receipt found, or the nonce unused again, ends the wait. The count
+  is kept in memory: a restart begins it again. At most 64 payouts are counted at
+  once; another one in this state waits without a verdict until a slot is free
+  (`amm_eth_pay.h`, tests E5 and E5b).
 - **A `submitted` payout is broadcast again as the same stored bytes** to every
   usable provider when the latest block is above the block of its last
   broadcast, at most once per new block, and stays `submitted` whatever the
