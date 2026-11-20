@@ -1240,6 +1240,12 @@ void nodus_client_force_disconnect(nodus_client_t *client) {
     if (!client) return;
     /* Signal read thread to stop */
     atomic_store(&client->read_thread_stop, true);
+    /* The state is set before the socket is woken: the read thread may see
+     * the shutdown below as an end of stream and run client_on_disconnect,
+     * and with the state already DISCONNECTED that callback neither
+     * schedules a reconnect nor reports a state change for this deliberate
+     * close. */
+    client->state = NODUS_CLIENT_DISCONNECTED;
 
 #ifndef __EMSCRIPTEN__
     /* Wake the read thread out of its wait: shutdown only, never close — the
@@ -1270,10 +1276,8 @@ void nodus_client_force_disconnect(nodus_client_t *client) {
 
     /* Tear the connection down through the transport — the same call
      * nodus_client_suspend / nodus_client_close make — so the pool slot and
-     * the poll registration are released. The state is set first: with it
-     * already DISCONNECTED, client_on_disconnect neither schedules a
-     * reconnect nor reports a state change for this deliberate close. */
-    client->state = NODUS_CLIENT_DISCONNECTED;
+     * the poll registration are released (the state is already DISCONNECTED,
+     * set above). */
     if (client->conn && client->tcp) {
         nodus_tcp_disconnect((nodus_tcp_t *)client->tcp,
                               (nodus_tcp_conn_t *)client->conn);
