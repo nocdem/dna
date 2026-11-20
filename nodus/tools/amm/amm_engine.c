@@ -432,6 +432,7 @@ static int accept_common(amm_engine_t *e, amm_accept_t *a, uint64_t request_numb
     case AMM_J_AMOUNT:      return AMM_ACC_AMOUNT;
     case AMM_J_REQ_REUSED:  return AMM_ACC_REUSED;
     case AMM_J_ILLEGAL:     return AMM_ACC_USED;
+    case AMM_J_DUP_TRANSFER: return AMM_ACC_DUP_TRANSFER;
     default:                return AMM_ACC_ERR;
     }
 }
@@ -860,6 +861,89 @@ static int nodus_waiting(amm_engine_t *e, amm_engine_step_t *o) {
     return rc;
 }
 
+/* The expiry of a signed add is decided only when the payment of the side(s)
+ * it would give up is not stored and waiting to be linked. The window rules
+ * assume the caller matched the stored payments first (amm_nodus_watch.h,
+ * amm_eth_watch.h), but the matching and the expiry walk have their own
+ * bounds and cursors, and an add can be signed while the walks are running:
+ * so the match is asked again for THIS add at the moment of the decision.
+ * `want_nodus` / `want_eth` = the side(s) the add has no payment linked for.
+ * A matching payment that is found is linked now (the same match rules as the
+ * walks above) and the add is not expired. @return 1 a matching unlinked payment
+ * exists (linked, or left to the next round): do not expire / 0 none / -1 a
+ * journal fault. */
+static int unlinked_payment_pending(amm_engine_t *e, const amm_add_t *a, int want_nodus,
+                                    int want_eth, amm_engine_step_t *o) {
+    if (want_nodus) {
+        uint8_t wire[64];
+        amm_nrow_t nr;
+        if (from_hex(a->transfer_id + 6, wire, 64) == 0) {
+            int ng = amm_journal_nrow_by_wire(e->c.journal, wire, &nr);
+            if (ng < 0) return -1;
+            if (ng == 0 && !strcmp(nr.peer, a->nodus_addr) && nr.amount == a->nodus_amount &&
+                nr.ts <= a->expiry && nr.height > a->nodus_tip) {
+                int lr = amm_journal_add_link_nodus(e->c.journal, a->seq, nr.height);
+                if (lr == -1) return -1;
+                if (lr == AMM_J_OK) {
+                    o->adds_linked++;
+                    QGP_LOG_INFO(LOG_TAG, "add %lld: the Nodus payment in block %llu is linked "
+                                 "before its expiry was decided", (long long)a->seq,
+                                 (unsigned long long)nr.height);
+                    return 1;
+                }
+                /* a payment another use already took (AMM_J_DUP_TRANSFER) is not this
+                 * add's: it does not hold the expiry back */
+                if (lr != AMM_J_DUP_TRANSFER) return 1;
+            }
+        }
+    }
+    if (want_eth) {
+        uint8_t sender[20], amt[32];
+        if (from_hex(a->eth_addr, sender, 20) != 0) return 0;
+        be32_of_u64(a->usdt_amount, amt);
+        /* a payment an open swap approval of this sender and amount matches is
+         * that swap's (the records walk offers it to the swap first) */
+        amm_swap_t ap;
+        int fg = amm_journal_swap_find_open_usdt(e->c.journal, a->eth_addr, a->usdt_amount, &ap);
+        if (fg < 0) return -1;
+        amm_rec_t *recs = malloc(sizeof(*recs) * (size_t)e->page);
+        if (!recs) return -1;
+        amm_rec_t after_rec;
+        int have_after = 0, found = 0;
+        for (;;) {
+            int nr = 0;
+            if (amm_journal_rec_list_unconsumed_from(e->c.journal, sender, amt,
+                                                     have_after ? &after_rec : NULL, recs,
+                                                     e->page, &nr) != 0) { found = -1; break; }
+            for (int i = 0; i < nr && !found; i++) {
+                const amm_rec_t *r = &recs[i];
+                if (amm_eth_watch_match(r, sender, amt, a->eth_tip, a->expiry) != AMM_M_MATCH)
+                    continue;
+                if (fg == 0 && amm_eth_watch_match(r, r->from, r->value, ap.approved_tip,
+                                                   ap.expiry) == AMM_M_MATCH)
+                    continue;
+                char key[AMM_TID_MAX];
+                amm_journal_eth_key(r->tx, key, sizeof(key));
+                int lr = amm_journal_add_link_eth(e->c.journal, a->seq, key, r->log_index);
+                if (lr == -1) { found = -1; break; }
+                if (lr == AMM_J_OK) {
+                    o->adds_linked++;
+                    QGP_LOG_INFO(LOG_TAG, "add %lld: the Ethereum payment %s/%u is linked before "
+                                 "its expiry was decided", (long long)a->seq, key,
+                                 (unsigned)r->log_index);
+                    found = 1;
+                }
+            }
+            if (found != 0 || nr < e->page) break;
+            after_rec = recs[nr - 1];
+            have_after = 1;
+        }
+        free(recs);
+        if (found != 0) return found;
+    }
+    return 0;
+}
+
 /* e. liquidity adds (plan section 14). One page of signed adds at a time. */
 static int liquidity_adds(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
     const int pg = e->page;
@@ -934,7 +1018,9 @@ static int liquidity_adds(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
         if (rc == 0) e->adds_after[sti] = after;
         o->adds_examined += (int)examined;
     }
-    /* a signed add with no deposit matched whose windows are fully observed */
+    /* a signed add with no deposit matched whose windows are fully observed;
+     * a signed add with exactly one deposit matched whose missing side's window
+     * is fully observed (it expires, the paid deposit is held) */
     {
         int64_t after = e->adds_after[2];
         uint64_t examined = 0;
@@ -951,14 +1037,54 @@ static int liquidity_adds(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
                 const amm_add_t *a = &l[i];
                 after = a->seq;
                 examined++;
-                if (*a->eth_tx || a->nodus_height != 0) continue;
+                const int eth_paid = *a->eth_tx != '\0';
+                const int nodus_paid = a->nodus_height != 0;
+                if (eth_paid && nodus_paid) continue;    /* the commit path owns it */
                 uint8_t sender[20], amt[32];
                 if (from_hex(a->eth_addr, sender, 20) != 0) continue;
                 be32_of_u64(a->usdt_amount, amt);
+                if (eth_paid || nodus_paid) {
+                    /* exactly ONE side paid: it is a payment that matches no
+                     * approval (plan line 653, givens items 32, 35). Once the
+                     * payment window of the MISSING side is fully observed the
+                     * add expires and the paid deposit is held for manual
+                     * handling. The window predicate of the side that paid is
+                     * not asked (amm_eth_watch.h: it answers for a payment not
+                     * yet seen). */
+                    const int missing = eth_paid
+                        ? amm_nodus_watch_window_observed(e->c.nodus_watch, a->expiry)
+                        : amm_eth_watch_window_observed(e->c.eth_watch, a->eth_tip, a->expiry,
+                                                        sender, amt);
+                    if (missing != 1) continue;
+                    int pc = unlinked_payment_pending(e, a, !nodus_paid, !eth_paid, o);
+                    if (pc < 0) { rc = -1; break; }
+                    if (pc == 1) continue;           /* the missing side did pay: not expired */
+                    int xr = amm_journal_add_expire_onesided(e->c.journal, a->seq);
+                    if (xr == AMM_J_OK) {
+                        o->adds_expired++;
+                        if (eth_paid) o->held_records++;  /* a Nodus row is held already */
+                        QGP_LOG_INFO(LOG_TAG, "add %lld: only the %s payment arrived; held for "
+                                     "manual handling (the other payment window is fully "
+                                     "observed)", (long long)a->seq,
+                                     eth_paid ? "USDT" : "NODUS");
+                    } else if (xr == AMM_J_NOT_YET) {
+                        QGP_LOG_INFO(LOG_TAG, "add %lld: only the USDT payment arrived; its "
+                                     "record is not deep yet, held for manual handling in a "
+                                     "later round", (long long)a->seq);
+                    } else if (xr == AMM_J_ILLEGAL) {
+                        QGP_LOG_ERROR(LOG_TAG, "add %lld: the one-sided expiry was refused "
+                                      "(the add or its paid deposit is not in the expected "
+                                      "state): it stays signed", (long long)a->seq);
+                    } else rc = -1;
+                    continue;
+                }
                 int we = amm_eth_watch_window_observed(e->c.eth_watch, a->eth_tip, a->expiry,
                                                        sender, amt);
                 int wn = amm_nodus_watch_window_observed(e->c.nodus_watch, a->expiry);
                 if (we == 1 && wn == 1) {
+                    int pc = unlinked_payment_pending(e, a, 1, 1, o);
+                    if (pc < 0) { rc = -1; break; }
+                    if (pc == 1) continue;           /* a payment arrived: not expired */
                     int xr = amm_journal_add_expire(e->c.journal, a->seq);
                     if (xr == AMM_J_OK) {
                         o->adds_expired++;
@@ -975,6 +1101,17 @@ static int liquidity_adds(amm_engine_t *e, uint64_t dl, amm_engine_step_t *o) {
         o->adds_examined += (int)examined;
     }
     free(l);
+    if (rc == 0) {
+        /* the paid USDT deposit of an expired add is held again when a reorganisation
+         * moved it and it is deep again */
+        int again = 0;
+        if (amm_journal_expired_deposits_rehold(e->c.journal, &again) != 0) rc = -1;
+        else if (again > 0) {
+            o->held_records += again;
+            QGP_LOG_INFO(LOG_TAG, "%d deposit(s) of expired adds held again after a "
+                         "reorganisation moved them", again);
+        }
+    }
     return rc;
 }
 

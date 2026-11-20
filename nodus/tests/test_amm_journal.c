@@ -3603,6 +3603,233 @@ static void j34_check_copy(void) {
     CHECK(amm_journal_check_copy("/nonexistent-dir/none.db", &r) == -1, "a path that cannot be read: -1");
 }
 
+/* J35: amm_journal_add_expire_onesided (BUGS.md AMM-01 second part; plan line 653 and givens
+ * item 32: a payment that matches no approval is held for manual handling).
+ * WHAT IT PROVES, each on a signed add made through amm_journal_add_approve / _accept:
+ *   (a) USDT side only: the call moves the add to expired, KEEPS its eth_tx / eth_log, moves the
+ *       deep Ethereum record to held in the same transaction, writes no pool (no ledger stays
+ *       none), and a later add of the same deposit is refused (AMM_J_DUP_TRANSFER); a second call
+ *       on the expired add is AMM_J_ILLEGAL;
+ *   (b) a record that is only `seen` gives AMM_J_NOT_YET and changes nothing (the add stays
+ *       signed, the record seen); once deep the same call succeeds; a record already held is
+ *       accepted as it is;
+ *   (c) NODUS side only: the add expires, nodus_height stays and the stored row stays held; a
+ *       row that is not held (counted) gives AMM_J_ILLEGAL and nothing changes;
+ *   (d) no deposit linked, both linked, an add that is not signed (approved) and an unknown seq
+ *       all give AMM_J_ILLEGAL and write nothing;
+ *   (e) the purge of unused expired questions never deletes these rows, and a reopen keeps the
+ *       expired add, its link columns and the held record.
+ * FLAGS: none. LEAVES BEHIND: the test journal in the temporary directory (removed at the end).
+ * HOW IT COULD FALSELY PASS: the Nodus row is placed by the test (the watcher's own write is
+ * test_amm_nodus_watch); the engine's decision to call this function is E47 in test_amm_engine. */
+static amm_add_t j35_signed(uint32_t req, char c) {
+    amm_add_q_t aq;
+    memset(&aq, 0, sizeof(aq));
+    aq.bot_req = req; aq.usdt_amount = 10000000ULL; aq.nodus_amount = 10000000000000ULL;
+    aq.approved_at = 1000; aq.expiry = 1300; aq.eth_tip = 100; aq.nodus_tip = 100;
+    aq.nodus_min = 10000000000000ULL;
+    amm_add_t ad;
+    CHECK(amm_journal_add_approve(g_j, &aq, &ad) == AMM_J_OK, "setup: an add approved");
+    amm_add_accept_t ac;
+    memset(&ac, 0, sizeof(ac));
+    char eth40[41], nod128[129], tid[AMM_TID_MAX];
+    memset(eth40, c, 40); eth40[40] = 0; memset(nod128, c, 128); nod128[128] = 0;
+    snprintf(tid, sizeof(tid), "nodus:%s", nod128);
+    ac.bot_req = req; ac.eth_addr = eth40; ac.nodus_addr = nod128; ac.transfer_id = tid;
+    ac.usdt_amount = aq.usdt_amount; ac.nodus_amount = aq.nodus_amount;
+    ac.eth_req_no[31] = (uint8_t)req; ac.nodus_req_no[31] = (uint8_t)req;
+    CHECK(amm_journal_add_accept(g_j, &ac, &ad, NULL) == AMM_J_OK && !strcmp(ad.state, "signed"),
+          "setup: the add signed");
+    return ad;
+}
+
+static void j35_add_expire_onesided(void) {
+    printf("J35 a signed add with one deposit paid expires and holds that deposit\n");
+    fresh();
+    amm_add_t a1 = j35_signed(35001, 'a'), got;
+    amm_rec_t r1 = mkrec(0x35, 0, 100, "seen"), rg;
+    char key1[AMM_TID_MAX];
+    amm_journal_eth_key(r1.tx, key1, sizeof(key1));
+    CHECK(amm_journal_rec_put(g_j, &r1) == 0, "setup: the USDT record seen");
+    snprintf(r1.state, sizeof(r1.state), "deep");
+    CHECK(amm_journal_rec_put(g_j, &r1) == 0, "setup: the record deep");
+    CHECK(amm_journal_add_expire_onesided(g_j, a1.seq) == AMM_J_ILLEGAL,
+          "no deposit linked: refused");
+    CHECK(amm_journal_add_link_eth(g_j, a1.seq, key1, 0) == 0, "the USDT deposit is linked");
+    CHECK(amm_journal_add_expire_onesided(g_j, a1.seq) == AMM_J_OK, "(a) USDT side only: accepted");
+    CHECK(amm_journal_add_by_seq(g_j, a1.seq, &got) == 0 && !strcmp(got.state, "expired") &&
+          !strcmp(got.eth_tx, key1) && got.eth_log == 0 && got.nodus_height == 0,
+          "  the add is expired and keeps its link");
+    CHECK(amm_journal_rec_get(g_j, r1.tx, 0, &rg) == 0 && !strcmp(rg.state, "held"),
+          "  its Ethereum record is held");
+    amm_pool_t pool;
+    CHECK(amm_journal_pool_get(g_j, &pool) == 1, "  no pool was written");
+    CHECK(amm_journal_add_expire_onesided(g_j, a1.seq) == AMM_J_ILLEGAL, "  a second call: refused");
+    amm_add_t a2 = j35_signed(35002, 'b');
+    CHECK(amm_journal_add_link_eth(g_j, a2.seq, key1, 0) == AMM_J_DUP_TRANSFER,
+          "  the held deposit can never be linked to another add");
+
+    /* (b) a record that is not deep yet waits; a held one is accepted as it is */
+    amm_add_t a3 = j35_signed(35003, 'c');
+    amm_rec_t r3 = mkrec(0x36, 0, 100, "seen");
+    char key3[AMM_TID_MAX];
+    amm_journal_eth_key(r3.tx, key3, sizeof(key3));
+    CHECK(amm_journal_rec_put(g_j, &r3) == 0 && amm_journal_add_link_eth(g_j, a3.seq, key3, 0) == 0,
+          "setup: a seen record linked");
+    CHECK(amm_journal_add_expire_onesided(g_j, a3.seq) == AMM_J_NOT_YET, "(b) a seen record: not yet");
+    CHECK(amm_journal_add_by_seq(g_j, a3.seq, &got) == 0 && !strcmp(got.state, "signed") &&
+          amm_journal_rec_get(g_j, r3.tx, 0, &rg) == 0 && !strcmp(rg.state, "seen"),
+          "  nothing changed");
+    snprintf(r3.state, sizeof(r3.state), "deep");
+    CHECK(amm_journal_rec_put(g_j, &r3) == 0 && amm_journal_add_expire_onesided(g_j, a3.seq) == AMM_J_OK &&
+          amm_journal_rec_get(g_j, r3.tx, 0, &rg) == 0 && !strcmp(rg.state, "held"),
+          "  once deep: accepted, the record held");
+    amm_add_t a4 = j35_signed(35004, 'd');
+    amm_rec_t r4 = mkrec(0x37, 0, 100, "seen");
+    char key4[AMM_TID_MAX];
+    amm_journal_eth_key(r4.tx, key4, sizeof(key4));
+    CHECK(amm_journal_rec_put(g_j, &r4) == 0, "setup: a record seen");
+    snprintf(r4.state, sizeof(r4.state), "deep");
+    CHECK(amm_journal_rec_put(g_j, &r4) == 0, "setup: deep");
+    snprintf(r4.state, sizeof(r4.state), "held");
+    CHECK(amm_journal_rec_put(g_j, &r4) == 0 && amm_journal_add_link_eth(g_j, a4.seq, key4, 0) == 0,
+          "setup: a held record linked");
+    CHECK(amm_journal_add_expire_onesided(g_j, a4.seq) == AMM_J_OK &&
+          amm_journal_rec_get(g_j, r4.tx, 0, &rg) == 0 && !strcmp(rg.state, "held"),
+          "  an already held record: accepted, stays held");
+
+    /* (c) the NODUS side only (the wire id of the row is the add's transfer id: 0xee x 64) */
+    amm_add_t a5 = j35_signed(35005, 'e');
+    amm_nrow_t n5 = mknrow(55, 0, 0, 0xee, "held"), ng;
+    snprintf(n5.reason, sizeof(n5.reason), "matches no approval");
+    CHECK(amm_journal_nrow_put(g_j, &n5) == 0 && amm_journal_add_link_nodus(g_j, a5.seq, 55) == 0,
+          "setup: a held Nodus row linked");
+    CHECK(amm_journal_add_expire_onesided(g_j, a5.seq) == AMM_J_OK, "(c) NODUS side only: accepted");
+    CHECK(amm_journal_add_by_seq(g_j, a5.seq, &got) == 0 && !strcmp(got.state, "expired") &&
+          got.nodus_height == 55 && !*got.eth_tx &&
+          amm_journal_nrow_get(g_j, 55, 0, 0, &ng) == 0 && !strcmp(ng.state, "held"),
+          "  the add is expired, keeps its height, the row stays held");
+    amm_add_t a6 = j35_signed(35006, 'f');
+    /* add_link_nodus refuses a row a swap counted (J36), and no journal call changes a stored
+     * row, so a linked add whose row is not held cannot arise through the journal's calls: the
+     * row is linked while held and then counted through a second connection (setup only) to pin
+     * the journal function's own defensive check. */
+    amm_nrow_t n6 = mknrow(56, 0, 0, 0xff, "held");
+    CHECK(amm_journal_nrow_put(g_j, &n6) == 0 && amm_journal_add_link_nodus(g_j, a6.seq, 56) == 0 &&
+          side_sql("UPDATE nodus_rows SET state='counted' WHERE height=56"),
+          "setup: a held Nodus row linked, then counted by setup SQL");
+    CHECK(amm_journal_add_expire_onesided(g_j, a6.seq) == AMM_J_ILLEGAL &&
+          amm_journal_add_by_seq(g_j, a6.seq, &got) == 0 && !strcmp(got.state, "signed"),
+          "  a row that is not held: refused, the add stays signed");
+
+    /* (d) both linked, not signed, unknown */
+    amm_add_t a7 = j35_signed(35007, '7');
+    amm_rec_t r7 = mkrec(0x38, 0, 100, "seen");
+    char key7[AMM_TID_MAX];
+    amm_journal_eth_key(r7.tx, key7, sizeof(key7));
+    CHECK(amm_journal_rec_put(g_j, &r7) == 0 && amm_journal_add_link_eth(g_j, a7.seq, key7, 0) == 0 &&
+          amm_journal_add_link_nodus(g_j, a7.seq, 57) == 0, "setup: both deposits linked");
+    CHECK(amm_journal_add_expire_onesided(g_j, a7.seq) == AMM_J_ILLEGAL &&
+          amm_journal_add_by_seq(g_j, a7.seq, &got) == 0 && !strcmp(got.state, "signed"),
+          "(d) both linked: refused, the add stays signed");
+    amm_add_q_t aq;
+    memset(&aq, 0, sizeof(aq));
+    aq.bot_req = 35008; aq.usdt_amount = 10000000ULL; aq.nodus_amount = 10000000000000ULL;
+    aq.approved_at = 1000; aq.expiry = 1300; aq.eth_tip = 100; aq.nodus_tip = 100;
+    aq.nodus_min = 10000000000000ULL;
+    amm_add_t a8;
+    CHECK(amm_journal_add_approve(g_j, &aq, &a8) == AMM_J_OK &&
+          amm_journal_add_expire_onesided(g_j, a8.seq) == AMM_J_ILLEGAL,
+          "  an add that is only approved: refused");
+    CHECK(amm_journal_add_expire_onesided(g_j, 999999) == AMM_J_ILLEGAL, "  an unknown add: refused");
+
+    /* (f) amm_journal_rec_list_unconsumed_from: the payments that can still be linked to an add */
+    {
+        amm_rec_t lr[4];
+        int ln = -1;
+        uint8_t from[20], val[32], other[32];
+        memset(from, 0x0f, 20); memset(val, 0, 32); val[31] = 5; memset(other, 0, 32); other[31] = 6;
+        amm_rec_t r9 = mkrec(0x39, 0, 100, "seen");
+        CHECK(amm_journal_rec_put(g_j, &r9) == 0, "setup: a free seen record");
+        CHECK(amm_journal_rec_list_unconsumed_from(g_j, from, val, NULL, lr, 4, &ln) == 0 && ln == 1 &&
+              !memcmp(lr[0].tx, r9.tx, 32),
+              "(f) the free record is listed; the linked records (consumed) and the held ones are not");
+        CHECK(amm_journal_rec_list_unconsumed_from(g_j, from, other, NULL, lr, 4, &ln) == 0 && ln == 0,
+              "  another value: none");
+        CHECK(amm_journal_rec_list_unconsumed_from(g_j, from, val, &r9, lr, 4, &ln) == 0 && ln == 0,
+              "  paged after the last record: none");
+    }
+
+    /* (e) the purge and a reopen */
+    int ps = 0, pa = 0;
+    CHECK(amm_journal_purge_expired_questions(g_j, 100, &ps, &pa) == 0 && pa == 0 &&
+          amm_journal_add_by_seq(g_j, a1.seq, &got) == 0, "(e) the purge deletes no one-sided expired add");
+    reopen();
+    CHECK(amm_journal_add_by_seq(g_j, a1.seq, &got) == 0 && !strcmp(got.state, "expired") &&
+          !strcmp(got.eth_tx, key1) && amm_journal_rec_get(g_j, r1.tx, 0, &rg) == 0 &&
+          !strcmp(rg.state, "held") && amm_journal_add_by_seq(g_j, a5.seq, &got) == 0 &&
+          !strcmp(got.state, "expired") && got.nodus_height == 55,
+          "  a reopen keeps the expired adds, their links and the held record");
+}
+
+/* J36: one NODUS transfer is used once (BUGS.md AMM-01 continuation): a transfer id a signed add
+ * carries is refused to a NODUS -> USDT swap at its signed request (AMM_J_DUP_TRANSFER, nothing
+ * written), a wire id a swap counted (or a stored row counted by a swap) is refused to an add's
+ * link, and a payment linked to an add is refused to a swap's seen payment. Each of the three
+ * is accepted on the code before this change (the transfer was usable twice: swap payout and
+ * liquidity units). Control: an unrelated transfer id is accepted by the swap.
+ * FLAGS: none. LEAVES BEHIND: the test journal (removed at the end). HOW IT COULD FALSELY PASS:
+ * the swap that carries the id at approval (amm_journal_approve with an incoming id) is the
+ * journal's own path; the engine and watcher paths that reach these calls are E49 and
+ * test_amm_nodus_watch. */
+static void j36_one_transfer_one_use(void) {
+    printf("J36 one NODUS transfer is used once\n");
+    fresh();
+    amm_add_t a1 = j35_signed(36001, 'a');             /* transfer id nodus:aa..aa */
+    amm_quote_t q = mkq(36101, 10000000ULL, 10000000ULL);
+    q.dir = AMM_NODUS_TO_USDT;
+    amm_swap_t s, x;
+    CHECK(amm_journal_quote_approve(g_j, &q, &s) == AMM_J_OK, "setup: a NODUS -> USDT price approval");
+    char snd[129], dst[41];
+    memset(snd, 'c', 128); snd[128] = 0; memset(dst, 'b', 40); dst[40] = 0;
+    amm_accept_t ac;
+    memset(&ac, 0, sizeof(ac));
+    ac.dir = AMM_NODUS_TO_USDT; ac.bot_req = 36101; ac.sender = snd; ac.dest = dst;
+    ac.amount = 10000000ULL; ac.minimum = 5; ac.incoming_id = a1.transfer_id;
+    ac.req_no[31] = 1;
+    CHECK(amm_journal_accept_request(g_j, &ac, &x) == AMM_J_DUP_TRANSFER,
+          "an incoming id a signed add carries is refused to the swap's signed request");
+    CHECK(amm_journal_swap_by_botreq(g_j, 36101, &s) == 0 && !*s.sender && !strcmp(s.state, "approved"),
+          "  nothing was written");
+    char other[AMM_TID_MAX];
+    snprintf(other, sizeof(other), "nodus:%s", snd);
+    ac.incoming_id = other;
+    CHECK(amm_journal_accept_request(g_j, &ac, &x) == AMM_J_OK, "control: another id is accepted");
+
+    /* a swap past its approval carries the id: the add cannot link a row of that wire */
+    amm_add_t a2 = j35_signed(36002, 'e');
+    amm_approve_t ap = mk_n2u('d', 20000000ULL, 20000000ULL, a2.transfer_id);
+    amm_swap_t cs;
+    CHECK(approve_ok(&ap, &cs) && drive(&cs, "counted", a2.transfer_id), "setup: a swap counted with the add's transfer id");
+    CHECK(amm_journal_add_link_nodus(g_j, a2.seq, 70) == AMM_J_DUP_TRANSFER, "a wire a swap counted is not linked to an add");
+    amm_add_t got;
+    CHECK(amm_journal_add_by_seq(g_j, a2.seq, &got) == 0 && got.nodus_height == 0, "  nothing was linked");
+
+    /* a stored row counted by a swap */
+    amm_add_t a3 = j35_signed(36003, 'f');
+    amm_nrow_t n3 = mknrow(71, 0, 0, 0xff, "counted");
+    CHECK(amm_journal_nrow_put(g_j, &n3) == 0 && amm_journal_add_link_nodus(g_j, a3.seq, 71) == AMM_J_DUP_TRANSFER,
+          "a stored row a swap counted is not linked to an add");
+
+    /* a payment linked to an add is refused to a swap */
+    amm_add_t a4 = j35_signed(36004, '4');
+    CHECK(amm_journal_add_link_nodus(g_j, a4.seq, 72) == 0, "setup: a payment linked to an add");
+    amm_approve_t ap4 = mk_n2u('9', 30000000ULL, 30000000ULL, a4.transfer_id);
+    amm_swap_t s4;
+    CHECK(approve_ok(&ap4, &s4) && tr(s4.seq, "paid_waiting_depth", a4.transfer_id) == AMM_J_DUP_TRANSFER,
+          "a payment linked to an add is refused as a swap's seen payment");
+}
+
 int main(void) {
     printf("test_amm_journal\n");
     snprintf(g_dir, sizeof(g_dir), "/tmp/amm_jnl_testXXXXXX");
@@ -3644,6 +3871,8 @@ int main(void) {
     j32_pool_credit();
     j33_migration();
     j34_check_copy();
+    j35_add_expire_onesided();
+    j36_one_transfer_one_use();
 
     if (g_j) amm_journal_close(g_j);
     cleanup_dir();
