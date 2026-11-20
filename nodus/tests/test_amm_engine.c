@@ -4037,6 +4037,9 @@ static void e47_one_sided_adds(void) {
           !strcmp(row.state, "signed") && row.nodus_height == 1001,
           "control: the USDT window is not fully observed: the add stays signed");
     e47_observe_windows(&f);
+    /* the Ethereum window needs the stored block 990 to survive the watcher step: the step prunes
+     * blocks below tip - 96 (amm_eth_watch.c:968, :1323), so the scripted tip must stay <= 1086 */
+    W.eth_tip = 1000;
     CHECK(step(&f, &o) == 0 && o.adds_expired == 1, "both windows observed: the add expires");
     amm_nrow_t nr;
     CHECK(amm_journal_add_by_botreq(f.j, aa.request_number, &row) == 0 && !strcmp(row.state, "expired") &&
@@ -4123,6 +4126,7 @@ static void e48_case(int v) {
     if (v == 1) { e47_nodus_only(&e, &lx, 0xbb, 1001); (void)step(&e, &o); e47_usdt_only(&e, &lx, 0x95, 1001, 1); }
     if (v == 2) { e47_nodus_only(&e, &lx, 0xbb, 1001); }
     e47_observe_windows(&e);
+    W.eth_tip = 1000;      /* as in E47: a tip of 1400 would prune the stored block 990 (amm_eth_watch.c:1323) */
     for (int i = 0; i < 8; i++) (void)step(&e, &o);
     amm_add_t rowd, rowx;
     amm_rec_t rg;
