@@ -3499,9 +3499,10 @@ int amm_journal_add_expire_onesided(amm_journal_t *j, int64_t seq) {
     amm_add_t a;
     int g = add_query(j, "seq=?1", (arg_t[]){AI(seq)}, 1, &a);
     if (g < 0) goto done;
+    if (g == 1) { rc = AMM_J_ILLEGAL; goto done; }   /* no such add: `a` is unwritten */
     const int eth_side = *a.eth_tx != '\0';
     const int nodus_side = a.nodus_height != 0;
-    if (g == 1 || strcmp(a.state, AMM_L_SIGNED) != 0 || eth_side == nodus_side) {
+    if (strcmp(a.state, AMM_L_SIGNED) != 0 || eth_side == nodus_side) {
         rc = AMM_J_ILLEGAL;
         goto done;
     }
