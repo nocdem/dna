@@ -1902,6 +1902,9 @@ static int t_engine_v2_snapshot(void) {
               "committee query answers");
         CHECK(res->count == N_VAL && res->epoch_start == B &&
               res->block_height == B + 1, "seven seats, the epoch of 5E");
+        uint64_t pw_orig[DNA_MAX_ACTIVE_VALIDATORS];
+        CHECK(nodus_witness_vset_powers(O.w, s5, pw_orig) == 0,
+              "the counted powers of the stored snapshot(5E)");
         for (int i = 0; i < N_VAL; i++) {
             CHECK(memcmp(res->entries[i].pubkey, s5->entries[i].pubkey,
                          PKLEN) == 0, "the snapshot's seat order");
@@ -1911,6 +1914,8 @@ static int t_engine_v2_snapshot(void) {
                   "each seat's status is its row's (by validator_id)");
             CHECK(res->entries[i].has_power == 1,
                   "the seat carries its counted power");
+            CHECK(res->entries[i].power == pw_orig[i],
+                  "the seat's power VALUE is the counted power (Z-30)");
         }
 
         /* seat 0's row RETIRING: the wire shows RETIRING, the rest
@@ -1927,6 +1932,33 @@ static int t_engine_v2_snapshot(void) {
         CHECK(res->count == N_VAL &&
               res->entries[0].status == DNAC_VALIDATOR_RETIRING,
               "the RETIRING seat is RETIRING on the wire (Z-30a)");
+
+        /* Z-30: the power VALUE the RPC carries is the CAPPED counted
+         * power. Seat 0's stake is raised to six times a peer's (the E5
+         * shape: one validator far above the 3000-bps cap, the rest equal)
+         * in the stored snapshot(5E), inside this rolled-back transaction;
+         * the answer must carry nodus_witness_vset_powers' counted vector,
+         * and the capped seat 0 must be BELOW its raw stake / DECIMAL_UNIT
+         * (otherwise capped and raw are indistinguishable). The cache is
+         * invalidated so the handler re-reads the rewritten row. */
+        {
+            dna_vset_snapshot_t *sc = stored_v2(O.w, B, chain32);
+            uint64_t pw[DNA_MAX_ACTIVE_VALIDATORS];
+            CHECK(sc != NULL && sc->active_count == N_VAL, "snapshot(5E) copy");
+            sc->entries[0].total_stake = 6 * sc->entries[1].total_stake;
+            CHECK(snap_overwrite(O.w, sc) == 0, "store the capped-shape snapshot");
+            CHECK(nodus_witness_vset_powers(O.w, sc, pw) == 0, "counted powers");
+            CHECK(pw[0] < sc->entries[0].total_stake / DNAC_DECIMAL_UNIT,
+                  "FIXTURE GUARD: the cap bites on seat 0 (counted < raw)");
+            O.w->cached_committee_epoch_start = UINT64_MAX;   /* force miss */
+            CHECK(cq_query(O.w, res, &ty) == 0 && ty == 'r' &&
+                  res->count == N_VAL, "committee query answers (capped shape)");
+            for (int i = 0; i < N_VAL; i++)
+                CHECK(res->entries[i].has_power == 1 &&
+                      res->entries[i].power == pw[i],
+                      "every seat carries its counted (capped) power value");
+            dna_vset_free(&sc);
+        }
 
         /* seat 1's validators row gone (no path deletes one — a state
          * the read must survive): an ERROR reply, never a seat shown
@@ -1946,12 +1978,16 @@ static int t_engine_v2_snapshot(void) {
         CHECK(cq_query(O.w, res, &ty) == 0 && ty == 'e',
               "a seat without its row: an error reply");
         CHECK(run_sql(O.w->db, "ROLLBACK") == 0, "rollback");
+        O.w->cached_committee_epoch_start = UINT64_MAX;   /* force miss */
 
         /* rolled back: the control again */
         CHECK(cq_query(O.w, res, &ty) == 0 && ty == 'r' &&
               res->count == N_VAL &&
               res->entries[0].status != DNAC_VALIDATOR_RETIRING,
               "rolled back: seat 0's own status again");
+        for (int i = 0; i < N_VAL; i++)
+            CHECK(res->entries[i].power == pw_orig[i],
+                  "rolled back: the original counted powers again");
         free(res);
         dna_vset_free(&s5);
     }

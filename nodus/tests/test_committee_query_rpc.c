@@ -36,9 +36,11 @@
  *  - Case 4 runs on a chain database WITHOUT the version-3 tables: the
  *    handler takes its below-generation-4 arm (hf6_registry_roles answers
  *    0), and the committee comes from the bootstrap recompute, whose power
- *    is total / DNAC_DECIMAL_UNIT. The CAPPED ruleset-2 power reaches the
- *    wire through the same `committee[i].power` field, but no case here
- *    serves a ruleset-2 snapshot (test_hf6_power pins that member.power).
+ *    is total / DNAC_DECIMAL_UNIT. No case HERE serves a ruleset-2
+ *    snapshot: the generation-4 arm — the status by validator_id and the
+ *    CAPPED power value on the wire — is pinned by test_hf6_readers.c case
+ *    E8 (the real handler over the engine's ruleset-2 snapshot, with a
+ *    capped seat; Z-30).
  *  - The client request function (nodus_client_dnac_committee) is not
  *    round-tripped; its decoder is, over the node's real bytes.
  *  - Nothing here was RUN by its author (BUILDER: compile only).
