@@ -83,7 +83,8 @@ static int open_current(void) {
 static void rotate(void) {
     close(g_fd);
     g_fd = -1;
-    char from[LOG_PATH_MAX + 8], to[LOG_PATH_MAX + 8];
+    /* g_path (< LOG_PATH_MAX) + "." + the widest int (11 chars) + NUL */
+    char from[LOG_PATH_MAX + 13], to[LOG_PATH_MAX + 13];
     snprintf(to, sizeof(to), "%s.%d", g_path, g_keep);
     unlink(to);
     for (int i = g_keep - 1; i >= 1; i--) {
