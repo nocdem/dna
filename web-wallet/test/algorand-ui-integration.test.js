@@ -104,7 +104,7 @@ test('origin-wide durable callback rejects another tab pending ALGO reservation'
   localStorage:{getItem:key=>key==='vaultkey'?'vault':'encrypted',setItem:()=>{writes++;}},
   terminal:status=>['confirmed','failed','expired','replaced','abandoned'].includes(status),
   withActivityLock:work=>work(),submissionProofStorage:{},recoverSubmissionProofs:async({rows})=>rows,clearSubmissionProofs:async()=>{},parseActivity:async()=>[{...row,status:'pending',savedStatus:'unknown'}],
-  serializeActivity:async()=> 'sealed',quarantineLocks:()=>[],Map,Promise,Date,Object};
+  serializeActivity:async()=> 'sealed',refreshQuarantine:()=>{},Map,Promise,Date,Object};
  runInNewContext(source+'; globalThis.persist = persistActivity;',context);
  await assert.rejects(context.persist({required:true}),/Another algorand submission/i);
  assert.equal(writes,0);

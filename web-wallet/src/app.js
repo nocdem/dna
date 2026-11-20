@@ -23,7 +23,7 @@ function pageSupported(chain, page) {
 import { getAddress } from 'ethers';
 import { VAULT_KEY, ACTIVITY_KEY, BALANCES_KEY, HISTORY_KEY, ADDRESS_BOOK_KEY, IDENTITY_KEY, parseVault, encryptVault, decryptVault, validateNewPassword } from './vault.js';
 import { deleteVaultHistory, HistoryDeleteBlocked } from './connect/store.js';
-import { serializeActivity, serializeWithoutQuarantined, parseActivity, requireSavedForEvm, activityKeyFor, sentRowsToShow, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor, serializeIdentity, parseIdentity, identityKeyFor, IDENTITY_PEERS_MAX } from './activity-storage.js';
+import { serializeActivity, serializeWithoutQuarantined, parseActivity, requireSavedForEvm, activityKeyFor, sentRowsToShow, serializeBalances, parseBalances, balancesKeyFor, serializeHistory, parseHistory, historyKeyFor, serializeAddressBook, parseAddressBook, addressBookKeyFor, serializeIdentity, parseIdentity, identityKeyFor, IDENTITY_PEERS_MAX, reuseQuarantineLocks } from './activity-storage.js';
 import { addAddress, updateAddress, removeAddress, addressesFor, findAddress, checkAddress } from './address-book.js';
 import { validateCellframeAddress } from './cpunk-protocol.js';
 import { readHistory, mergeHistory, historySupported, HISTORY_SOURCES, HISTORY_LIMIT } from './history.js';
@@ -153,6 +153,13 @@ let quarantinedRows = [];
 // only: the record stays in the saved file and is judged again after a reload.
 const releasedQuarantine = new Set();
 const quarantineLocks = held => held.map(entry => ({ chain: NODUS_ASSET.chain, address: entry.address, status: 'pending', inputs: [...entry.inputs], tokenRow: entry.tokenRow === true, ...(entry.hash ? { hash: entry.hash } : {}), ...(entry.expiryHeight ? { expiryHeight: entry.expiryHeight } : {}) }));
+// After a save: the fresh lock rows reuse the previous ones with the same
+// content, so a released lock stays released (reuseQuarantineLocks), and the
+// re-check timer is armed again for any that is still held.
+function refreshQuarantine(aside) {
+  quarantinedRows = reuseQuarantineLocks(quarantinedRows, quarantineLocks(aside), releasedQuarantine);
+  armQuarantineTimer();
+}
 const nodusLockRows = address => [...history.filter(row => row.address === address), ...adapters.nodus.quarantineLockRows(quarantinedRows, releasedQuarantine).filter(row => row.address === address)];
 // Releases the locks of quarantined records whose own expiry height the chain
 // tip has passed (src/adapters/nodus.js quarantineReleasable) from one strict
@@ -306,7 +313,7 @@ function persistActivity({ required = false, expectedPreviousSubmissionId, expec
     if (!current()) return changed();
     localStorage.setItem(ACTIVITY_KEY, encrypted);
     await clearSubmissionProofs(submissionProofStorage, session.id, combined);
-    quarantinedRows = quarantineLocks(aside);
+    refreshQuarantine(aside);
   }));
   return historyWrites;
 }

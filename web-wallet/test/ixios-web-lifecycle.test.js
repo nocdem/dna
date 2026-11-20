@@ -94,7 +94,7 @@ async function tab(seedByte) {
   const wallet = { addresses: { ixios: address }, recoveryPhrase: phrase };
   const counters = { proofCommits: 0 };
   const c = { history: [], historyWrites: Promise.resolve(), activitySession: { id, key, vault: 'vault' }, wallet, localStorage: storage, VAULT_KEY: 'vault', ACTIVITY_KEY: 'activity', activityBlocked: false,
-    submissionProofStorage: proofs, withActivityLock, parseActivity, recoverSubmissionProofs, serializeActivity, clearSubmissionProofs, terminal, quarantineLocks: () => [], quarantinedRows: [],
+    submissionProofStorage: proofs, withActivityLock, parseActivity, recoverSubmissionProofs, serializeActivity, clearSubmissionProofs, terminal, refreshQuarantine: () => {}, quarantinedRows: [],
     recordActivity, createSubmissionProof, commitSubmissionProof: async (...a) => { counters.proofCommits++; return commitSubmissionProof(...a); },
     renderActivity() {}, trackActivity() {}, current: 1, revision: 1, transfer: undefined, record: undefined, submissionProof: undefined, error: undefined, Error };
   runInNewContext(persistSlice + ';globalThis.persistActivity=persistActivity;globalThis.callback = async details => ' + callback + ';', c);
