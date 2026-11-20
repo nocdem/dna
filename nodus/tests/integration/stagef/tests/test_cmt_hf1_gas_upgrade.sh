@@ -385,13 +385,15 @@ listening() {
 }
 
 # diff_nodes LABEL NODE... — stagef_diff.sh's exact comparison
-# (global_height | first 8 bytes of global_root | first 8 of block_id)
-# over a SUBSET of nodes, at the floor of their tips. Needed only where
-# one node is known to have left the chain (negative mode); every 7-node
-# comparison goes through stagef_cmt_diff_at_floor.
+# (global_height | the WHOLE 64-byte global_root | the WHOLE 64-byte block_id;
+# each must be exactly 128 hex characters) over a SUBSET of nodes, at the
+# floor of their tips. Needed only where one node is known to have left the
+# chain (negative mode); every 7-node comparison goes through
+# stagef_cmt_diff_at_floor. The printed rows (and the [ok] line) show the
+# first 8 bytes of each hash; the comparison does not.
 diff_nodes() {
     local label="$1"; shift
-    local floor=-1 first=1 n h row ref="" bad=0 rows=""
+    local floor=-1 first=1 n h row ref="" bad=0 rows="" shown ref_shown=""
     for n in "$@"; do
         h=$(tip_of "$n"); [ -n "$h" ] || h=-1
         if [ "$first" = 1 ]; then floor="$h"; first=0
@@ -400,19 +402,34 @@ diff_nodes() {
     [ "$floor" -ge 0 ] || { echo "[FAIL] $label: a node has no Comet block" >&2; return 1; }
     for n in "$@"; do
         row=$(sqlite3 "$(db_of "$n")" \
-            "SELECT global_height || '|v2:' || hex(substr(global_root,1,8)) \
-             || '|bid:' || hex(substr(block_id,1,8)) \
+            "SELECT global_height || '|v2:' || hex(global_root) \
+             || '|bid:' || hex(block_id) \
              FROM v2_blocks WHERE global_height = $floor" 2>/dev/null || true)
+        # not two 128-hex fields -> never "equal" (a shortened column would
+        # otherwise match on every node and hide bytes)
+        if [ -n "$row" ] && \
+           ! [[ "${row#*|}" =~ ^v2:[0-9A-F]{128}\|bid:[0-9A-F]{128}$ ]]; then
+            rows="$rows
+  node$n  $row
+  node$n  ^^ not two 128-hex (64-byte) fields"
+            bad=1
+            continue
+        fi
+        shown=""
+        if [ -n "$row" ]; then
+            shown="${row%%|*}|v2:$(printf '%s' "${row#*|v2:}" | cut -c1-16)|bid:$(printf '%s' "${row##*|bid:}" | cut -c1-16)"
+        fi
         rows="$rows
-  node$n  ${row:-NO_BLOCK}"
+  node$n  ${shown:-NO_BLOCK}"
         [ -n "$row" ] || bad=1
-        if [ -z "$ref" ]; then ref="$row"; elif [ "$row" != "$ref" ]; then bad=1; fi
+        if [ -z "$ref" ]; then ref="$row"; ref_shown="$shown"
+        elif [ "$row" != "$ref" ]; then bad=1; fi
     done
     if [ "$bad" = 1 ]; then
         echo "[FAIL] $label: divergence among nodes $*:$rows" >&2
         return 1
     fi
-    echo "[ok] $label: nodes $* identical at height $floor ($ref)"
+    echo "[ok] $label: nodes $* identical at height $floor ($ref_shown)"
 }
 
 # floor_of NODE... — the minimum tip.
@@ -462,16 +479,20 @@ claim_leaf() {
 }
 
 # spend CLI KEYS NODE LOG [FEE] — one self-send of the identity's LARGEST
-# native coin (--amount all --count 1: one input, one output, no change),
-# submitted to NODE. No FEE = the CLI's own default. Returns the CLI's rc;
-# the output (stdout + stderr) is in LOG.
+# native coin (--amount all --count 1 --no-dust-sweep: one input, one output,
+# no change — without the flag the planner sweeps small coins in), submitted
+# to NODE. CLI may be the OLD binary: the flag is passed only to a CLI that
+# knows it (stagef_dust_flag; an older one neither sweeps nor accepts it).
+# No FEE = the CLI's own default. Returns the CLI's rc; the output (stdout +
+# stderr) is in LOG.
 spend() {
     local cli="$1" keys="$2" node="$3" log="$4" fee="${5:-}" port
     port=$(stagef_tcp_port "$node")
     local -a extra=()
     [ -z "$fee" ] || extra=(--fee "$fee")
     "$cli" -s 127.0.0.1 -p "$port" v2-envelope spend --keys "$keys" \
-        --to "$(fp_of "$keys")" --amount all --count 1 ${extra[@]+"${extra[@]}"} \
+        --to "$(fp_of "$keys")" --amount all --count 1 $(stagef_dust_flag "$cli") \
+        ${extra[@]+"${extra[@]}"} \
         --submit "127.0.0.1:$port" > "$log" 2>&1
 }
 
@@ -694,6 +715,7 @@ stagef_cmt_diff_at_floor "OLD-chain-committing" || exit 2
 dry="$LOGD/units_dry_run.log"
 "$NEW_CLI" -s 127.0.0.1 -p "$(stagef_tcp_port 1)" v2-envelope spend \
     --keys "$PUMP_KEYS" --to "$(fp_of "$PUMP_KEYS")" --amount all --count 1 \
+    --no-dust-sweep \
     --submit "127.0.0.1:$(stagef_tcp_port 1)" --dry-run > "$dry" 2>&1 \
     || { cat "$dry" >&2; die "the unit-count dry run failed"; }
 UNITS=$(spend_field "$dry" units)

@@ -352,7 +352,7 @@ pump_to() {
         PUMP_SEQ=$(( PUMP_SEQ + 1 ))
         log="$LOGD/pump_$PUMP_SEQ.log"
         "$NEW_CLI" -s 127.0.0.1 -p "$port" v2-envelope spend --keys "$PUMP_KEYS" \
-            --to "$(fp_of "$PUMP_KEYS")" --amount all --count 1 \
+            --to "$(fp_of "$PUMP_KEYS")" --amount all --count 1 --no-dust-sweep \
             --submit "127.0.0.1:$port" > "$log" 2>&1 \
             || { cat "$log" >&2; die "pump spend $PUMP_SEQ was refused/failed on node$node (see $log)"; }
         intent=$(spend_intent "$log")
