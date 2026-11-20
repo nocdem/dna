@@ -137,6 +137,16 @@ static inline bool dec_has(const cbor_decoder_t *dec, size_t need) {
     return need <= dec->len - dec->pos;
 }
 
+/* Same bound as dec_has for a length still held as the 64-bit wire value.
+ * The comparison is made in uint64_t BEFORE any size_t conversion: on a
+ * 32-bit size_t (wasm32) a length of 2^32+k would otherwise wrap to k and be
+ * accepted, where a 64-bit node rejects it. */
+static inline bool dec_has64(const cbor_decoder_t *dec, uint64_t need) {
+    if (dec->error) return false;
+    if (dec->pos > dec->len) return false;
+    return need <= (uint64_t)(dec->len - dec->pos);
+}
+
 static inline uint8_t dec_byte(cbor_decoder_t *dec) {
     if (!dec_has(dec, 1)) {
         dec->error = true;
@@ -223,7 +233,7 @@ cbor_item_t cbor_decode_next(cbor_decoder_t *dec) {
     }
     case CBOR_BSTR: {
         uint64_t len = dec_arg(dec, ai);
-        if (dec->error || !dec_has(dec, (size_t)len)) {
+        if (dec->error || !dec_has64(dec, len)) {
             dec->error = true;
             item.type = CBOR_ITEM_ERROR;
             return item;
@@ -236,7 +246,7 @@ cbor_item_t cbor_decode_next(cbor_decoder_t *dec) {
     }
     case CBOR_TSTR: {
         uint64_t len = dec_arg(dec, ai);
-        if (dec->error || !dec_has(dec, (size_t)len)) {
+        if (dec->error || !dec_has64(dec, len)) {
             dec->error = true;
             item.type = CBOR_ITEM_ERROR;
             return item;
